@@ -1,0 +1,26 @@
+name: Build iPhone prototype
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'NeeboConnect.swift'
+      - 'build.sh'
+      - '.github/workflows/iphone.yml'
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile iPhone app
+        run: bash build.sh
+      - name: Save IPA for local signing
+        uses: actions/upload-artifact@v4
+        with:
+          name: NeeboConnect-unsigned
+          path: build/NeeboConnect-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 7
