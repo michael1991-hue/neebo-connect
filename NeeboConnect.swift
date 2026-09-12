@@ -33,7 +33,9 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     }
     func log(_ event: [String: String]) {
         var entry = event
-        entry["time"] = ISO8601DateFormatter().string(from: Date())
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        entry["time"] = formatter.string(from: Date())
         do {
             var data = try JSONSerialization.data(withJSONObject: entry, options: [.sortedKeys])
             data.append(10)
