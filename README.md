@@ -32,7 +32,7 @@ The observed nine-byte `0000005F0063003F01` frame contains 95 and 99, matching a
 - An alarm shows a banner on every tab, loops a bundled siren while foregrounded, and requests a Time Sensitive local notification with an eight-second PCM siren. Silence acknowledges the current excursion until readings return in range or cross the other limit. Fresh in-range readings resolve the alarm.
 - **Test siren for 5 seconds** and **Test notification in 10 seconds** work independently of device measurements. Tests do not create fake history.
 - Foreground playback uses the phone's current media volume. Background notification sound follows notification/silent/Focus settings. No Critical Alerts entitlement or approval is included; neither maximum volume nor bypassing mute/Focus is guaranteed. There is no background-audio keepalive workaround.
-- **Automatic alarms for the user's NBO remain unavailable pending mapping validation. This build is not a reliable SVT/medical monitoring system.**
+- **Automatic NBO alarms are available only through the clearly labelled Experimental NBO alarm test switch; leave it off for ordinary use while the mapping is being validated. This build is not a reliable SVT/medical monitoring system.**
 
 ## History
 
