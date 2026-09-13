@@ -19,6 +19,14 @@ enum DeviceProfile: String {
     case unknown = "Profile not identified"
 }
 
+struct SavedMeasurement: Codable, Identifiable {
+    var id: UUID = UUID()
+    let time: Date
+    let heartRate: Int?
+    let oxygen: Int?
+    let source: String
+}
+
 struct TrendSample: Identifiable {
     let id: String
     let day: String
@@ -45,7 +53,40 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     @Published var highRateThreshold = 200
     @Published var highRateDurationSeconds = 15
     @Published var alarmActive = false
+    @Published var history: [SavedMeasurement] = []
+    @Published var measurementTime: Date?
+    @Published var historyError: String?
+    private var freshnessTimer: Timer?
+    private var previousHeartRateTime: Date?
     private var highRateSince: Date?
+    private var historyURL: URL { folder.appendingPathComponent("measurements.json") }
+    private func saveMeasurement(heartRate: Int?, oxygen: Int?, source: String) {
+        measurementTime = Date()
+        history.append(SavedMeasurement(time: Date(), heartRate: heartRate, oxygen: oxygen, source: source))
+        // Bound local storage to the latest 20,000 readings.
+        if history.count > 20_000 { history.removeFirst(history.count - 20_000) }
+        do { try JSONEncoder().encode(history).write(to: historyURL, options: .atomic); historyError = nil }
+        catch { historyError = "History could not be saved: \(error.localizedDescription)" }
+    }
+    func clearHistory() {
+        do { try Data("[]".utf8).write(to: historyURL, options: .atomic); history = []; historyError = nil }
+        catch { historyError = "History could not be cleared." }
+    }
+    func exportHistory() -> URL? {
+        let url = folder.appendingPathComponent("Nivvi-history.csv")
+        let formatter = ISO8601DateFormatter()
+        let rows = history.map { "\(formatter.string(from: $0.time)),\($0.heartRate.map(String.init) ?? ""),\($0.oxygen.map(String.init) ?? ""),\($0.source)" }
+        do { try ("time,heart_rate_bpm,oxygen_percent,source\n" + rows.joined(separator: "\n")).write(to: url, atomically: true, encoding: .utf8); return url }
+        catch { historyError = "Export failed."; return nil }
+    }
+    private func expireMeasurements() {
+        guard let time = measurementTime, Date().timeIntervalSince(time) > 30 else { return }
+        verifiedHeartRate = nil; verifiedOxygen = nil
+        ffe7HeartRateCandidate = nil; ffe7OxygenCandidate = nil
+        highRateSince = nil; previousHeartRateTime = nil; alarmActive = false
+        measurementTime = nil
+        if active { status = "No fresh measurements — check the connection." }
+    }
     private var manager: CBCentralManager!
     private var peripheral: CBPeripheral?
     private var file: FileHandle?
@@ -56,6 +97,11 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         requestNotificationPermission()
         manager = CBCentralManager(delegate: self, queue: .main)
         refreshFiles()
+        if FileManager.default.fileExists(atPath: historyURL.path) {
+            do { history = try JSONDecoder().decode([SavedMeasurement].self, from: Data(contentsOf: historyURL)) }
+            catch { historyError = "Saved history could not be read. Original file preserved." }
+        }
+        freshnessTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.expireMeasurements() }
     }
     private func requestNotificationPermission() {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge, .timeSensitive]) { _, _ in }
@@ -166,11 +212,21 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         guard let data = c.value else { return }
         let uuid = c.uuid.uuidString.uppercased()
         let key = (c.service?.uuid.uuidString ?? "?") + "/" + uuid
-        if uuid == "2A37", data.count >= 2 {
-            let flags = data[0]
-            let is16Bit = (flags & 0x01) != 0
-            let bpm = is16Bit && data.count >= 3 ? Int(data[1]) | (Int(data[2]) << 8) : Int(data[1])
-            if bpm > 0 && bpm < 300 { verifiedHeartRate = bpm; evaluateHighRateAlarm() }
+        if uuid == "2A37", c.service?.uuid.uuidString.uppercased() == "180D" {
+            guard data.count >= 2 else { return }
+            let wide = (data[0] & 1) != 0
+            guard !wide || data.count >= 3 else { return }
+            let bpm = wide ? Int(data[1]) | (Int(data[2]) << 8) : Int(data[1])
+            guard bpm > 0 && bpm < 300 else {
+                verifiedHeartRate = nil; highRateSince = nil; previousHeartRateTime = nil; alarmActive = false
+                return
+            }
+            let now = Date()
+            if let previous = previousHeartRateTime, now.timeIntervalSince(previous) > 10 { highRateSince = nil }
+            previousHeartRateTime = now
+            verifiedHeartRate = bpm
+            saveMeasurement(heartRate: bpm, oxygen: nil, source: "standard-2A37")
+            evaluateHighRateAlarm()
         }
         // NB0's custom FFE7 sample has matched the live inspector captures as:
         // 00 00 00 [heart-rate candidate] 00 [oxygen candidate] ...
@@ -179,8 +235,11 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         if uuid == "FFE7", c.service?.uuid.uuidString.uppercased() == "FFE0", data.count >= 6 {
             let candidateHeartRate = Int(data[3])
             let candidateOxygen = Int(data[5])
-            if (30...240).contains(candidateHeartRate) { ffe7HeartRateCandidate = candidateHeartRate }
-            if (70...100).contains(candidateOxygen) { ffe7OxygenCandidate = candidateOxygen }
+            ffe7HeartRateCandidate = (30...255).contains(candidateHeartRate) ? candidateHeartRate : nil
+            ffe7OxygenCandidate = (70...100).contains(candidateOxygen) ? candidateOxygen : nil
+            if ffe7HeartRateCandidate != nil || ffe7OxygenCandidate != nil {
+                saveMeasurement(heartRate: ffe7HeartRateCandidate, oxygen: ffe7OxygenCandidate, source: "experimental-FFE7")
+            }
         }
         // 2A5E/2A5F are standard pulse-ox measurements. Values stay hidden until
         // a complete standards-compliant parser is added; never infer from raw bytes.
@@ -194,7 +253,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         if uuid == "FFEA", data.count == 2 { counter = "\(Int(data[0]) | (Int(data[1]) << 8)) — possible minutes" }
     }
     private func evaluateHighRateAlarm() {
-        guard highRateAlarmEnabled, let bpm = verifiedHeartRate else { return }
+        guard highRateAlarmEnabled, active, let bpm = verifiedHeartRate else { highRateSince = nil; alarmActive = false; return }
         if bpm >= highRateThreshold {
             if highRateSince == nil { highRateSince = Date() }
             if let since = highRateSince, Date().timeIntervalSince(since) >= Double(highRateDurationSeconds), !alarmActive {
@@ -221,6 +280,8 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         finish("Capture stopped. Values are historical. Restore original monitor app readings.")
     }
     private func finish(_ message: String) {
+        verifiedHeartRate = nil; verifiedOxygen = nil; ffe7HeartRateCandidate = nil; ffe7OxygenCandidate = nil
+        measurementTime = nil; highRateSince = nil; previousHeartRateTime = nil; alarmActive = false
         active = false; deadline?.invalidate(); deadline = nil
         // Close first so a recording error cannot recurse into stop().
         let oldFile = file; file = nil
@@ -277,11 +338,13 @@ struct ContentView: View {
     @AppStorage("nivvi.profile.gender") private var childGender = "Prefer not to say"
     @AppStorage("nivvi.family.code") private var familyCode = ""
     @AppStorage("nivvi.family.role") private var familyRole = "Primary monitor"
-    @AppStorage("nivvi.demo.mode") private var demoMode = true
+    @AppStorage("nivvi.demo.mode") private var demoMode = false
     @State private var showProfile = false
     @State private var selected: CBPeripheral?
     @State private var confirm = false
     @State private var tab = 0
+    @State private var historyExport: URL?
+    @State private var confirmDeleteHistory = false
     @State private var manualMode: NivviMode?
     private let coral = Color(red: 1, green: 0.56, blue: 0.53)
     private let lavender = Color(red: 0.85, green: 0.82, blue: 1.0)
@@ -350,7 +413,7 @@ struct ContentView: View {
             }
             HStack(spacing: 10) {
                 Circle().fill(connected ? teal : .gray).frame(width: 11, height: 11)
-                Text(demoMode ? "Preview trends · live device not connected" : (connected ? "Connected · live" : "Not connected")).font(.subheadline.weight(.semibold))
+                Text(connected ? "Capture active" : (demoMode ? "Demo history · not connected" : "Not connected")).font(.subheadline.weight(.semibold))
                 Spacer()
                 Text("\(mode.rawValue) mode").font(.caption.weight(.bold)).padding(.horizontal, 11).padding(.vertical, 6)
                     .background(.white.opacity(0.12)).clipShape(Capsule())
@@ -370,10 +433,10 @@ struct ContentView: View {
                 }.padding(16).background(coral).clipShape(RoundedRectangle(cornerRadius: 20))
             }
             Text("CURRENT STATUS").font(.caption.weight(.bold)).tracking(1.2).foregroundStyle(.white.opacity(0.55))
-            HStack(alignment: .firstTextBaseline) { Text(mode == .night ? "Sleeping well" : "Daytime watch").font(.title2.bold()); Spacer(); Image(systemName: mode.symbol).foregroundStyle(mode == .night ? lavender : .yellow) }
+            HStack(alignment: .firstTextBaseline) { Text(connected ? "Device capture" : "Ready to connect").font(.title2.bold()); Spacer(); Image(systemName: mode.symbol).foregroundStyle(mode == .night ? lavender : .yellow) }
             HStack(spacing: 14) {
-                readingCard("Heart rate", heartRateDisplay, demoMode ? "See demo trend in History" : liveMeasurementNote, "heart.fill", coral)
-                readingCard("Oxygen", oxygenDisplay, demoMode ? "See demo trend in History" : liveMeasurementNote, "lungs.fill", teal)
+                readingCard("Heart rate", heartRateDisplay, liveMeasurementNote, "heart.fill", coral)
+                readingCard("Oxygen", oxygenDisplay, liveMeasurementNote, "lungs.fill", teal)
             }
             HStack(spacing: 14) {
                 smallCard("Temperature", "Not decoded", "thermometer.medium", lavender)
@@ -403,7 +466,32 @@ struct ContentView: View {
                     Text("Example trend for exploring the interface. Live readings appear only after a verified device is connected.").font(.caption).foregroundStyle(.white.opacity(0.65))
                 } }
             } else {
-                panel { VStack(alignment: .leading, spacing: 14) { Text("TODAY").font(.caption.bold()).foregroundStyle(.white.opacity(0.55)); Text("No verified readings yet").font(.title3.bold()); Text("Nivvi will build a timeline when the device format is decoded.").font(.subheadline).foregroundStyle(.white.opacity(0.65)) } }
+                panel { VStack(alignment: .leading, spacing: 14) {
+                    Text("RECORDED MEASUREMENTS").font(.headline)
+                    Text("FFE7 readings are experimental. Latest 20,000 readings kept locally.").font(.caption)
+                    if monitor.history.isEmpty { Text("Connect your device to record measurements.") }
+                    else {
+                        Chart(Array(monitor.history.suffix(300))) { sample in
+                            if let bpm = sample.heartRate {
+                                LineMark(x: .value("Time", sample.time), y: .value("BPM", bpm), series: .value("Source", sample.source)).foregroundStyle(coral)
+                            }
+                        }.frame(height: 180)
+                        ForEach(Array(monitor.history.suffix(20).reversed())) { sample in
+                            VStack(alignment: .leading) {
+                                Text(sample.time.formatted(date: .abbreviated, time: .standard)).font(.caption)
+                                Text("HR \(sample.heartRate.map(String.init) ?? "—") bpm · O₂ \(sample.oxygen.map(String.init) ?? "—")%")
+                                Text(sample.source).font(.caption2).foregroundStyle(.secondary)
+                            }
+                        }
+                        Button("Prepare CSV export") { historyExport = monitor.exportHistory() }
+                        if let url = historyExport { ShareLink("Share history CSV", item: url) }
+                        Button("Delete history", role: .destructive) { confirmDeleteHistory = true }
+                            .confirmationDialog("Delete saved measurement history?", isPresented: $confirmDeleteHistory) {
+                                Button("Delete", role: .destructive) { monitor.clearHistory(); historyExport = nil }
+                            }
+                    }
+                    if let error = monitor.historyError { Text(error).foregroundStyle(coral) }
+                } }
             }
             panel { VStack(alignment: .leading, spacing: 12) { Text("RAW CAPTURE").font(.caption.bold()).foregroundStyle(.white.opacity(0.55)); Text("\(monitor.readings.reduce(0) { $0 + $1.count }) samples").font(.title3.bold()); ForEach(monitor.readings.prefix(4)) { r in Text("\(r.id) · \(r.count) packets").font(.caption.monospaced()).foregroundStyle(.white.opacity(0.7)) } } }
         }
@@ -432,18 +520,14 @@ struct ContentView: View {
             Toggle("Demo mode", isOn: $demoMode).tint(teal)
             Text("Shows clearly labelled example readings for exploring Nivvi. Demo data never triggers alarms or uploads to CloudKit.").font(.caption).foregroundStyle(.white.opacity(0.6))
         } }
-        panel { VStack(alignment: .leading, spacing: 12) {
-            HStack { Label("Family Circle", systemImage: "person.3.fill"); Spacer(); Text(familyCode.isEmpty ? "Not set up" : "Active").font(.caption).foregroundStyle(familyCode.isEmpty ? .white.opacity(0.55) : teal) }
-            Picker("Your role", selection: $familyRole) { Text("Primary monitor").tag("Primary monitor"); Text("Parent/caregiver").tag("Parent/caregiver"); Text("View only").tag("View only") }.pickerStyle(.menu)
-            if familyCode.isEmpty {
-                Button("Create family share code") { familyCode = String(format: "%06d", Int.random(in: 100000...999999)) }.buttonStyle(.borderedProminent).tint(teal)
-            } else {
-                HStack { Text(familyCode).font(.system(.title2, design: .monospaced).bold()); Spacer(); ShareLink(item: "Join our Nivvi Family Circle with code: \(familyCode)") { Image(systemName: "square.and.arrow.up") } }
-                Text("Share this code with Mum, Dad or another trusted caregiver. CloudKit will sync members and alerts after the family container is configured.").font(.caption).foregroundStyle(.white.opacity(0.6))
-            }
+        panel { VStack(alignment: .leading, spacing: 10) {
+            Label("Family sharing", systemImage: "person.3.fill")
+            Text("Export a history CSV from History to share with a caregiver. Live remote sharing is not available.").font(.caption)
         } }
         panel { VStack(alignment: .leading, spacing: 12) {
-            Toggle("High heart-rate alarm", isOn: $monitor.highRateAlarmEnabled).tint(coral)
+            Toggle("Standard-device test alarm", isOn: $monitor.highRateAlarmEnabled).tint(coral)
+                .onChange(of: monitor.highRateAlarmEnabled) { _ in monitor.silenceAlarm() }
+            Text("NBO FFE7 alerts are unavailable while the mapping is experimental. Foreground testing only.").font(.caption)
             Stepper("Threshold: \(monitor.highRateThreshold) bpm", value: $monitor.highRateThreshold, in: 120...260, step: 5)
             Stepper("Must stay high: \(monitor.highRateDurationSeconds) seconds", value: $monitor.highRateDurationSeconds, in: 5...120, step: 5)
             Text("Set these values only from your child’s cardiology or nursery plan. The alarm remains off until enabled, and only works with verified heart-rate data.").font(.caption).foregroundStyle(.white.opacity(0.6))
