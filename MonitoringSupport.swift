@@ -7,7 +7,22 @@ struct AlarmSettings: Codable, Equatable {
     var highThreshold: Int?
     var lowThreshold: Int?
     var durationSeconds = 15
-    var experimentalNBOEnabled = false
+    var experimentalCustomEnabled = false
+    enum CodingKeys: String, CodingKey { case highEnabled, lowEnabled, highThreshold, lowThreshold, durationSeconds, experimentalCustomEnabled }
+    init(highEnabled: Bool = false, lowEnabled: Bool = false, highThreshold: Int? = nil, lowThreshold: Int? = nil, durationSeconds: Int = 15, experimentalCustomEnabled: Bool = false) {
+        self.highEnabled = highEnabled; self.lowEnabled = lowEnabled
+        self.highThreshold = highThreshold; self.lowThreshold = lowThreshold
+        self.durationSeconds = durationSeconds; self.experimentalCustomEnabled = experimentalCustomEnabled
+    }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        highEnabled = try values.decodeIfPresent(Bool.self, forKey: .highEnabled) ?? false
+        lowEnabled = try values.decodeIfPresent(Bool.self, forKey: .lowEnabled) ?? false
+        highThreshold = try values.decodeIfPresent(Int.self, forKey: .highThreshold)
+        lowThreshold = try values.decodeIfPresent(Int.self, forKey: .lowThreshold)
+        durationSeconds = try values.decodeIfPresent(Int.self, forKey: .durationSeconds) ?? 15
+        experimentalCustomEnabled = try values.decodeIfPresent(Bool.self, forKey: .experimentalCustomEnabled) ?? false
+    }
     var validationMessage: String? {
         if highEnabled && !(1...299).contains(highThreshold ?? 0) { return "Enter your high limit before enabling high alerts." }
         if lowEnabled && !(1...299).contains(lowThreshold ?? 0) { return "Enter your low limit before enabling low alerts." }
@@ -29,9 +44,9 @@ struct RateAlarmEngine {
     mutating func interrupt() { pending = nil; since = nil; previous = nil }
     mutating func reset() { self = Self() }
     mutating func silence() { muted = active; active = nil }
-    mutating func ingest(bpm: Int?, source: String, at now: Date, settings: AlarmSettings, allowExperimentalNBO: Bool = false) -> RateAlarm? {
+    mutating func ingest(bpm: Int?, source: String, at now: Date, settings: AlarmSettings, allowExperimentalCustom: Bool = false) -> RateAlarm? {
         guard settings.validationMessage == nil, settings.highEnabled || settings.lowEnabled else { reset(); return nil }
-        guard (source == "standard-2A37" || (allowExperimentalNBO && source == "experimental-FFE7")), let bpm = bpm, (1...299).contains(bpm) else { interrupt(); return nil }
+        guard (source == "standard-2A37" || (allowExperimentalCustom && source == "experimental-FFE7")), let bpm = bpm, (1...299).contains(bpm) else { interrupt(); return nil }
         if let last = previous, now.timeIntervalSince(last) > 10 || now < last { interrupt() }
         previous = now
         let direction: RateAlarm?

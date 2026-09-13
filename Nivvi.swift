@@ -14,10 +14,8 @@ struct Reading: Identifiable {
 }
 
 enum DeviceProfile: String {
-    case nbo = "NBO custom wearable"
+    case custom = "Experimental custom format"
     case heartRate = "Standard heart-rate device"
-    case pulseOximeter = "Standard pulse oximeter"
-    case thermometer = "Standard thermometer"
     case generic = "Bluetooth device"
     case unknown = "Profile not identified"
 }
@@ -66,9 +64,26 @@ enum BluetoothPolicy {
         return result
     }
     static func isCandidate(names: [String], services: [String]) -> Bool {
-        let names = names.map(normalized)
-        if names.contains("NC0") || names.contains("NCO") { return false }
-        return names.contains { ["NB0", "NBO", "NEEBO"].contains($0) } || services.map(normalized).contains { ["FFE0", "FFA0"].contains($0) }
+        // Advertised names are not evidence of measurement compatibility.
+        services.map(normalized).contains { ["180D", "FFE0"].contains($0) }
+    }
+    static func standardHeartRate(_ data: Data) -> Int? {
+        let bytes = Array(data)
+        guard bytes.count >= 2 else { return nil }
+        let flags = bytes[0]
+        guard flags & 0xE0 == 0 else { return nil }
+        // A supported contact sensor reporting no contact is not a live pulse.
+        if flags & 0x04 != 0 && flags & 0x02 == 0 { return nil }
+        let wide = flags & 1 != 0
+        var end = wide ? 3 : 2
+        guard bytes.count >= end else { return nil }
+        let bpm = Int(bytes[1]) | (wide ? Int(bytes[2]) << 8 : 0)
+        if flags & 0x08 != 0 { end += 2 }
+        guard bytes.count >= end else { return nil }
+        if flags & 0x10 != 0 {
+            guard bytes.count > end, (bytes.count - end) % 2 == 0 else { return nil }
+        } else if bytes.count != end { return nil }
+        return (1...299).contains(bpm) ? bpm : nil
     }
     static func shouldObserve(service: String, characteristic: String) -> Bool {
         let service = normalized(service), characteristic = normalized(characteristic)
@@ -136,6 +151,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     @Published var files: [URL] = []
     @Published var lastSample: Date?
     @Published var profile: DeviceProfile = .unknown
+    // Standard-format decoding is not clinical validation of the sensor.
     @Published var verifiedHeartRate: Int?
     @Published var verifiedOxygen: Int?
     @Published var ffe7HeartRateCandidate: Int?
@@ -150,7 +166,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     var alarmActive: Bool { alarmKind != nil }
     @Published var notificationStatus = "Notification permission has not been checked."
     @Published var soundStatus = "Use Test siren to check the iPhone’s current volume."
-    @Published var experimentalNBOAlarms = false { didSet { alarmSettings.experimentalNBOEnabled = experimentalNBOAlarms } }
+    @Published var experimentalCustomAlarms = false { didSet { alarmSettings.experimentalCustomEnabled = experimentalCustomAlarms } }
     @Published var testingSiren = false
     private var alarmEngine = RateAlarmEngine()
     private var siren: AVAudioPlayer?
@@ -247,7 +263,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     private let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     override init() {
         super.init()
-        if let data = UserDefaults.standard.data(forKey: "nivvi.alarms"), let saved = try? JSONDecoder().decode(AlarmSettings.self, from: data) { alarmSettings = saved; experimentalNBOAlarms = saved.experimentalNBOEnabled }
+        if let data = UserDefaults.standard.data(forKey: "nivvi.alarms"), let saved = try? JSONDecoder().decode(AlarmSettings.self, from: data) { alarmSettings = saved; experimentalCustomAlarms = saved.experimentalCustomEnabled }
         session.deviceID = UserDefaults.standard.string(forKey: "nivvi.session.device").flatMap(UUID.init(uuidString:))
         session.enabled = UserDefaults.standard.bool(forKey: "nivvi.session.enabled")
         UNUserNotificationCenter.current().delegate = self
@@ -348,7 +364,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         if peripheral == nil { peripheral = manager.retrievePeripherals(withIdentifiers: [id]).first }
         guard let p = peripheral else {
             connection = .reconnecting; status = "Looking for your saved wearable…"
-            manager.scanForPeripherals(withServices: [CBUUID(string: "FFE0"), CBUUID(string: "FFA0"), CBUUID(string: "180D")])
+            manager.scanForPeripherals(withServices: [CBUUID(string: "180D"), CBUUID(string: "FFE0")])
             return
         }
         p.delegate = self
@@ -396,15 +412,15 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         connection = .scanning
         status = "Scanning for nearby wearables for 15 seconds…"
         // A BLE device held by another app on this iPhone may not advertise again.
-        let connected = manager.retrieveConnectedPeripherals(withServices: [CBUUID(string: "FFE0"), CBUUID(string: "FFA0")])
+        let connected = manager.retrieveConnectedPeripherals(withServices: [CBUUID(string: "180D"), CBUUID(string: "FFE0")])
         for p in connected {
-            if BluetoothPolicy.isCandidate(names: [p.name ?? ""], services: ["FFE0"]) { addDevice(p, name: p.name ?? "Wearable already connected to iPhone") }
+            addDevice(p, name: p.name ?? "Bluetooth device already connected to iPhone")
         }
         manager.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
         scanDeadline = Timer.scheduledTimer(withTimeInterval: 15, repeats: false) { [weak self] _ in
             guard let self = self, self.scanToken == token, self.connection == .scanning else { return }
             self.manager.stopScan(); self.connection = .idle
-            self.status = self.devices.isEmpty ? "No wearable found. Disconnect LightBlue, keep the wearable close, then scan again. Try Show other nearby devices if its name differs." : "Tap a device below to connect."
+            self.status = self.devices.isEmpty ? "No wearable found. Disconnect other Bluetooth apps, keep the wearable close, then scan again. Try Show other nearby devices if its name differs." : "Tap a device below to connect."
         }
     }
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
@@ -441,7 +457,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         profile = .unknown; verifiedHeartRate = nil; verifiedOxygen = nil; ffe7HeartRateCandidate = nil; ffe7OxygenCandidate = nil
         measurementTime = nil; measurementStatus = "Waiting for a Bluetooth connection."
         do {
-            let url = folder.appendingPathComponent("NB0-\(UUID().uuidString).jsonl")
+            let url = folder.appendingPathComponent("Bluetooth-\(UUID().uuidString).jsonl")
             try Data().write(to: url)
             file = try FileHandle(forWritingTo: url); recording = url
         } catch { status = "Cannot create recording: \(error.localizedDescription)"; return }
@@ -470,7 +486,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         noDataTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
             guard let self = self, self.owns(p) else { return }
             if self.lastSample == nil { self.status = "Connected, but no values received. Check Connection details." }
-            else if self.lastFFE7 == nil && self.profile == .nbo { self.measurementStatus = "Battery/status received, but no FFE7 measurements yet." }
+            else if self.lastFFE7 == nil && self.profile == .custom { self.measurementStatus = "Battery/status received, but no FFE7 measurements yet." }
         }
     }
     func centralManager(_ central: CBCentralManager, didFailToConnect p: CBPeripheral, error: Error?) {
@@ -497,8 +513,8 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         if let error = error { note("Service discovery failed: \(error.localizedDescription)"); status = "Service discovery failed. Stop and reconnect."; return }
         let services = Set((p.services ?? []).map { BluetoothPolicy.normalized($0.uuid.uuidString) })
         note("Services: \(services.sorted().joined(separator: ", "))")
-        if services.contains("FFE0") || services.contains("FFA0") { profile = .nbo }
-        else if services.contains("180D") { profile = .heartRate }
+        if services.contains("180D") { profile = .heartRate }
+        else if services.contains("FFE0") { profile = .custom }
         else { profile = .generic }
         if services.isEmpty { status = "Connected, but no services were returned. Stop and reconnect."; return }
         for service in p.services ?? [] { p.discoverCharacteristics(nil, for: service) }
@@ -512,6 +528,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             let sid = BluetoothPolicy.normalized(service.uuid.uuidString), cid = BluetoothPolicy.normalized(c.uuid.uuidString)
             log(["event": "characteristic", "service": sid, "uuid": cid, "properties": String(c.properties.rawValue)])
             guard BluetoothPolicy.shouldObserve(service: sid, characteristic: cid) else { continue }
+            if profile == .heartRate && sid == "FFE0" { continue }
             note("Found \(sid)/\(cid): read=\(c.properties.contains(.read)), notify=\(c.properties.contains(.notify))")
             if sid == "FFE0" && cid == "FFE7" {
                 measurementCharacteristic = c
@@ -545,32 +562,29 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         status = "Receiving device data. The session stays on until you disconnect."
         let key = (c.service?.uuid.uuidString ?? "?") + "/" + uuid
         if uuid == "2A37", serviceID == "180D" {
-            guard data.count >= 2 else { verifiedHeartRate = nil; alarmEngine.interrupt(); return }
-            let wide = (data[0] & 1) != 0
-            guard !wide || data.count >= 3 else { verifiedHeartRate = nil; alarmEngine.interrupt(); return }
-            let bpm = wide ? Int(data[1]) | (Int(data[2]) << 8) : Int(data[1])
-            guard bpm > 0 && bpm < 300 else {
-                verifiedHeartRate = nil; alarmEngine.interrupt()
+            guard let bpm = BluetoothPolicy.standardHeartRate(data) else {
+                verifiedHeartRate = nil; measurementTime = nil; alarmEngine.interrupt()
+                measurementStatus = "Heart-rate packet invalid or sensor contact lost."
                 return
             }
+            measurementStatus = "Standard Bluetooth heart-rate measurements received."
             verifiedHeartRate = bpm
             saveMeasurement(heartRate: bpm, oxygen: nil, source: "standard-2A37")
             evaluateRateAlarm(bpm)
         }
-        // NB0's custom FFE7 sample has matched the live inspector captures as:
-        // 00 00 00 [heart-rate candidate] 00 [oxygen candidate] ...
-        // Keep these separate from verified standard BLE measurements until a
-        // timed comparison with Neebo confirms the field meanings.
-        if uuid == "FFE7", serviceID == "FFE0" {
+        // Optional nine-byte custom adapter. UUIDs alone do not identify a manufacturer.
+        // Values remain experimental; the standard Heart Rate Service takes priority.
+        if uuid == "FFE7", serviceID == "FFE0", profile == .custom {
             lastFFE7 = Date()
             let candidate = BluetoothPolicy.ffe7(data)
             ffe7HeartRateCandidate = candidate.heartRate
             ffe7OxygenCandidate = candidate.oxygen
-            measurementStatus = candidate.heartRate == nil && candidate.oxygen == nil ? "FFE7 received (\(data.count) bytes), but values or frame format are not recognised." : "Experimental FFE7 values received; compare against Neebo."
+            measurementStatus = candidate.heartRate == nil && candidate.oxygen == nil ? "FFE7 received (\(data.count) bytes), but values or frame format are not recognised." : "Experimental FFE7 values received; compare against reference device."
             if candidate.heartRate != nil || candidate.oxygen != nil {
                 saveMeasurement(heartRate: candidate.heartRate, oxygen: candidate.oxygen, source: "experimental-FFE7")
                 if let candidateRate = candidate.heartRate { evaluateExperimentalRateAlarm(candidateRate) }
-            }
+                else { alarmEngine.interrupt() }
+            } else { measurementTime = nil; alarmEngine.interrupt() }
         }
         // 2A5E/2A5F are standard pulse-ox measurements. Values stay hidden until
         // a complete standards-compliant parser is added; never infer from raw bytes.
@@ -578,26 +592,26 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             readings[i].count += 1; readings[i].hex = hex
         } else { readings.append(Reading(id:key, count:1, hex:hex)) }
         if uuid == "2A19", serviceID == "180F", data.count == 1, data[0] <= 100 { battery = "\(data[0])%" }
-        if uuid == "FFEA", data.count == 2 { counter = "\(Int(data[0]) | (Int(data[1]) << 8)) — possible minutes" }
+        if uuid == "FFEA", serviceID == "FFE0", data.count == 2 { counter = "\(Int(data[0]) | (Int(data[1]) << 8)) — possible minutes" }
     }
     private func evaluateExperimentalRateAlarm(_ bpm: Int) {
         let previousAlarm = alarmKind
-        let event = alarmEngine.ingest(bpm: bpm, source: "experimental-FFE7", at: Date(), settings: alarmSettings, allowExperimentalNBO: experimentalNBOAlarms)
+        let event = alarmEngine.ingest(bpm: bpm, source: "experimental-FFE7", at: Date(), settings: alarmSettings, allowExperimentalCustom: experimentalCustomAlarms)
         alarmKind = alarmEngine.active
         if let event = event {
-            recordEvent(kind: "alarm", title: event.title, detail: "Experimental NBO value crossed the configured limit for \(alarmSettings.durationSeconds) seconds. Verify against Neebo or your care plan.", heartRate: bpm)
+            recordEvent(kind: "alarm", title: event.title, detail: "Experimental custom value crossed the configured limit for \(alarmSettings.durationSeconds) seconds. Verify against reference device or your care plan.", heartRate: bpm)
             startSiren(loop: true)
-            notify(title: event.title, body: "Experimental NBO value \(bpm) crossed your configured limit. Verify the reading and follow your care plan.", identifier: "nivvi-rate-alarm")
-            status = event.title + " — verify the NBO reading and follow your care plan."
+            notify(title: event.title, body: "Experimental custom value \(bpm) crossed your configured limit. Verify the reading and follow your care plan.", identifier: "nivvi-rate-alarm")
+            status = event.title + " — verify the custom-format reading and follow your care plan."
         } else if !alarmActive && previousAlarm != nil && !testingSiren {
-            recordEvent(kind: "alarm", title: "Reading back within limits", detail: "Experimental NBO value returned within the configured limits.", heartRate: bpm)
+            recordEvent(kind: "alarm", title: "Reading back within limits", detail: "Experimental custom value returned within the configured limits.", heartRate: bpm)
             stopSiren()
         }
     }
 
     private func evaluateRateAlarm(_ bpm: Int) {
         let previousAlarm = alarmKind
-        let event = alarmEngine.ingest(bpm: bpm, source: "standard-2A37", at: Date(), settings: alarmSettings, allowExperimentalNBO: experimentalNBOAlarms)
+        let event = alarmEngine.ingest(bpm: bpm, source: "standard-2A37", at: Date(), settings: alarmSettings, allowExperimentalCustom: experimentalCustomAlarms)
         alarmKind = alarmEngine.active
         if let event = event {
             recordEvent(kind: "alarm", title: event.title, detail: "Configured limit persisted for \(alarmSettings.durationSeconds) seconds. Standard Bluetooth heart-rate input.", heartRate: bpm)
@@ -778,8 +792,8 @@ struct ContentView: View {
     private var oxygenDisplay: String { (monitor.verifiedOxygen ?? monitor.ffe7OxygenCandidate).map { "\($0)%" } ?? "Not decoded" }
     private var liveMeasurementNote: String {
         if monitor.verifiedHeartRate != nil || monitor.verifiedOxygen != nil { return "Standard Bluetooth value" }
-        if monitor.ffe7HeartRateCandidate != nil || monitor.ffe7OxygenCandidate != nil { return "FFE7 candidate · confirm against Neebo" }
-        return monitor.profile == .heartRate ? "Waiting for verified data" : "Waiting for device data"
+        if monitor.ffe7HeartRateCandidate != nil || monitor.ffe7OxygenCandidate != nil { return "FFE7 candidate · confirm against reference device" }
+        return monitor.profile == .heartRate ? "Waiting for heart-rate data" : "Waiting for device data"
     }
     private var demoHistory: [TrendSample] { [TrendSample(id: "mon", day: "Mon", heartRate: 86, oxygen: 98), TrendSample(id: "tue", day: "Tue", heartRate: 88, oxygen: 99), TrendSample(id: "wed", day: "Wed", heartRate: 87, oxygen: 99), TrendSample(id: "thu", day: "Thu", heartRate: 90, oxygen: 98), TrendSample(id: "fri", day: "Fri", heartRate: 88, oxygen: 99), TrendSample(id: "sat", day: "Sat", heartRate: 85, oxygen: 99), TrendSample(id: "sun", day: "Sun", heartRate: 88, oxygen: 99)] }
     private var displayName: String { childName.isEmpty ? "Your child" : childName }
@@ -809,7 +823,7 @@ struct ContentView: View {
         .sheet(item: $captureRequest) { request in
             VStack(alignment: .leading, spacing: 24) {
                 Text("Connect to \(request.peripheral.name ?? "wearable")").font(.title2.bold())
-                Text("Nivvi will stay connected and try to reconnect after signal loss until you tap Disconnect. Connecting may interrupt the original monitor. NBO readings remain experimental; alarms require explicit opt-in in Settings.")
+                Text("Nivvi will stay connected and try to reconnect after signal loss until you tap Disconnect. Connecting may interrupt another app using the same device. Standard heart-rate devices are supported. Custom-format readings remain experimental; their alarms require explicit opt-in in Settings.")
                 Button("Connect wearable") {
                     monitor.connect(request.peripheral)
                     captureRequest = nil
@@ -846,6 +860,8 @@ struct ContentView: View {
                 }
             }
         }
+        .onChange(of: monitor.selectedHistoryDay) { _ in selectedHistoryReading = nil }
+        .onChange(of: monitor.history.count) { count in if count == 0 { selectedHistoryReading = nil } }
         .onChange(of: scenePhase) { phase in monitor.applicationActive(phase == .active) }
         .onAppear { monitor.applicationActive(scenePhase == .active) }
         .scrollDismissesKeyboard(.interactively)
@@ -893,7 +909,7 @@ struct ContentView: View {
             HStack(alignment: .firstTextBaseline) { Text(connected ? "Live device session" : "Ready to connect").font(.title2.bold()); Spacer(); Image(systemName: mode.symbol).foregroundStyle(mode == .night ? lavender : .yellow) }
             HStack(spacing: 14) {
                 readingCard("Heart rate", heartRateDisplay, liveMeasurementNote, "heart.fill", coral)
-                readingCard("Oxygen", oxygenDisplay, liveMeasurementNote, "lungs.fill", teal)
+                if monitor.profile == .custom { readingCard("Oxygen", oxygenDisplay, liveMeasurementNote, "lungs.fill", teal) }
             }
 
             Button { monitor.selectHistoryDay(Date()); tab = 1 } label: {
@@ -990,7 +1006,7 @@ struct ContentView: View {
                         panel { VStack(alignment: .leading, spacing: 9) {
                             timestamp(sample.time, tint: lavender)
                             HStack { Text(sample.heartRate.map { "\($0) bpm" } ?? "HR —").foregroundStyle(coral); Spacer(); Text(sample.oxygen.map { "O₂ \($0)%" } ?? "O₂ —").foregroundStyle(teal) }.font(.title3.bold())
-                            Text(sample.source == "experimental-FFE7" ? "Experimental NBO reading" : "Standard Bluetooth reading").font(.caption).foregroundStyle(.white.opacity(0.7))
+                            Text(sample.source == "experimental-FFE7" ? "Experimental custom reading" : "Standard Bluetooth reading").font(.caption).foregroundStyle(.white.opacity(0.7))
                         } }
                     }
                 }
@@ -1023,10 +1039,10 @@ struct ContentView: View {
     private var device: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Device").font(.largeTitle.bold())
-            panel { HStack(spacing: 14) { Image(systemName: "wave.3.right.circle.fill").font(.largeTitle).foregroundStyle(teal); VStack(alignment: .leading) { Text("NBO wearable").font(.headline); Text(monitor.connection.label).foregroundStyle(connected ? teal : .white.opacity(0.6)) }; Spacer() } }
+            panel { HStack(spacing: 14) { Image(systemName: "wave.3.right.circle.fill").font(.largeTitle).foregroundStyle(teal); VStack(alignment: .leading) { Text("Bluetooth heart-rate device").font(.headline); Text(monitor.connection.label).foregroundStyle(connected ? teal : .white.opacity(0.6)) }; Spacer() } }
             panel { VStack(alignment: .leading, spacing: 6) { Text("PROFILE").font(.caption.bold()).foregroundStyle(.white.opacity(0.55)); Text(monitor.profile.rawValue).font(.headline); Text("Nivvi only displays measurements when the Bluetooth format is recognised.").font(.caption).foregroundStyle(.white.opacity(0.6)) } }
             HStack(spacing: 14) { metric("Battery", monitor.battery == "—" ? "—" : monitor.battery); metric("Mode", mode.rawValue) }
-            Button { monitor.active ? monitor.stop() : monitor.scan() } label: { Text(monitor.active ? "Disconnect" : (monitor.isScanning ? "Scanning…" : "Scan for NBO")).font(.headline).frame(maxWidth: .infinity).padding(17) }.buttonStyle(.borderedProminent).tint(coral).disabled(monitor.isScanning)
+            Button { monitor.active ? monitor.stop() : monitor.scan() } label: { Text(monitor.active ? "Disconnect" : (monitor.isScanning ? "Scanning…" : "Scan for devices")).font(.headline).frame(maxWidth: .infinity).padding(17) }.buttonStyle(.borderedProminent).tint(coral).disabled(monitor.isScanning)
             ForEach(monitor.devices, id: \.identifier) { p in
                 Button {
                     captureRequest = CaptureRequest(peripheral: p)
@@ -1041,7 +1057,7 @@ struct ContentView: View {
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(14)
                 }.buttonStyle(.bordered).disabled(monitor.active)
             }
-            Text("Select the wearable named NB0 (zero) or NBO (letter O). Disconnect LightBlue before connecting Nivvi. The first two minutes of each session also create a diagnostic log.").font(.caption).foregroundStyle(.white.opacity(0.7))
+            Text("Choose your Bluetooth heart-rate device. Standard Heart Rate Service devices are supported; custom formats are experimental. If a device does not advertise its services, enable Show other nearby devices and scan again. Close other Bluetooth apps before connecting.").font(.caption).foregroundStyle(.white.opacity(0.7))
             Toggle("Show other nearby Bluetooth devices", isOn: $monitor.showAllDevices)
                 .disabled(monitor.active || monitor.isScanning)
             panel { VStack(alignment: .leading, spacing: 10) {
@@ -1067,7 +1083,7 @@ struct ContentView: View {
 
     private var settings: some View { VStack(alignment: .leading, spacing: 18) {
         Text("Settings").font(.largeTitle.bold())
-        Text("Nivvi 0.4 · Build 4").font(.caption).foregroundStyle(.secondary)
+        Text("Nivvi 0.5 · Build 5").font(.caption).foregroundStyle(.secondary)
         panel { VStack(alignment: .leading, spacing: 10) {
             HStack { Label("Child profile", systemImage: "person.crop.circle"); Spacer(); Button("Edit") { showProfile = true }.buttonStyle(.bordered) }
             Text("\(displayName)\(ageText.isEmpty ? "" : " · \(ageText)")").font(.headline)
@@ -1084,9 +1100,9 @@ struct ContentView: View {
         } }
         panel { VStack(alignment: .leading, spacing: 12) {
             Text("Heart-rate test alarms").font(.headline)
-            Text("NBO FFE7 values are experimental. Enable the test switch only to trial the mapped value against your care plan; verify readings independently.").font(.caption)
-            Toggle("Experimental NBO alarm test", isOn: $monitor.experimentalNBOAlarms).tint(lavender)
-                .onChange(of: monitor.experimentalNBOAlarms) { _ in monitor.silenceAlarm() }
+            Text("Custom-format values are experimental. Enable the test switch only to trial the mapped value against your care plan; verify readings independently.").font(.caption)
+            Toggle("Experimental custom alarm test", isOn: $monitor.experimentalCustomAlarms).tint(lavender)
+                .onChange(of: monitor.experimentalCustomAlarms) { _ in monitor.silenceAlarm() }
             Toggle("High limit alarm", isOn: $monitor.alarmSettings.highEnabled).tint(coral)
                 .onChange(of: monitor.alarmSettings.highEnabled) { enabled in if enabled { monitor.requestNotificationPermission() } }
             HStack {
@@ -1114,11 +1130,11 @@ struct ContentView: View {
         } }
         panel { VStack(alignment: .leading, spacing: 10) {
             Label("Continuous Bluetooth session", systemImage: "antenna.radiowaves.left.and.right")
-            Text("Stays connected when you lock the phone. Automatically reconnects when the wearable returns to range. Tap Disconnect to end the session.").font(.caption)
+            Text("Keeps the Bluetooth session active and attempts reconnection after signal loss. Tap Disconnect to end the session.").font(.caption)
             Text("Background readings require device notifications. Keep Nivvi open if the wearable only responds to reads. Force-quitting the app, Bluetooth being off, an empty battery or iOS restrictions can interrupt monitoring.").font(.caption).foregroundStyle(.white.opacity(0.7))
         } }
-        panel { Label("Day/night mode", systemImage: "sun.and.horizon.fill"); Text("Automatic mode follows local time. Sleep detection will be added once movement data is decoded.").font(.caption).foregroundStyle(.white.opacity(0.6)) }
-        panel { Label("Privacy", systemImage: "lock.fill"); Text("No legacy login. No cloud history by default.").font(.caption).foregroundStyle(.white.opacity(0.6)) }
+        panel { Label("Day/night mode", systemImage: "sun.and.horizon.fill"); Text("Automatic mode follows local time. This setting does not detect sleep.").font(.caption).foregroundStyle(.white.opacity(0.6)) }
+        panel { Label("Privacy", systemImage: "lock.fill"); Text("No account required. Readings and notes are saved on this iPhone. Exports are shared only when you choose.").font(.caption).foregroundStyle(.white.opacity(0.6)) }
     } }
 
     private var bottomBar: some View { HStack { nav("house.fill", "Home", 0); nav("chart.xyaxis.line", "History", 1); nav("wave.3.right", "Device", 2); nav("gearshape.fill", "Settings", 3) }.padding(8).background(.white.opacity(0.1)).clipShape(Capsule()).padding(.horizontal, 18).padding(.bottom, 10) }

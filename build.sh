@@ -14,23 +14,23 @@ xcrun swiftc -swift-version 5 -parse-as-library -O \
   -sdk "$sdk_path" -target arm64-apple-ios16.0 \
   -module-name Nivvi -framework SwiftUI -framework CoreBluetooth -framework Charts -framework AudioToolbox -framework UserNotifications -framework AVFoundation -framework PhotosUI -framework ImageIO \
   -Xlinker -rpath -Xlinker @executable_path/Frameworks \
-  NeeboConnect.swift MonitoringSupport.swift -o "$app_dir/Nivvi"
+  Nivvi.swift MonitoringSupport.swift -o "$app_dir/Nivvi"
 cat > "$app_dir/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>CFBundleIdentifier</key><string>com.michael1991.neeboconnect.prototype</string>
+<key>CFBundleIdentifier</key><string>com.michael1991.nivvi</string>
 <key>CFBundleName</key><string>Nivvi</string>
 <key>CFBundleDisplayName</key><string>Nivvi</string>
 <key>CFBundleExecutable</key><string>Nivvi</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleVersion</key><string>4</string>
-<key>CFBundleShortVersionString</key><string>0.4</string>
+<key>CFBundleVersion</key><string>5</string>
+<key>CFBundleShortVersionString</key><string>0.5</string>
 <key>MinimumOSVersion</key><string>16.0</string>
 <key>CFBundleSupportedPlatforms</key><array><string>iPhoneOS</string></array>
 <key>UIDeviceFamily</key><array><integer>1</integer></array>
 <key>LSRequiresIPhoneOS</key><true/>
-<key>NSBluetoothAlwaysUsageDescription</key><string>Connect to your Neebo wearable to capture Bluetooth data for prototype testing.</string>
+<key>NSBluetoothAlwaysUsageDescription</key><string>Connect to a compatible Bluetooth heart-rate device to display readings and save history on this iPhone.</string>
 <key>UIBackgroundModes</key><array><string>bluetooth-central</string></array>
 <key>UIFileSharingEnabled</key><true/>
 <key>LSSupportsOpeningDocumentsInPlace</key><true/>
