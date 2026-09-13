@@ -34,13 +34,99 @@ struct TrendSample: Identifiable {
     let oxygen: Int
 }
 
+// BEGIN TESTABLE BLUETOOTH POLICY
+// Foundation-only helpers are exercised by Tests/run.sh on the macOS builder.
+enum ConnectionPhase: String {
+    case idle, scanning, connecting, discovering, waiting, receiving, stopping
+    var isConnected: Bool { [Self.discovering, .waiting, .receiving].contains(self) }
+    var isBusy: Bool { [Self.connecting, .discovering, .waiting, .receiving, .stopping].contains(self) }
+    var label: String {
+        switch self {
+        case .idle: return "Not connected"
+        case .scanning: return "Scanning nearby"
+        case .connecting: return "Connecting…"
+        case .discovering: return "Connected · checking services"
+        case .waiting: return "Connected · waiting for measurements"
+        case .receiving: return "Connected · receiving data"
+        case .stopping: return "Disconnecting…"
+        }
+    }
+}
+enum BluetoothPolicy {
+    static func normalized(_ value: String) -> String {
+        let result = value.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if result.hasPrefix("0000"), result.hasSuffix("-0000-1000-8000-00805F9B34FB") {
+            return String(result.dropFirst(4).prefix(4))
+        }
+        return result
+    }
+    static func isCandidate(names: [String], services: [String]) -> Bool {
+        let names = names.map(normalized)
+        if names.contains("NC0") || names.contains("NCO") { return false }
+        return names.contains { ["NB0", "NBO", "NEEBO"].contains($0) } || services.map(normalized).contains { ["FFE0", "FFA0"].contains($0) }
+    }
+    static func shouldObserve(service: String, characteristic: String) -> Bool {
+        let service = normalized(service), characteristic = normalized(characteristic)
+        switch service {
+        case "FFE0": return ["FFE7", "FFEA", "FFE4"].contains(characteristic)
+        case "180F": return characteristic == "2A19"
+        case "180D": return characteristic == "2A37"
+        default: return false
+        }
+    }
+    static func ffe7(_ data: Data) -> (heartRate: Int?, oxygen: Int?) {
+        // Only the complete nine-byte frame observed in captures is understood.
+        // Non-zero high bytes and unknown frame layouts must not be truncated.
+        let bytes = Array(data)
+        guard bytes.count == 9, bytes[0...2].allSatisfy({ $0 == 0 }) else { return (nil, nil) }
+        let hr = bytes[4] == 0 && (30...240).contains(Int(bytes[3])) ? Int(bytes[3]) : nil
+        let oxygen = bytes[6] == 0 && (70...100).contains(Int(bytes[5])) ? Int(bytes[5]) : nil
+        return (hr, oxygen)
+    }
+}
+// END TESTABLE BLUETOOTH POLICY
+
 final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     @Published var status = "Ready — foreground testing only"
     @Published var battery = "—"
     @Published var counter = "—"
     @Published var readings: [Reading] = []
     @Published var devices: [CBPeripheral] = []
-    @Published var active = false
+    @Published var connection: ConnectionPhase = .idle
+    var active: Bool { connection.isBusy }
+    var isScanning: Bool { connection == .scanning }
+    @Published var showAllDevices = false
+    @Published var deviceNames: [UUID: String] = [:]
+    @Published var diagnostics: [String] = []
+    @Published var measurementStatus = "No measurement packets received yet."
+    private var scanDeadline: Timer?
+    private var pollTimer: Timer?
+    private var noDataTimer: Timer?
+    private var scanToken = UUID()
+    private var pendingRead: CBCharacteristic?
+    private var readQueue: [CBCharacteristic] = []
+    private var measurementCharacteristic: CBCharacteristic?
+    private var lastFFE7: Date?
+    private func note(_ text: String) {
+        diagnostics.append(text)
+        if diagnostics.count > 30 { diagnostics.removeFirst(diagnostics.count - 30) }
+        log(["event": "diagnostic", "message": text])
+    }
+    private func enqueueRead(_ c: CBCharacteristic) {
+        guard c.properties.contains(.read), c !== pendingRead, !readQueue.contains(where: { $0 === c }) else { return }
+        readQueue.append(c)
+        readNext()
+    }
+    private func readNext() {
+        guard connection.isConnected, pendingRead == nil, !readQueue.isEmpty, let p = peripheral else { return }
+        pendingRead = readQueue.removeFirst()
+        p.readValue(for: pendingRead!)
+    }
+    private func owns(_ p: CBPeripheral) -> Bool { p === peripheral && active && connection != .stopping }
+    private func addDevice(_ p: CBPeripheral, name: String) {
+        deviceNames[p.identifier] = name.isEmpty ? (p.name ?? "Unnamed Bluetooth device") : name
+        if !devices.contains(where: { $0.identifier == p.identifier }) { devices.append(p) }
+    }
     @Published var recording: URL?
     @Published var files: [URL] = []
     @Published var lastSample: Date?
@@ -89,7 +175,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         ffe7HeartRateCandidate = nil; ffe7OxygenCandidate = nil
         highRateSince = nil; previousHeartRateTime = nil; alarmActive = false
         measurementTime = nil
-        if active { status = "No fresh measurements — check the connection." }
+        if active { status = "No fresh measurements — check the connection."; measurementStatus = "Measurements expired after 30 seconds without usable values." }
     }
     private var manager: CBCentralManager!
     private var peripheral: CBPeripheral?
@@ -98,7 +184,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     private let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     override init() {
         super.init()
-        requestNotificationPermission()
+        // Request notification permission only when the user enables test alerts.
         manager = CBCentralManager(delegate: self, queue: .main)
         refreshFiles()
         if FileManager.default.fileExists(atPath: historyURL.path) {
@@ -107,7 +193,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         }
         freshnessTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.expireMeasurements() }
     }
-    private func requestNotificationPermission() {
+    func requestNotificationPermission() {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge, .timeSensitive]) { _, _ in }
     }
 
@@ -137,86 +223,155 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         } catch { status = "Recording error: \(error.localizedDescription)"; stop() }
     }
     func scan() {
-        guard manager.state == .poweredOn, !active else { return }
-        devices = []
-        status = "Scanning for NB0 for 10 seconds…"
-        manager.scanForPeripherals(withServices: nil)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
-            guard let self = self else { return }
-            self.manager.stopScan()
-            if !self.active { self.status = self.devices.isEmpty ? "NB0 not found. It may be connected to another phone." : "Select NB0 to capture." }
+        guard !active else { return }
+        guard manager.state == .poweredOn else {
+            status = "Bluetooth is unavailable. Check iPhone Settings → Privacy & Security → Bluetooth → Nivvi."
+            return
+        }
+        manager.stopScan(); scanDeadline?.invalidate()
+        scanToken = UUID(); let token = scanToken
+        devices = []; deviceNames = [:]; diagnostics = []
+        connection = .scanning
+        status = "Scanning for nearby wearables for 15 seconds…"
+        // A BLE device held by another app on this iPhone may not advertise again.
+        let connected = manager.retrieveConnectedPeripherals(withServices: [CBUUID(string: "FFE0"), CBUUID(string: "FFA0")])
+        for p in connected {
+            if BluetoothPolicy.isCandidate(names: [p.name ?? ""], services: ["FFE0"]) { addDevice(p, name: p.name ?? "Wearable already connected to iPhone") }
+        }
+        manager.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
+        scanDeadline = Timer.scheduledTimer(withTimeInterval: 15, repeats: false) { [weak self] _ in
+            guard let self = self, self.scanToken == token, self.connection == .scanning else { return }
+            self.manager.stopScan(); self.connection = .idle
+            self.status = self.devices.isEmpty ? "No wearable found. Disconnect LightBlue, keep the wearable close, then scan again. Try Show other nearby devices if its name differs." : "Tap a device below to connect."
         }
     }
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
-        switch central.state {
-        case .poweredOn: status = "Bluetooth ready — tap Scan"
-        case .unauthorized: status = "Allow Bluetooth in iPhone Settings for this app."
-        case .poweredOff: status = "Turn on Bluetooth in Settings."
-        default: status = "Bluetooth unavailable or starting."
+        if central.state != .poweredOn {
+            scanToken = UUID(); scanDeadline?.invalidate()
+            if let p = peripheral { central.cancelPeripheralConnection(p) }
+            finish("Bluetooth unavailable.")
         }
-        if central.state != .poweredOn && active { stop() }
+        switch central.state {
+        case .poweredOn: if !active { status = "Bluetooth ready — scan for your wearable." }
+        case .unauthorized: status = "Allow Nivvi in Settings → Privacy & Security → Bluetooth."
+        case .poweredOff: status = "Turn on Bluetooth in iPhone Settings."
+        case .unsupported: status = "Bluetooth Low Energy is unavailable on this device."
+        default: status = "Bluetooth is starting. Try again shortly."
+        }
     }
     func centralManager(_ central: CBCentralManager, didDiscover p: CBPeripheral, advertisementData: [String: Any], rssi RSSI: NSNumber) {
-        let name = (advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? p.name ?? "").uppercased()
-        if ["NB0", "NBO"].contains(name), !devices.contains(where: { $0.identifier == p.identifier }) { devices.append(p) }
+        guard connection == .scanning else { return }
+        let advertisedName = advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? ""
+        let services = (advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID] ?? []).map { $0.uuidString }
+        if showAllDevices || BluetoothPolicy.isCandidate(names: [advertisedName, p.name ?? ""], services: services) {
+            addDevice(p, name: advertisedName.isEmpty ? (p.name ?? "") : advertisedName)
+        }
     }
     func connect(_ p: CBPeripheral) {
         guard !active else { return }
-        manager.stopScan()
-        battery = "—"; counter = "—"; readings = []; lastSample = nil; recording = nil; profile = .unknown; verifiedHeartRate = nil; verifiedOxygen = nil; ffe7HeartRateCandidate = nil; ffe7OxygenCandidate = nil
+        guard manager.state == .poweredOn else { status = "Turn on Bluetooth and allow access for Nivvi, then try again."; return }
+        scanToken = UUID(); scanDeadline?.invalidate(); manager.stopScan()
+        connection = .idle
+        battery = "—"; counter = "—"; readings = []; diagnostics = []; lastSample = nil; lastFFE7 = nil; recording = nil
+        profile = .unknown; verifiedHeartRate = nil; verifiedOxygen = nil; ffe7HeartRateCandidate = nil; ffe7OxygenCandidate = nil
+        measurementTime = nil; measurementStatus = "Waiting for a Bluetooth connection."
         do {
             let url = folder.appendingPathComponent("NB0-\(UUID().uuidString).jsonl")
             try Data().write(to: url)
-            file = try FileHandle(forWritingTo: url)
-            recording = url
+            file = try FileHandle(forWritingTo: url); recording = url
         } catch { status = "Cannot create recording: \(error.localizedDescription)"; return }
-        active = true; peripheral = p; p.delegate = self
-        log(["event":"session", "device":p.name ?? "NB0", "id":p.identifier.uuidString])
-        status = "Connecting…"
+        peripheral = p; p.delegate = self; connection = .connecting
+        status = "Connecting to \(deviceNames[p.identifier] ?? p.name ?? "wearable")…"
+        note("Connection requested; waiting for Bluetooth confirmation.")
         manager.connect(p)
-        deadline = Timer.scheduledTimer(withTimeInterval: 150, repeats: false) { [weak self] _ in self?.stop() }
+        deadline = Timer.scheduledTimer(withTimeInterval: 20, repeats: false) { [weak self] _ in
+            guard let self = self, self.peripheral === p, self.connection == .connecting else { return }
+            self.endCapture("Connection timed out. Disconnect LightBlue and the original monitor app from the wearable, then try again.")
+        }
     }
     func centralManager(_ central: CBCentralManager, didConnect p: CBPeripheral) {
-        guard active else { central.cancelPeripheralConnection(p); return }
-        status = "Capturing — no medical alerts. Keep app open."
+        guard owns(p), connection == .connecting else { central.cancelPeripheralConnection(p); return }
+        deadline?.invalidate(); connection = .discovering
+        status = "Connected. Discovering battery and measurement services…"
+        note("Bluetooth connection established.")
         p.discoverServices(nil)
-        deadline?.invalidate()
-        deadline = Timer.scheduledTimer(withTimeInterval: 120, repeats: false) { [weak self] _ in self?.stop() }
+        deadline = Timer.scheduledTimer(withTimeInterval: 120, repeats: false) { [weak self] _ in
+            guard let self = self, self.peripheral === p else { return }
+            self.endCapture("Two-minute capture complete. Your log is ready to share.")
+        }
+        noDataTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            guard let self = self, self.owns(p) else { return }
+            if self.lastSample == nil {
+                self.status = "Connected, but no values received. Open Connection details below and share the log after stopping."
+            } else if self.lastFFE7 == nil && self.profile == .nbo {
+                self.measurementStatus = "Battery/status data received, but no FFE7 measurements yet."
+            }
+        }
     }
     func centralManager(_ central: CBCentralManager, didFailToConnect p: CBPeripheral, error: Error?) {
-        finish("Connection failed: \(error?.localizedDescription ?? "unknown error")")
+        guard p === peripheral else { return }
+        note("Connection failed: \(error?.localizedDescription ?? "unknown error")")
+        finish("Connection failed: \(error?.localizedDescription ?? "unknown error"). Disconnect other apps and try again.")
     }
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral p: CBPeripheral, error: Error?) {
-        finish("Disconnected. Values are historical. Check original monitor app resumes readings." + (error.map { " \($0.localizedDescription)" } ?? ""))
+        guard p === peripheral else { return }
+        if connection == .stopping { finish(status); return }
+        note("Disconnected: \(error?.localizedDescription ?? "connection closed")")
+        finish("Disconnected. \(error?.localizedDescription ?? "Check the wearable and try again.")")
     }
     func peripheral(_ p: CBPeripheral, didDiscoverServices error: Error?) {
-        if let error = error { log(["error":error.localizedDescription]); return }
-        let services = Set((p.services ?? []).map { $0.uuid.uuidString.uppercased() })
-        if services.contains("FFE0") || services.contains("FFE5") || services.contains("FFA0") { profile = .nbo }
+        guard owns(p) else { return }
+        if let error = error { note("Service discovery failed: \(error.localizedDescription)"); status = "Service discovery failed. Stop and reconnect."; return }
+        let services = Set((p.services ?? []).map { BluetoothPolicy.normalized($0.uuid.uuidString) })
+        note("Services: \(services.sorted().joined(separator: ", "))")
+        if services.contains("FFE0") || services.contains("FFA0") { profile = .nbo }
         else if services.contains("180D") { profile = .heartRate }
-        else if services.contains("1822") { profile = .pulseOximeter }
-        else if services.contains("1809") { profile = .thermometer }
         else { profile = .generic }
+        if services.isEmpty { status = "Connected, but no services were returned. Stop and reconnect."; return }
         for service in p.services ?? [] { p.discoverCharacteristics(nil, for: service) }
+        connection = .waiting
+        status = "Connected. Waiting for measurement data…"
     }
     func peripheral(_ p: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
-        if let error = error { log(["error":error.localizedDescription]); return }
-        for c in service.characteristics ?? [] {
-            log(["event":"characteristic", "service":service.uuid.uuidString, "uuid":c.uuid.uuidString, "properties":String(c.properties.rawValue)])
-            if c.properties.contains(.read) { p.readValue(for: c) }
+        guard owns(p) else { return }
+        if let error = error { note("Characteristic discovery failed: \(error.localizedDescription)"); return }
+        for c in (service.characteristics ?? []).sorted(by: { $0.uuid.uuidString < $1.uuid.uuidString }) {
+            let sid = BluetoothPolicy.normalized(service.uuid.uuidString), cid = BluetoothPolicy.normalized(c.uuid.uuidString)
+            log(["event": "characteristic", "service": sid, "uuid": cid, "properties": String(c.properties.rawValue)])
+            guard BluetoothPolicy.shouldObserve(service: sid, characteristic: cid) else { continue }
+            note("Found \(sid)/\(cid): read=\(c.properties.contains(.read)), notify=\(c.properties.contains(.notify))")
+            if sid == "FFE0" && cid == "FFE7" {
+                measurementCharacteristic = c
+                measurementStatus = "FFE7 found. Requesting measurements…"
+                pollTimer?.invalidate()
+                pollTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+                    guard let self = self, self.owns(p) else { return }
+                    if let c = self.measurementCharacteristic { self.enqueueRead(c) }
+                }
+            }
+            enqueueRead(c)
             if c.properties.contains(.notify) || c.properties.contains(.indicate) { p.setNotifyValue(true, for: c) }
         }
     }
     func peripheral(_ p: CBPeripheral, didUpdateNotificationStateFor c: CBCharacteristic, error: Error?) {
-        log(["event":"subscription", "uuid":c.uuid.uuidString, "enabled":String(c.isNotifying), "error":error?.localizedDescription ?? ""])
+        guard owns(p) else { return }
+        note("\(c.uuid.uuidString) notifications \(c.isNotifying ? "on" : "off")\(error.map { ": " + $0.localizedDescription } ?? "")")
+        if c === measurementCharacteristic && error != nil { measurementStatus = "FFE7 notifications failed; trying readable values instead." }
     }
     func peripheral(_ p: CBPeripheral, didUpdateValueFor c: CBCharacteristic, error: Error?) {
-        guard active else { return }
-        if let error = error { log(["error":error.localizedDescription, "uuid":c.uuid.uuidString]); return }
+        guard owns(p) else { return }
+        if c === pendingRead { pendingRead = nil }
+        defer { readNext() }
+        if let error = error { note("Read failed for \(c.uuid.uuidString): \(error.localizedDescription)"); return }
         guard let data = c.value else { return }
-        let uuid = c.uuid.uuidString.uppercased()
+        let uuid = BluetoothPolicy.normalized(c.uuid.uuidString)
+        let serviceID = BluetoothPolicy.normalized(c.service?.uuid.uuidString ?? "")
+        let hex = data.map { String(format: "%02x", $0) }.joined()
+        log(["event": "sample", "uuid": uuid, "service": serviceID, "hex": hex])
+        lastSample = Date(); connection = .receiving
+        status = "Receiving device data. Keep Nivvi open for the two-minute test."
         let key = (c.service?.uuid.uuidString ?? "?") + "/" + uuid
-        if uuid == "2A37", c.service?.uuid.uuidString.uppercased() == "180D" {
+        if uuid == "2A37", serviceID == "180D" {
             guard data.count >= 2 else { return }
             let wide = (data[0] & 1) != 0
             guard !wide || data.count >= 3 else { return }
@@ -236,24 +391,22 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         // 00 00 00 [heart-rate candidate] 00 [oxygen candidate] ...
         // Keep these separate from verified standard BLE measurements until a
         // timed comparison with Neebo confirms the field meanings.
-        if uuid == "FFE7", c.service?.uuid.uuidString.uppercased() == "FFE0", data.count >= 6 {
-            let candidateHeartRate = Int(data[3])
-            let candidateOxygen = Int(data[5])
-            ffe7HeartRateCandidate = (30...255).contains(candidateHeartRate) ? candidateHeartRate : nil
-            ffe7OxygenCandidate = (70...100).contains(candidateOxygen) ? candidateOxygen : nil
-            if ffe7HeartRateCandidate != nil || ffe7OxygenCandidate != nil {
-                saveMeasurement(heartRate: ffe7HeartRateCandidate, oxygen: ffe7OxygenCandidate, source: "experimental-FFE7")
+        if uuid == "FFE7", serviceID == "FFE0" {
+            lastFFE7 = Date()
+            let candidate = BluetoothPolicy.ffe7(data)
+            ffe7HeartRateCandidate = candidate.heartRate
+            ffe7OxygenCandidate = candidate.oxygen
+            measurementStatus = candidate.heartRate == nil && candidate.oxygen == nil ? "FFE7 received (\(data.count) bytes), but values or frame format are not recognised." : "Experimental FFE7 values received; compare against Neebo."
+            if candidate.heartRate != nil || candidate.oxygen != nil {
+                saveMeasurement(heartRate: candidate.heartRate, oxygen: candidate.oxygen, source: "experimental-FFE7")
             }
         }
         // 2A5E/2A5F are standard pulse-ox measurements. Values stay hidden until
         // a complete standards-compliant parser is added; never infer from raw bytes.
-        let hex = data.map { String(format:"%02x", $0) }.joined()
-        log(["event":"sample", "uuid":uuid, "service":c.service?.uuid.uuidString ?? "?", "hex":hex])
-        lastSample = Date()
         if let i = readings.firstIndex(where: { $0.id == key }) {
             readings[i].count += 1; readings[i].hex = hex
         } else { readings.append(Reading(id:key, count:1, hex:hex)) }
-        if uuid == "2A19", data.count == 1, data[0] <= 100 { battery = "\(data[0])%" }
+        if uuid == "2A19", serviceID == "180F", data.count == 1, data[0] <= 100 { battery = "\(data[0])%" }
         if uuid == "FFEA", data.count == 2 { counter = "\(Int(data[0]) | (Int(data[1]) << 8)) — possible minutes" }
     }
     private func evaluateHighRateAlarm() {
@@ -277,21 +430,30 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         highRateSince = nil
     }
 
-    func stop() {
-        manager.stopScan()
-        deadline?.invalidate()
-        if let p = peripheral { manager.cancelPeripheralConnection(p) }
-        finish("Capture stopped. Values are historical. Restore original monitor app readings.")
+    func stop() { endCapture("Capture stopped. Restore your original monitor connection after testing.") }
+    private func endCapture(_ message: String) {
+        scanToken = UUID(); scanDeadline?.invalidate(); manager.stopScan()
+        deadline?.invalidate(); pollTimer?.invalidate(); noDataTimer?.invalidate()
+        verifiedHeartRate = nil; verifiedOxygen = nil; ffe7HeartRateCandidate = nil; ffe7OxygenCandidate = nil
+        silenceAlarm(); measurementTime = nil
+        if let p = peripheral, p.state != .disconnected {
+            connection = .stopping; status = message
+            note(message); manager.cancelPeripheralConnection(p)
+            // Keep ownership until didDisconnect so an old callback cannot end a new session.
+        } else { finish(message) }
     }
     private func finish(_ message: String) {
         verifiedHeartRate = nil; verifiedOxygen = nil; ffe7HeartRateCandidate = nil; ffe7OxygenCandidate = nil
         measurementTime = nil; highRateSince = nil; previousHeartRateTime = nil; alarmActive = false
-        active = false; deadline?.invalidate(); deadline = nil
+        connection = .idle; deadline?.invalidate(); deadline = nil
+        pollTimer?.invalidate(); pollTimer = nil; noDataTimer?.invalidate(); noDataTimer = nil
+        readQueue = []; pendingRead = nil; measurementCharacteristic = nil
         // Close first so a recording error cannot recurse into stop().
         let oldFile = file; file = nil
         try? oldFile?.synchronize(); try? oldFile?.close()
         peripheral = nil
         status = message
+        measurementStatus = "Capture ended. Saved readings are in History."
         refreshFiles()
     }
 }
@@ -309,29 +471,69 @@ enum NivviMode: String, CaseIterable {
 }
 
 struct ProfileSetupView: View {
-    @Binding var name: String
-    @Binding var birthDate: Date
-    @Binding var gender: String
     @Environment(\.dismiss) private var dismiss
-    @State private var saved = false
+    @State private var name: String
+    @State private var birthDate: Date
+    @State private var gender: String
+    @FocusState private var editingName: Bool
+    private let save: (String, Date, String) -> Void
+    private let canCancel: Bool
     private let genders = ["Girl", "Boy", "Other", "Prefer not to say"]
 
+    init(name: String, birthDate: Date, gender: String, save: @escaping (String, Date, String) -> Void) {
+        _name = State(initialValue: name)
+        _birthDate = State(initialValue: min(birthDate, Date()))
+        _gender = State(initialValue: gender)
+        self.save = save
+        canCancel = !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
     var body: some View {
         NavigationStack {
             Form {
-                Section { Text("Nivvi is personalised to your child and stays on this iPhone by default.").font(.subheadline).foregroundStyle(.secondary) }
                 Section("Child profile") {
-                    TextField("Child’s name", text: $name)
+                    TextField("Child’s name", text: $name).focused($editingName)
+                        .textInputAutocapitalization(.words).submitLabel(.done)
+                        .onSubmit { editingName = false }
                     DatePicker("Date of birth", selection: $birthDate, in: ...Date(), displayedComponents: .date)
-                    Picker("Gender (optional)", selection: $gender) { ForEach(genders, id: \.self) { Text($0).tag($0) } }
                 }
-                Section { Button("Save profile") { saved = true; dismiss() }.disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
+                Section("Gender (optional)") {
+                    ForEach(genders, id: \.self) { option in
+                        Button {
+                            editingName = false
+                            gender = option
+                        } label: {
+                            HStack {
+                                Text(option).foregroundStyle(.primary)
+                                Spacer()
+                                if gender == option { Image(systemName: "checkmark.circle.fill").foregroundStyle(.teal) }
+                            }.contentShape(Rectangle())
+                        }.buttonStyle(.plain)
+                        .accessibilityLabel(option)
+                        .accessibilityValue(gender == option ? "Selected" : "Not selected")
+                    }
+                }
+                Section {
+                    Button("Save profile") {
+                        editingName = false
+                        save(name.trimmingCharacters(in: .whitespacesAndNewlines), birthDate, gender)
+                        dismiss()
+                    }.disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                } footer: { Text("Your profile stays on this iPhone.") }
             }
+            .scrollDismissesKeyboard(.interactively)
             .navigationTitle("Set up Nivvi")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                if canCancel { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+            }
         }
-        .interactiveDismissDisabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        .interactiveDismissDisabled(!canCancel)
     }
+}
+
+struct CaptureRequest: Identifiable {
+    let id = UUID()
+    let peripheral: CBPeripheral
 }
 
 struct ContentView: View {
@@ -340,12 +542,9 @@ struct ContentView: View {
     @AppStorage("nivvi.profile.name") private var childName = ""
     @AppStorage("nivvi.profile.birthDate") private var childBirthDate = 0.0
     @AppStorage("nivvi.profile.gender") private var childGender = "Prefer not to say"
-    @AppStorage("nivvi.family.code") private var familyCode = ""
-    @AppStorage("nivvi.family.role") private var familyRole = "Primary monitor"
     @AppStorage("nivvi.demo.mode") private var demoMode = false
     @State private var showProfile = false
-    @State private var selected: CBPeripheral?
-    @State private var confirm = false
+    @State private var captureRequest: CaptureRequest?
     @State private var tab = 0
     @State private var historyExport: URL?
     @State private var confirmDeleteHistory = false
@@ -359,7 +558,7 @@ struct ContentView: View {
         return (hour >= 20 || hour < 8) ? .night : .day
     }
     private var mode: NivviMode { manualMode ?? automaticMode }
-    private var connected: Bool { monitor.active }
+    private var connected: Bool { monitor.connection.isConnected }
     private var heartRateDisplay: String { (monitor.verifiedHeartRate ?? monitor.ffe7HeartRateCandidate).map { "\($0) bpm" } ?? "Not decoded" }
     private var oxygenDisplay: String { (monitor.verifiedOxygen ?? monitor.ffe7OxygenCandidate).map { "\($0)%" } ?? "Not decoded" }
     private var liveMeasurementNote: String {
@@ -391,22 +590,32 @@ struct ContentView: View {
             }
         }
         .preferredColorScheme(.dark)
-        .alert("Start a short test?", isPresented: $confirm) {
-            Button("Cancel", role: .cancel) {}
-            Button("Start") { if let p = selected { monitor.connect(p) } }
-        } message: {
-            Text("This can interrupt the original monitor app. Use only when you are not relying on its alerts.")
+        .sheet(item: $captureRequest) { request in
+            VStack(alignment: .leading, spacing: 24) {
+                Text("Connect to \(request.peripheral.name ?? "wearable")").font(.title2.bold())
+                Text("This two-minute test can interrupt the original monitor app. Start only when you are not relying on its alerts.")
+                Button("Connect and start capture") {
+                    monitor.connect(request.peripheral)
+                    captureRequest = nil
+                    tab = 2
+                }.buttonStyle(.borderedProminent).controlSize(.large)
+                Button("Cancel") { captureRequest = nil }
+            }.padding(24).presentationDetents([.medium])
         }
         .onAppear { if childName.isEmpty { showProfile = true } }
-        .sheet(isPresented: $showProfile) { ProfileSetupView(name: $childName, birthDate: Binding(get: { birthDate }, set: { childBirthDate = $0.timeIntervalSince1970 }), gender: $childGender) }
-        .onChange(of: scenePhase) { phase in if phase == .background { monitor.stop() } }
+        .sheet(isPresented: $showProfile) {
+            ProfileSetupView(name: childName, birthDate: birthDate, gender: childGender) { name, date, gender in
+                childName = name; childBirthDate = date.timeIntervalSince1970; childGender = gender
+            }
+        }
+        .onChange(of: scenePhase) { phase in if phase == .background && (monitor.active || monitor.isScanning) { monitor.stop() } }
     }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(mode.greeting).font(.subheadline).foregroundStyle(.white.opacity(0.72))
+                    Text(Calendar.current.component(.hour, from: Date()) >= 12 && mode == .day ? "Hello," : mode.greeting).font(.subheadline).foregroundStyle(.white.opacity(0.72))
                     Text(displayName).font(.system(size: 34, weight: .bold, design: .rounded))
                 }
                 Spacer()
@@ -417,13 +626,13 @@ struct ContentView: View {
             }
             HStack(spacing: 10) {
                 Circle().fill(connected ? teal : .gray).frame(width: 11, height: 11)
-                Text(connected ? "Capture active" : (demoMode ? "Demo history · not connected" : "Not connected")).font(.subheadline.weight(.semibold))
+                Text(monitor.connection.label).font(.subheadline.weight(.semibold))
                 Spacer()
                 Text("\(mode.rawValue) mode").font(.caption.weight(.bold)).padding(.horizontal, 11).padding(.vertical, 6)
                     .background(.white.opacity(0.12)).clipShape(Capsule())
             }
-            if !ageText.isEmpty { Text("\(ageText) · \(childGender == "Prefer not to say" ? "" : childGender)").font(.caption).foregroundStyle(.white.opacity(0.6)) }
-        }.padding(.top, 16).padding(.bottom, 18)
+            if !ageText.isEmpty { Text(childGender == "Prefer not to say" ? ageText : "\(ageText) · \(childGender)").font(.caption).foregroundStyle(.white.opacity(0.6)) }
+        }.padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 18)
     }
 
     private var home: some View {
@@ -451,7 +660,7 @@ struct ContentView: View {
                     .foregroundStyle(Color(red: 0.06, green: 0.16, blue: 0.25)).padding(18).frame(maxWidth: .infinity)
                     .background(lavender).clipShape(RoundedRectangle(cornerRadius: 20))
             }
-            if !monitor.status.isEmpty { Text(monitor.status).font(.caption).foregroundStyle(.white.opacity(0.6)).lineLimit(2) }
+            if !monitor.status.isEmpty { Text(monitor.status).font(.caption).foregroundStyle(.white.opacity(0.6)).fixedSize(horizontal: false, vertical: true) }
         }
     }
 
@@ -509,17 +718,51 @@ struct ContentView: View {
     private var device: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Device").font(.largeTitle.bold())
-            panel { HStack(spacing: 14) { Image(systemName: "wave.3.right.circle.fill").font(.largeTitle).foregroundStyle(teal); VStack(alignment: .leading) { Text("NBO wearable").font(.headline); Text(connected ? "Connected" : "Ready to connect").foregroundStyle(connected ? teal : .white.opacity(0.6)) }; Spacer() } }
+            panel { HStack(spacing: 14) { Image(systemName: "wave.3.right.circle.fill").font(.largeTitle).foregroundStyle(teal); VStack(alignment: .leading) { Text("NBO wearable").font(.headline); Text(monitor.connection.label).foregroundStyle(connected ? teal : .white.opacity(0.6)) }; Spacer() } }
             panel { VStack(alignment: .leading, spacing: 6) { Text("PROFILE").font(.caption.bold()).foregroundStyle(.white.opacity(0.55)); Text(monitor.profile.rawValue).font(.headline); Text("Nivvi only displays measurements when the Bluetooth format is recognised.").font(.caption).foregroundStyle(.white.opacity(0.6)) } }
             HStack(spacing: 14) { metric("Battery", monitor.battery == "—" ? "—" : monitor.battery); metric("Mode", mode.rawValue) }
-            Button { monitor.active ? monitor.stop() : monitor.scan() } label: { Text(monitor.active ? "Stop capture" : "Scan for NBO").font(.headline).frame(maxWidth: .infinity).padding(17) }.buttonStyle(.borderedProminent).tint(coral)
-            ForEach(monitor.devices, id: \.identifier) { p in Button("Capture \(p.name ?? "NBO") for 2 minutes") { selected = p; confirm = true }.buttonStyle(.bordered) }
-            Text("The charger appears as NC0 and is not the wearable.").font(.caption).foregroundStyle(.white.opacity(0.55))
+            Button { monitor.active ? monitor.stop() : monitor.scan() } label: { Text(monitor.active ? "Stop capture" : (monitor.isScanning ? "Scanning…" : "Scan for NBO")).font(.headline).frame(maxWidth: .infinity).padding(17) }.buttonStyle(.borderedProminent).tint(coral).disabled(monitor.isScanning)
+            ForEach(monitor.devices, id: \.identifier) { p in
+                Button {
+                    captureRequest = CaptureRequest(peripheral: p)
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text(monitor.deviceNames[p.identifier] ?? p.name ?? "Unnamed Bluetooth device").font(.headline)
+                            Text("Tap to connect · two-minute capture").font(.caption)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding(14)
+                }.buttonStyle(.bordered).disabled(monitor.active)
+            }
+            Text("Select the wearable named NB0 (zero) or NBO (letter O). Disconnect LightBlue before starting a capture.").font(.caption).foregroundStyle(.white.opacity(0.7))
+            Toggle("Show other nearby Bluetooth devices", isOn: $monitor.showAllDevices)
+                .disabled(monitor.active || monitor.isScanning)
+            panel { VStack(alignment: .leading, spacing: 10) {
+                Text("CONNECTION STATUS").font(.caption.bold())
+                Text(monitor.status).fixedSize(horizontal: false, vertical: true)
+                Text("\(monitor.readings.reduce(0) { $0 + $1.count }) packets received").font(.headline)
+                Text(monitor.measurementStatus).font(.caption)
+                if let time = monitor.lastSample { Text("Last packet: \(time.formatted(date: .omitted, time: .standard))").font(.caption) }
+            } }
+            DisclosureGroup("Connection details") {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(monitor.diagnostics.enumerated()), id: \.offset) { _, line in Text(line).font(.caption.monospaced()).textSelection(.enabled) }
+                    ForEach(monitor.readings) { r in
+                        Text("\(r.id) · \(r.count) packets\n\(r.hex)").font(.caption.monospaced()).textSelection(.enabled)
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+            ForEach(monitor.files, id: \.self) { url in
+                ShareLink(item: url) { Label("Share capture log", systemImage: "square.and.arrow.up") }.disabled(monitor.active)
+            }
         }
     }
 
     private var settings: some View { VStack(alignment: .leading, spacing: 18) {
         Text("Settings").font(.largeTitle.bold())
+        Text("Nivvi 0.2 · Build 2").font(.caption).foregroundStyle(.secondary)
         panel { VStack(alignment: .leading, spacing: 10) {
             HStack { Label("Child profile", systemImage: "person.crop.circle"); Spacer(); Button("Edit") { showProfile = true }.buttonStyle(.bordered) }
             Text("\(displayName)\(ageText.isEmpty ? "" : " · \(ageText)")").font(.headline)
@@ -535,7 +778,7 @@ struct ContentView: View {
         } }
         panel { VStack(alignment: .leading, spacing: 12) {
             Toggle("Standard-device test alarm", isOn: $monitor.highRateAlarmEnabled).tint(coral)
-                .onChange(of: monitor.highRateAlarmEnabled) { _ in monitor.silenceAlarm() }
+                .onChange(of: monitor.highRateAlarmEnabled) { enabled in monitor.silenceAlarm(); if enabled { monitor.requestNotificationPermission() } }
             Text("NBO FFE7 alerts are unavailable while the mapping is experimental. Foreground testing only.").font(.caption)
             Stepper("Threshold: \(monitor.highRateThreshold) bpm", value: $monitor.highRateThreshold, in: 120...260, step: 5)
             Stepper("Must stay high: \(monitor.highRateDurationSeconds) seconds", value: $monitor.highRateDurationSeconds, in: 5...120, step: 5)
@@ -556,3 +799,4 @@ struct ContentView: View {
 
 @main
 struct NivviApp: App { var body: some Scene { WindowGroup { ContentView() } } }
+

@@ -6,6 +6,9 @@ on:
     paths:
       - 'NeeboConnect.swift'
       - 'build.sh'
+      - 'prepare-icons.py'
+      - 'Assets/**'
+      - 'Tests/**'
       - '.github/workflows/iphone.yml'
 permissions:
   contents: read
@@ -15,6 +18,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - name: Bluetooth and history regression checks
+        run: bash Tests/run.sh
       - name: Compile iPhone app
         run: bash build.sh
       - name: Save IPA for local signing
@@ -24,3 +29,4 @@ jobs:
           path: build/NeeboConnect-unsigned.ipa
           if-no-files-found: error
           retention-days: 7
+
