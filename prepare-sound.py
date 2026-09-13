@@ -4,7 +4,7 @@ import math
 import struct
 import wave
 
-out = Path('build/Payload/NeeboConnect.app/NivviSiren.wav')
+out = Path('build/Payload/Nivvi.app/NivviSiren.wav')
 out.parent.mkdir(parents=True, exist_ok=True)
 rate, seconds = 22050, 8
 samples = bytearray()

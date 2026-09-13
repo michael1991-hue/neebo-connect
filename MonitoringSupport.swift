@@ -7,6 +7,7 @@ struct AlarmSettings: Codable, Equatable {
     var highThreshold: Int?
     var lowThreshold: Int?
     var durationSeconds = 15
+    var experimentalNBOEnabled = false
     var validationMessage: String? {
         if highEnabled && !(1...299).contains(highThreshold ?? 0) { return "Enter your high limit before enabling high alerts." }
         if lowEnabled && !(1...299).contains(lowThreshold ?? 0) { return "Enter your low limit before enabling low alerts." }
@@ -28,14 +29,14 @@ struct RateAlarmEngine {
     mutating func interrupt() { pending = nil; since = nil; previous = nil }
     mutating func reset() { self = Self() }
     mutating func silence() { muted = active; active = nil }
-    mutating func ingest(bpm: Int?, source: String, at now: Date, settings: AlarmSettings) -> RateAlarm? {
+    mutating func ingest(bpm: Int?, source: String, at now: Date, settings: AlarmSettings, allowExperimentalNBO: Bool = false) -> RateAlarm? {
         guard settings.validationMessage == nil, settings.highEnabled || settings.lowEnabled else { reset(); return nil }
-        guard source == "standard-2A37", let bpm = bpm, (1...299).contains(bpm) else { interrupt(); return nil }
+        guard (source == "standard-2A37" || (allowExperimentalNBO && source == "experimental-FFE7")), let bpm = bpm, (1...299).contains(bpm) else { interrupt(); return nil }
         if let last = previous, now.timeIntervalSince(last) > 10 || now < last { interrupt() }
         previous = now
         let direction: RateAlarm?
-        if settings.lowEnabled, let limit = settings.lowThreshold, bpm <= limit { direction = .low }
-        else if settings.highEnabled, let limit = settings.highThreshold, bpm >= limit { direction = .high }
+        if settings.lowEnabled, let limit = settings.lowThreshold, bpm < limit { direction = .low }
+        else if settings.highEnabled, let limit = settings.highThreshold, bpm > limit { direction = .high }
         else { direction = nil }
         guard let direction = direction else { reset(); return nil }
         if muted != direction { muted = nil }
@@ -165,5 +166,75 @@ final class DailyHistoryStore {
             result.append(contentsOf: chosen.sorted { $0.time < $1.time }.filter { seen.insert($0.id).inserted })
         }
         return result
+    }
+}
+
+struct MeasurementSamplingPolicy {
+    private var lastStored: [String: Date] = [:]
+    func shouldStore(source: String, at time: Date) -> Bool {
+        guard let last = lastStored[source] else { return true }
+        return time < last || time.timeIntervalSince(last) >= 30
+    }
+    mutating func didStore(source: String, at time: Date) { lastStored[source] = time }
+    mutating func reset() { lastStored = [:] }
+}
+
+struct SavedEvent: Codable, Identifiable {
+    var id = UUID()
+    let time: Date
+    let kind: String
+    let title: String
+    let detail: String
+    let heartRate: Int?
+}
+final class EventHistoryStore {
+    let directory: URL
+    private let calendar: Calendar
+    private let formatter: DateFormatter
+    private let fm = FileManager.default
+    init(folder: URL, calendar: Calendar = .current) {
+        directory = folder.appendingPathComponent("EventHistory", isDirectory: true)
+        self.calendar = calendar
+        formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = calendar; formatter.timeZone = calendar.timeZone; formatter.dateFormat = "yyyy-MM-dd"
+    }
+    private func url(_ day: Date) -> URL { directory.appendingPathComponent(formatter.string(from: day) + ".json") }
+    func prepare(now: Date = Date()) throws {
+        try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        let cutoff = calendar.date(byAdding: .day, value: -29, to: calendar.startOfDay(for: now))!
+        for day in try days() where day < cutoff { try fm.removeItem(at: url(day)) }
+    }
+    func days() throws -> [Date] {
+        try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "json" }.compactMap { formatter.date(from: $0.deletingPathExtension().lastPathComponent) }.sorted(by: >)
+    }
+    func load(day: Date) throws -> [SavedEvent] {
+        guard fm.fileExists(atPath: url(day).path) else { return [] }
+        return try JSONDecoder().decode([SavedEvent].self, from: Data(contentsOf: url(day)))
+    }
+    func append(_ event: SavedEvent) throws {
+        try prepare(now: event.time)
+        var entries = try load(day: event.time)
+        entries.append(event)
+        try JSONEncoder().encode(entries).write(to: url(event.time), options: .atomic)
+        #if os(iOS)
+        try fm.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: url(event.time).path)
+        #endif
+    }
+    func clear() throws { for day in try days() { try fm.removeItem(at: url(day)) } }
+    func export(to destination: URL) throws {
+        let iso = ISO8601DateFormatter()
+        func csv(_ value: String) -> String {
+            // Neutralise spreadsheet formulas in parent-entered notes before quoting.
+            let safe = value.first.map { "=+-@\t\r".contains($0) } == true ? "'" + value : value
+            return "\"" + safe.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+        }
+        var output = "time,kind,event,detail,heart_rate_bpm\n"
+        for day in try days().reversed() {
+            for event in try load(day: day) {
+                output += [iso.string(from: event.time), csv(event.kind), csv(event.title), csv(event.detail), event.heartRate.map(String.init) ?? ""].joined(separator: ",") + "\n"
+            }
+        }
+        try output.write(to: destination, atomically: true, encoding: .utf8)
     }
 }

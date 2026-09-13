@@ -1,6 +1,6 @@
-# Nivvi / Neebo Connect research prototype
+# Nivvi research prototype
 
-Native SwiftUI / Core Bluetooth iPhone app with a child profile, day/night layouts, a wearable connection, local history and test alarms. Version 0.3 / Build 3 adds continuous sessions, low and high test thresholds, a siren, and 30-day history. The bundle ID is unchanged so an in-place AltStore update can preserve existing data.
+Native SwiftUI / Core Bluetooth iPhone app with a child profile, day/night layouts, a wearable connection, local history and test alarms. Version 0.4 / Build 4 includes continuous sessions, low and high test thresholds, a siren, and 30-day history. The bundle ID is unchanged so an in-place AltStore update can preserve existing data.
 
 ## Device mapping
 
@@ -36,17 +36,17 @@ The observed nine-byte `0000005F0063003F01` frame contains 95 and 99, matching a
 
 ## History
 
-- Records every accepted measurement to one append-only file per calendar day. Retains today and the previous 29 calendar days; there is no 20,000-reading cap.
-- History has a day picker, recorded-day shortcuts, daily heart-rate/oxygen charts, recent rows and CSV export for all retained days. Chart reduction retains bucket extrema so isolated highs/lows are not discarded just to reduce plot points; the CSV retains every record.
+- Saves the first accepted reading in a session, then a snapshot per source at least 30 seconds apart, to one append-only file per calendar day. Live values and alarm evaluation still receive every usable packet; sampling only affects measurement history. Retains today and the previous 29 calendar days; there is no 20,000-reading cap.
+- History has a day picker, recorded-day shortcuts, separate Events/Readings tabs, daily heart-rate/oxygen charts, prominent second-resolution timestamps, and CSV exports for all retained days. Shows the latest 50 readings for the selected day; CSV contains all retained snapshots. Older imported records keep their original timing. Chart reduction retains bucket extrema so isolated highs/lows are not discarded just to reduce plot points; the CSV retains every record.
 - The old `measurements.json` is migrated once through a staging directory. IDs, timestamps and experimental labels are preserved. The original migration file is retained as a recovery copy until Delete history is used.
 - Files can be appended while locked after the first unlock. Corrupt input or torn journal rows are reported and preserved, not silently replaced. A storage error does not disconnect Bluetooth.
 - Only the selected day's data is loaded for display. No cloud account or family live sharing is implemented. User-initiated CSV sharing is available.
 
 ## Build and install
 
-Requires macOS with Xcode and Python 3. `bash Tests/run.sh` runs the Foundation-only regression suite; `bash build.sh` compiles the iPhone app, icon catalog and notification sound into `build/NeeboConnect-unsigned.ipa`.
+Requires macOS with Xcode and Python 3. `bash Tests/run.sh` runs the Foundation-only regression suite; `bash build.sh` compiles the iPhone app, icon catalog and notification sound into `build/Nivvi-unsigned.ipa`.
 
-GitHub Actions runs both automatically for source changes on main. Download **NeeboConnect-unsigned** from the latest successful run, extract the IPA, then install with AltStore using the same account as the existing app. Install over the existing app; do not delete it first if you want to retain local history. Settings should show **Nivvi 0.3 · Build 3**.
+GitHub Actions runs both automatically for source changes on main. Download **Nivvi-unsigned** from the latest successful run, extract the IPA, then install with AltStore using the same account as the existing app. Install over the existing app; do not delete it first if you want to retain local history. Settings should show **Nivvi 0.4 · Build 4**.
 
 ## Required iPhone checks
 
@@ -61,3 +61,16 @@ GitHub Actions runs both automatically for source changes on main. Download **Ne
 CI covers actual decoder/policy/storage code and builds the IPA; it cannot verify the user's Bluetooth hardware, audible volume, suspended execution or clinical reliability. This remains a prototype, not an App Store-ready monitoring release.
 
 Apple references: [Core Bluetooth background processing and restoration](https://developer.apple.com/library/archive/documentation/NetworkingInternetWeb/Conceptual/CoreBluetooth_concepts/CoreBluetoothBackgroundProcessingForIOSApps/PerformingTasksWhileYourAppIsInTheBackground.html), [notification sounds](https://developer.apple.com/documentation/usernotifications/unnotificationsound), [Critical Alerts entitlement](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.usernotifications.critical-alerts).
+
+## Version 0.4 additions
+
+- Event timeline records session start, connection, connection loss, Bluetooth unavailable, stale measurements, standard-input alarm activation, silencing and return within limits. Events are saved immediately, independently of the 30-second snapshot interval. Parent notes are timestamped at Save and exported in their own CSV. A logged threshold event is not an SVT diagnosis.
+- At a continuous 30-second cadence, 20,000 snapshots cover about 6 days 22 hours 40 minutes. Thirty full days contain up to 86,400 scheduled snapshot opportunities per source; gaps produce fewer entries. This version uses calendar retention, not a count cap. Brief changes between snapshots may not appear in the measurement chart; alarm evaluation is not sampled down.
+- Profile editing now offers Add/change/remove photo using the system Photos picker. A resized JPEG stays on this iPhone and is committed only with Save. Cancel leaves the previous image and profile intact.
+- Removed Body temperature and the undecoded sleep card from Home.
+- Built-in supportive messages encourage staying with the child and following the care team's instructions. The optional stethoscope wording is conditional on prior training and says not to delay urgent help. These are fixed supportive messages, not an AI assessment, diagnosis or reassurance that the child is well. [GOSH SVT information](https://www.gosh.nhs.uk/conditions-and-treatments/conditions-we-treat/supraventricular-tachycardia/) is linked in the app.
+- Live remote sharing remains unimplemented: secure caregiver access, a syncing service, consent/revocation and stale/offline status are needed. The app currently keeps data on the local iPhone and has no AI or caregiver cloud service configured.
+
+Additional iPhone checks: choose/change/remove a child photo, cancel without saving, then save and relaunch; check Events and Readings separately; add a parent note, export both CSVs, verify timestamps and the 30-second snapshot spacing while live values update more frequently.
+
+The downloaded artifact, IPA, app bundle and displayed name are Nivvi. The legacy internal bundle identifier is retained for in-place upgrades and local data continuity. This naming change is not a legal trade mark clearance.

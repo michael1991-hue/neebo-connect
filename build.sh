@@ -1,25 +1,31 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")"
-app_dir="build/Payload/NeeboConnect.app"
+app_dir="build/Payload/Nivvi.app"
+python3 - <<'PYCLEAN'
+from pathlib import Path
+import shutil
+shutil.rmtree('build/Payload', ignore_errors=True)
+Path('build/Nivvi-unsigned.ipa').unlink(missing_ok=True)
+PYCLEAN
 mkdir -p "$app_dir"
 sdk_path="$(xcrun --sdk iphoneos --show-sdk-path)"
 xcrun swiftc -swift-version 5 -parse-as-library -O \
   -sdk "$sdk_path" -target arm64-apple-ios16.0 \
-  -module-name NeeboConnect -framework SwiftUI -framework CoreBluetooth -framework Charts -framework AudioToolbox -framework UserNotifications -framework AVFoundation \
+  -module-name Nivvi -framework SwiftUI -framework CoreBluetooth -framework Charts -framework AudioToolbox -framework UserNotifications -framework AVFoundation -framework PhotosUI -framework ImageIO \
   -Xlinker -rpath -Xlinker @executable_path/Frameworks \
-  NeeboConnect.swift MonitoringSupport.swift -o "$app_dir/NeeboConnect"
+  NeeboConnect.swift MonitoringSupport.swift -o "$app_dir/Nivvi"
 cat > "$app_dir/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>CFBundleIdentifier</key><string>com.michael1991.neeboconnect.prototype</string>
-<key>CFBundleName</key><string>NeeboConnect</string>
+<key>CFBundleName</key><string>Nivvi</string>
 <key>CFBundleDisplayName</key><string>Nivvi</string>
-<key>CFBundleExecutable</key><string>NeeboConnect</string>
+<key>CFBundleExecutable</key><string>Nivvi</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleVersion</key><string>3</string>
-<key>CFBundleShortVersionString</key><string>0.3</string>
+<key>CFBundleVersion</key><string>4</string>
+<key>CFBundleShortVersionString</key><string>0.4</string>
 <key>MinimumOSVersion</key><string>16.0</string>
 <key>CFBundleSupportedPlatforms</key><array><string>iPhoneOS</string></array>
 <key>UIDeviceFamily</key><array><integer>1</integer></array>
@@ -40,15 +46,15 @@ xcrun actool build/Assets.xcassets --compile "$app_dir" \
 python3 - <<'PYICON'
 import plistlib
 from pathlib import Path
-path = Path("build/Payload/NeeboConnect.app/Info.plist")
+path = Path("build/Payload/Nivvi.app/Info.plist")
 with path.open("rb") as f: info = plistlib.load(f)
 with Path("build/icon-info.plist").open("rb") as f: info.update(plistlib.load(f))
 with path.open("wb") as f: plistlib.dump(info, f)
 assert info.get("CFBundleIcons", {}).get("CFBundlePrimaryIcon"), "App icon metadata is missing"
-assert Path("build/Payload/NeeboConnect.app/Assets.car").exists(), "Compiled icons missing"
+assert Path("build/Payload/Nivvi.app/Assets.car").exists(), "Compiled icons missing"
 PYICON
 plutil -lint "$app_dir/Info.plist"
 # This package is intentionally unsigned. AltStore signs it on the user's computer.
 cd build
-/usr/bin/zip -qry NeeboConnect-unsigned.ipa Payload
+/usr/bin/zip -qry Nivvi-unsigned.ipa Payload
 

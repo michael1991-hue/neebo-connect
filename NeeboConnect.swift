@@ -4,6 +4,8 @@ import AudioToolbox
 import AVFoundation
 import UserNotifications
 import Charts
+import PhotosUI
+import ImageIO
 
 struct Reading: Identifiable {
     let id: String
@@ -148,6 +150,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     var alarmActive: Bool { alarmKind != nil }
     @Published var notificationStatus = "Notification permission has not been checked."
     @Published var soundStatus = "Use Test siren to check the iPhone’s current volume."
+    @Published var experimentalNBOAlarms = false { didSet { alarmSettings.experimentalNBOEnabled = experimentalNBOAlarms } }
     @Published var testingSiren = false
     private var alarmEngine = RateAlarmEngine()
     private var siren: AVAudioPlayer?
@@ -157,6 +160,31 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     private var session = SessionIntent()
     private var foreground = UIApplication.shared.applicationState == .active
     @Published var history: [SavedMeasurement] = []
+    @Published var events: [SavedEvent] = []
+    @Published var eventDays: [Date] = []
+    @Published var eventError: String?
+    private var sampling = MeasurementSamplingPolicy()
+    private lazy var eventArchive = EventHistoryStore(folder: folder)
+    var recordedDays: [Date] { Array(Set(historyDays + eventDays)).sorted(by: >) }
+    var totalEventsToday: Int { events.count }
+    func recordEvent(kind: String, title: String, detail: String, heartRate: Int? = nil) {
+        let event = SavedEvent(time: Date(), kind: kind, title: title, detail: detail, heartRate: heartRate)
+        do {
+            try eventArchive.append(event)
+            if Calendar.current.isDate(event.time, inSameDayAs: selectedHistoryDay) { events.append(event) }
+            eventDays = try eventArchive.days(); eventError = nil
+        } catch { eventError = "Event could not be saved: \(error.localizedDescription)" }
+    }
+    func addParentNote(_ text: String) {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        recordEvent(kind: "note", title: "Parent note", detail: String(text.prefix(2000)))
+    }
+    func exportEvents() -> URL? {
+        let url = folder.appendingPathComponent("Nivvi-events.csv")
+        do { try eventArchive.export(to: url); return url }
+        catch { eventError = "Event export failed: \(error.localizedDescription)"; return nil }
+    }
     @Published var historyDays: [Date] = []
     @Published var selectedHistoryDay = Calendar.current.startOfDay(for: Date())
     @Published var measurementTime: Date?
@@ -168,9 +196,10 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     private func saveMeasurement(heartRate: Int?, oxygen: Int?, source: String) {
         let entry = SavedMeasurement(time: Date(), heartRate: heartRate, oxygen: oxygen, source: source)
         measurementTime = entry.time
-        guard !historyLoadFailed else { return }
+        guard !historyLoadFailed, sampling.shouldStore(source: source, at: entry.time) else { return }
         do {
             try archive.append(entry)
+            sampling.didStore(source: source, at: entry.time)
             if Calendar.current.isDate(entry.time, inSameDayAs: selectedHistoryDay) { history.append(entry) }
             let today = Calendar.current.startOfDay(for: entry.time)
             if !historyDays.contains(today) { historyDays = try archive.days() }
@@ -181,12 +210,16 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         selectedHistoryDay = day
         do { history = try archive.load(day: day); historyError = nil }
         catch { history = []; historyError = "This day could not be read. Original history is preserved." }
+        do { events = try eventArchive.load(day: day); eventError = nil }
+        catch { events = []; eventError = "This day's events could not be read. Original log is preserved." }
     }
     func clearHistory() {
         do {
             try archive.clear(legacy: historyURL)
+            try eventArchive.clear(); events = []; eventDays = []; eventError = nil; sampling.reset()
             history = []; historyDays = []; historyError = nil; historyLoadFailed = false
             try? FileManager.default.removeItem(at: folder.appendingPathComponent("Nivvi-history.csv"))
+            try? FileManager.default.removeItem(at: folder.appendingPathComponent("Nivvi-events.csv"))
         } catch { historyError = "History could not be fully cleared: \(error.localizedDescription)" }
     }
     func exportHistory() -> URL? {
@@ -203,6 +236,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     private func expireMeasurements() {
         guard let time = measurementTime, Date().timeIntervalSince(time) > 30 else { return }
         clearLiveValues()
+        recordEvent(kind: "connection", title: "Measurements paused", detail: "No usable measurement received for over 30 seconds.")
         if active { status = "No fresh measurements — check the connection."; measurementStatus = "Measurements expired after 30 seconds without usable values." }
     }
     private var manager: CBCentralManager!
@@ -213,13 +247,15 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     private let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     override init() {
         super.init()
-        if let data = UserDefaults.standard.data(forKey: "nivvi.alarms"), let saved = try? JSONDecoder().decode(AlarmSettings.self, from: data) { alarmSettings = saved }
+        if let data = UserDefaults.standard.data(forKey: "nivvi.alarms"), let saved = try? JSONDecoder().decode(AlarmSettings.self, from: data) { alarmSettings = saved; experimentalNBOAlarms = saved.experimentalNBOEnabled }
         session.deviceID = UserDefaults.standard.string(forKey: "nivvi.session.device").flatMap(UUID.init(uuidString:))
         session.enabled = UserDefaults.standard.bool(forKey: "nivvi.session.enabled")
         UNUserNotificationCenter.current().delegate = self
         // Instantiate at launch with the same identifier, including a Bluetooth restoration launch.
         manager = CBCentralManager(delegate: self, queue: .main, options: [CBCentralManagerOptionRestoreIdentifierKey: "nivvi.wearable.session"])
         refreshFiles(); refreshNotificationStatus()
+        do { try eventArchive.prepare(); eventDays = try eventArchive.days(); events = try eventArchive.load(day: selectedHistoryDay) }
+        catch { eventError = "Saved events could not be read. Original files are preserved." }
         do {
             try archive.prepare(legacy: historyURL)
             historyDays = try archive.days(); history = try archive.load(day: selectedHistoryDay)
@@ -378,6 +414,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             else if !active { status = "Bluetooth ready — scan for your wearable." }
         case .poweredOff, .unauthorized, .unsupported:
             scanToken = UUID(); scanDeadline?.invalidate(); resetTransport()
+            if session.enabled { recordEvent(kind: "connection", title: "Bluetooth unavailable", detail: "Waiting for Bluetooth or permission to resume the session.") }
             connection = session.enabled ? .bluetoothOff : .idle
             status = central.state == .unauthorized ? "Allow Nivvi in Settings → Privacy & Security → Bluetooth." : "Bluetooth unavailable. The session will reconnect when Bluetooth is available."
         default: status = "Bluetooth is starting."
@@ -408,7 +445,8 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             try Data().write(to: url)
             file = try FileHandle(forWritingTo: url); recording = url
         } catch { status = "Cannot create recording: \(error.localizedDescription)"; return }
-        session.start(p.identifier); saveSession()
+        session.start(p.identifier); saveSession(); sampling.reset()
+        recordEvent(kind: "connection", title: "Session started", detail: "Connecting to the selected wearable.")
         peripheral = p; p.delegate = self; connection = .connecting
         status = "Connecting to \(deviceNames[p.identifier] ?? p.name ?? "wearable")…"
         note("Connection requested; waiting for Bluetooth confirmation.")
@@ -427,6 +465,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         resetTransport(); retrySeconds = 2; connection = .discovering; p.delegate = self
         status = "Connected. Discovering battery and measurement services…"
         note("Bluetooth connection established. Continuous session enabled.")
+        recordEvent(kind: "connection", title: "Wearable connected", detail: "Continuous Bluetooth session active. Awaiting fresh measurements.")
         p.discoverServices(nil)
         noDataTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
             guard let self = self, self.owns(p) else { return }
@@ -448,6 +487,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         if !session.shouldReconnect(p.identifier) { finish("Disconnected. Automatic reconnection is off."); return }
         note("Connection lost: \(error?.localizedDescription ?? "out of range or device stopped")")
         resetTransport(); connection = .reconnecting
+        recordEvent(kind: "connection", title: "Connection lost", detail: "Measurements unavailable. Automatically reconnecting to the wearable.")
         notify(title: "Nivvi connection lost", body: "No live measurements. Reconnecting to the wearable automatically.", identifier: "nivvi-connection", sirenSound: false)
         if central.state == .poweredOn { resumeSession() }
         else { connection = .bluetoothOff }
@@ -529,6 +569,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             measurementStatus = candidate.heartRate == nil && candidate.oxygen == nil ? "FFE7 received (\(data.count) bytes), but values or frame format are not recognised." : "Experimental FFE7 values received; compare against Neebo."
             if candidate.heartRate != nil || candidate.oxygen != nil {
                 saveMeasurement(heartRate: candidate.heartRate, oxygen: candidate.oxygen, source: "experimental-FFE7")
+                if let candidateRate = candidate.heartRate { evaluateExperimentalRateAlarm(candidateRate) }
             }
         }
         // 2A5E/2A5F are standard pulse-ox measurements. Values stay hidden until
@@ -539,22 +580,44 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         if uuid == "2A19", serviceID == "180F", data.count == 1, data[0] <= 100 { battery = "\(data[0])%" }
         if uuid == "FFEA", data.count == 2 { counter = "\(Int(data[0]) | (Int(data[1]) << 8)) — possible minutes" }
     }
-    private func evaluateRateAlarm(_ bpm: Int) {
-        let event = alarmEngine.ingest(bpm: bpm, source: "standard-2A37", at: Date(), settings: alarmSettings)
+    private func evaluateExperimentalRateAlarm(_ bpm: Int) {
+        let previousAlarm = alarmKind
+        let event = alarmEngine.ingest(bpm: bpm, source: "experimental-FFE7", at: Date(), settings: alarmSettings, allowExperimentalNBO: experimentalNBOAlarms)
         alarmKind = alarmEngine.active
         if let event = event {
+            recordEvent(kind: "alarm", title: event.title, detail: "Experimental NBO value crossed the configured limit for \(alarmSettings.durationSeconds) seconds. Verify against Neebo or your care plan.", heartRate: bpm)
+            startSiren(loop: true)
+            notify(title: event.title, body: "Experimental NBO value \(bpm) crossed your configured limit. Verify the reading and follow your care plan.", identifier: "nivvi-rate-alarm")
+            status = event.title + " — verify the NBO reading and follow your care plan."
+        } else if !alarmActive && previousAlarm != nil && !testingSiren {
+            recordEvent(kind: "alarm", title: "Reading back within limits", detail: "Experimental NBO value returned within the configured limits.", heartRate: bpm)
+            stopSiren()
+        }
+    }
+
+    private func evaluateRateAlarm(_ bpm: Int) {
+        let previousAlarm = alarmKind
+        let event = alarmEngine.ingest(bpm: bpm, source: "standard-2A37", at: Date(), settings: alarmSettings, allowExperimentalNBO: experimentalNBOAlarms)
+        alarmKind = alarmEngine.active
+        if let event = event {
+            recordEvent(kind: "alarm", title: event.title, detail: "Configured limit persisted for \(alarmSettings.durationSeconds) seconds. Standard Bluetooth heart-rate input.", heartRate: bpm)
             startSiren(loop: true)
             notify(title: event.title, body: "\(bpm) bpm crossed your configured limit. Check your child and follow their care plan.", identifier: "nivvi-rate-alarm")
             status = event.title + " — check your child and follow their care plan."
-        } else if !alarmActive && !testingSiren { stopSiren() }
+        } else if !alarmActive {
+            if previousAlarm != nil { recordEvent(kind: "alarm", title: "Reading back within limits", detail: "A fresh standard-format reading ended the alert. This is not a medical all-clear.", heartRate: bpm) }
+            if !testingSiren { stopSiren() }
+        }
     }
     func silenceAlarm() {
+        if let kind = alarmKind { recordEvent(kind: "alarm", title: "Alarm silenced", detail: kind.title + " acknowledged by the caregiver.") }
         alarmEngine.silence(); alarmKind = nil; stopSiren()
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["nivvi-rate-alarm"])
         UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["nivvi-rate-alarm"])
         soundStatus = "Silenced. The same excursion stays muted until a new in-range reading or a different limit is reached."
     }
     func stop() {
+        if session.enabled { recordEvent(kind: "connection", title: "Session disconnected", detail: "Disconnected by the user. Automatic reconnection is off.") }
         session.stop(); saveSession()
         scanToken = UUID(); scanDeadline?.invalidate(); manager.stopScan()
         resetTransport(); closeCaptureLog(); alarmEngine.reset(); alarmKind = nil; stopSiren()
@@ -587,21 +650,40 @@ struct ProfileSetupView: View {
     @State private var name: String
     @State private var birthDate: Date
     @State private var gender: String
+    @State private var photo: Data?
+    @State private var photoItem: PhotosPickerItem?
+    @State private var photoError: String?
+    @State private var photoLoading = false
     @FocusState private var editingName: Bool
-    private let save: (String, Date, String) -> Void
+    private let save: (String, Date, String, Data?) -> Bool
     private let canCancel: Bool
     private let genders = ["Girl", "Boy", "Other", "Prefer not to say"]
 
-    init(name: String, birthDate: Date, gender: String, save: @escaping (String, Date, String) -> Void) {
+    init(name: String, birthDate: Date, gender: String, photo: Data?, save: @escaping (String, Date, String, Data?) -> Bool) {
         _name = State(initialValue: name)
         _birthDate = State(initialValue: min(birthDate, Date()))
         _gender = State(initialValue: gender)
+        _photo = State(initialValue: photo)
         self.save = save
         canCancel = !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
     var body: some View {
         NavigationStack {
             Form {
+                Section("Child photo") {
+                    HStack(spacing: 20) {
+                        if let data = photo, let picture = UIImage(data: data) {
+                            Image(uiImage: picture).resizable().scaledToFill().frame(width: 84, height: 84).clipShape(Circle())
+                        } else { Image(systemName: "person.crop.circle.fill").font(.system(size: 64)).foregroundStyle(.teal) }
+                        VStack(alignment: .leading, spacing: 10) {
+                            PhotosPicker(selection: $photoItem, matching: .images) { Text(photo == nil ? "Add photo" : "Change photo") }
+                            if photo != nil { Button("Remove photo", role: .destructive) { photo = nil; photoItem = nil } }
+                        }
+                    }
+                    if photoLoading { ProgressView("Loading photo…") }
+                    if let error = photoError { Text(error).font(.caption).foregroundStyle(.red) }
+                    Text("Only your selected image is used. Saved on this iPhone.").font(.caption)
+                }
                 Section("Child profile") {
                     TextField("Child’s name", text: $name).focused($editingName)
                         .textInputAutocapitalization(.words).submitLabel(.done)
@@ -627,9 +709,9 @@ struct ProfileSetupView: View {
                 Section {
                     Button("Save profile") {
                         editingName = false
-                        save(name.trimmingCharacters(in: .whitespacesAndNewlines), birthDate, gender)
-                        dismiss()
-                    }.disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        if save(name.trimmingCharacters(in: .whitespacesAndNewlines), birthDate, gender, photo) { dismiss() }
+                        else { photoError = "The profile photo could not be saved. Please try again." }
+                    }.disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || photoLoading)
                 } footer: { Text("Your profile stays on this iPhone.") }
             }
             .scrollDismissesKeyboard(.interactively)
@@ -640,6 +722,19 @@ struct ProfileSetupView: View {
             }
         }
         .interactiveDismissDisabled(!canCancel)
+        .task(id: photoItem) {
+            guard let selected = photoItem else { photoLoading = false; return }
+            photoLoading = true; photoError = nil
+            do {
+                guard let data = try await selected.loadTransferable(type: Data.self),
+                      let source = CGImageSourceCreateWithData(data as CFData, nil),
+                      let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: 512] as CFDictionary),
+                      let resized = UIImage(cgImage: thumbnail).jpegData(compressionQuality: 0.85) else { throw CocoaError(.fileReadCorruptFile) }
+                try Task.checkCancellation()
+                photo = resized; photoLoading = false
+            } catch is CancellationError { }
+            catch { photoError = "Could not open that photo. Try another image."; photoLoading = false }
+        }
     }
 }
 
@@ -659,6 +754,13 @@ struct ContentView: View {
     @State private var captureRequest: CaptureRequest?
     @State private var tab = 0
     @State private var historyExport: URL?
+    @State private var eventsExport: URL?
+    @State private var historySection = 0
+    @State private var parentNote = ""
+    @State private var showParentNote = false
+    @State private var selectedHistoryReading: SavedMeasurement?
+    @State private var profilePhoto: Data?
+    private var photoURL: URL { FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("child-profile.jpg") }
     @State private var confirmDeleteHistory = false
     @State private var manualMode: NivviMode?
     @FocusState private var editingLimit: Bool
@@ -707,7 +809,7 @@ struct ContentView: View {
         .sheet(item: $captureRequest) { request in
             VStack(alignment: .leading, spacing: 24) {
                 Text("Connect to \(request.peripheral.name ?? "wearable")").font(.title2.bold())
-                Text("Nivvi will stay connected and try to reconnect after signal loss until you tap Disconnect. Connecting may interrupt the original monitor. NBO readings remain experimental and do not trigger alarms.")
+                Text("Nivvi will stay connected and try to reconnect after signal loss until you tap Disconnect. Connecting may interrupt the original monitor. NBO readings remain experimental; alarms require explicit opt-in in Settings.")
                 Button("Connect wearable") {
                     monitor.connect(request.peripheral)
                     captureRequest = nil
@@ -716,10 +818,32 @@ struct ContentView: View {
                 Button("Cancel") { captureRequest = nil }
             }.padding(24).presentationDetents([.medium])
         }
-        .onAppear { if childName.isEmpty { showProfile = true } }
+        .onAppear { profilePhoto = try? Data(contentsOf: photoURL); if childName.isEmpty { showProfile = true } }
         .sheet(isPresented: $showProfile) {
-            ProfileSetupView(name: childName, birthDate: birthDate, gender: childGender) { name, date, gender in
-                childName = name; childBirthDate = date.timeIntervalSince1970; childGender = gender
+            ProfileSetupView(name: childName, birthDate: birthDate, gender: childGender, photo: profilePhoto) { name, date, gender, photo in
+                do {
+                    if let photo = photo { try photo.write(to: photoURL, options: .atomic) }
+                    else if FileManager.default.fileExists(atPath: photoURL.path) { try FileManager.default.removeItem(at: photoURL) }
+                    childName = name; childBirthDate = date.timeIntervalSince1970; childGender = gender; profilePhoto = photo
+                    return true
+                } catch { return false }
+            }
+        }
+        .sheet(isPresented: $showParentNote) {
+            NavigationStack {
+                Form {
+                    Section("What happened?") { TextEditor(text: $parentNote).frame(minHeight: 130) }
+                    Text("A timestamp is added when you save. Notes stay on this iPhone.").font(.caption)
+                    if let error = monitor.eventError { Text(error).foregroundStyle(.red) }
+                }
+                .navigationTitle("Add an event note")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("Cancel") { showParentNote = false } }
+                    ToolbarItem(placement: .confirmationAction) { Button("Save") {
+                        monitor.addParentNote(parentNote)
+                        if monitor.eventError == nil { parentNote = ""; showParentNote = false; monitor.selectHistoryDay(Date()); historySection = 0 }
+                    }.disabled(parentNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
+                }
             }
         }
         .onChange(of: scenePhase) { phase in monitor.applicationActive(phase == .active) }
@@ -730,6 +854,9 @@ struct ContentView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
+                if let data = profilePhoto, let photo = UIImage(data: data) {
+                    Image(uiImage: photo).resizable().scaledToFill().frame(width: 52, height: 52).clipShape(Circle()).accessibilityLabel("Child profile photo")
+                }
                 VStack(alignment: .leading, spacing: 3) {
                     Text(Calendar.current.component(.hour, from: Date()) >= 12 && mode == .day ? "Hello," : mode.greeting).font(.subheadline).foregroundStyle(.white.opacity(0.72))
                     Text(displayName).font(.system(size: 34, weight: .bold, design: .rounded))
@@ -768,77 +895,128 @@ struct ContentView: View {
                 readingCard("Heart rate", heartRateDisplay, liveMeasurementNote, "heart.fill", coral)
                 readingCard("Oxygen", oxygenDisplay, liveMeasurementNote, "lungs.fill", teal)
             }
-            HStack(spacing: 14) {
-                smallCard("Temperature", "Not decoded", "thermometer.medium", lavender)
-                smallCard("Sleep", "No data", "bed.double.fill", coral)
-            }
+
             Button { monitor.selectHistoryDay(Date()); tab = 1 } label: {
                 HStack { Text("View today’s story").font(.headline); Spacer(); Image(systemName: "arrow.right") }
                     .foregroundStyle(Color(red: 0.06, green: 0.16, blue: 0.25)).padding(18).frame(maxWidth: .infinity)
                     .background(lavender).clipShape(RoundedRectangle(cornerRadius: 20))
             }
+            supportiveCard
             if !monitor.status.isEmpty { Text(monitor.status).font(.caption).foregroundStyle(.white.opacity(0.6)).fixedSize(horizontal: false, vertical: true) }
         }
     }
 
+    private var supportiveCard: some View {
+        panel { VStack(alignment: .leading, spacing: 10) {
+            Label(monitor.alarmActive ? "One step at a time" : "Here for your little one", systemImage: "heart.text.clipboard").font(.headline)
+            Text(monitor.alarmActive ? "Take a breath and stay close to your little one. Check how they are and follow the plan from their care team." : "You can add a note about how your little one is doing. Small observations can help you explain what happened to their care team.").font(.subheadline)
+            if monitor.alarmActive {
+                Text("If your care team has taught you to check their heart rate with a stethoscope, use their instructions. Do not delay urgent help to take a reading.").font(.caption)
+                Text("If your child is seriously unwell, seek emergency help immediately.").font(.caption.bold())
+            }
+            DisclosureGroup("Checking a reading") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Follow the pulse-check method and action limits your care team has given you. A stethoscope check is not a diagnosis. If symptoms worry you, contact the care team; seek emergency help if your child is seriously unwell.").font(.caption)
+                    Link("GOSH: understanding SVT", destination: URL(string: "https://www.gosh.nhs.uk/conditions-and-treatments/conditions-we-treat/supraventricular-tachycardia/")!).font(.caption)
+                }
+            }
+            Text("Built-in support · not an AI assessment").font(.caption2).foregroundStyle(.white.opacity(0.6))
+        } }
+    }
     private var history: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("History").font(.largeTitle.bold())
-            Text("Your recordings stay on this iPhone").foregroundStyle(.white.opacity(0.65))
+            HStack { Text("History").font(.largeTitle.bold()); Spacer(); Button { showParentNote = true } label: { Label("Add note", systemImage: "plus") }.buttonStyle(.bordered) }
+            Text("30 days on this iPhone").foregroundStyle(.white.opacity(0.7))
+            panel { VStack(alignment: .leading, spacing: 12) {
+                DatePicker("Choose a day", selection: Binding(get: { monitor.selectedHistoryDay }, set: { monitor.selectHistoryDay($0) }), in: ...Date(), displayedComponents: .date).datePickerStyle(.compact)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack { ForEach(monitor.recordedDays, id: \.self) { day in
+                        Button(day.formatted(.dateTime.day().month(.abbreviated))) { monitor.selectHistoryDay(day) }
+                            .buttonStyle(.bordered).tint(Calendar.current.isDate(day, inSameDayAs: monitor.selectedHistoryDay) ? lavender : teal)
+                    } }
+                }
+                Picker("Show", selection: $historySection) { Text("Events").tag(0); Text("Readings").tag(1) }.pickerStyle(.segmented)
+            } }
             if demoMode {
-                panel { VStack(alignment: .leading, spacing: 12) {
-                    HStack { Text("DEMO TREND · EXAMPLE DATA").font(.caption.bold()).foregroundStyle(.white.opacity(0.55)); Spacer(); Text("Not live").font(.caption.bold()).foregroundStyle(coral) }
-                    Text("Overnight heart rate").font(.title3.bold())
+                panel { VStack(alignment: .leading, spacing: 10) {
+                    Text("DEMO TREND · EXAMPLE DATA").font(.caption.bold()).foregroundStyle(coral)
                     Chart(demoHistory) { sample in
                         LineMark(x: .value("Day", sample.day), y: .value("BPM", sample.heartRate)).foregroundStyle(coral)
-                        PointMark(x: .value("Day", sample.day), y: .value("BPM", sample.heartRate)).foregroundStyle(coral)
-                    }.chartYScale(domain: 80...95).chartXAxis { AxisMarks() }.chartYAxis { AxisMarks(position: .leading) }.frame(height: 180)
-                    Text("Example trend for exploring the interface. Live readings appear only after a verified device is connected.").font(.caption).foregroundStyle(.white.opacity(0.65))
-                } }
-            } else {
-                panel { VStack(alignment: .leading, spacing: 14) {
-                    Text("RECORDED MEASUREMENTS").font(.headline)
-                    Text("Last 30 calendar days, stored on this iPhone. FFE7 readings are experimental.").font(.caption)
-                    DatePicker("History day", selection: Binding(get: { monitor.selectedHistoryDay }, set: { monitor.selectHistoryDay($0) }), in: ...Date(), displayedComponents: .date)
-                        .datePickerStyle(.compact)
-                    Text("\(monitor.history.count) readings on this day · \(monitor.historyDays.count) recorded days").font(.caption)
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack { ForEach(monitor.historyDays, id: \.self) { day in
-                            Button(day.formatted(date: .abbreviated, time: .omitted)) { monitor.selectHistoryDay(day) }.buttonStyle(.bordered)
-                        } }
-                    }
-                    if monitor.history.isEmpty { Text("No saved measurements for this day.") }
-                    else {
-                        Chart(DailyHistoryStore.chartSamples(monitor.history)) { sample in
-                            if let bpm = sample.heartRate {
-                                LineMark(x: .value("Time", sample.time), y: .value("BPM", bpm), series: .value("Source", sample.source)).foregroundStyle(coral)
-                            }
-                        }.frame(height: 180)
-                        Chart(DailyHistoryStore.chartSamples(monitor.history)) { sample in
-                            if let oxygen = sample.oxygen {
-                                LineMark(x: .value("Time", sample.time), y: .value("Oxygen %", oxygen), series: .value("Source", sample.source)).foregroundStyle(teal)
-                            }
-                        }.frame(height: 140)
-                        ForEach(Array(monitor.history.suffix(20).reversed())) { sample in
-                            VStack(alignment: .leading) {
-                                Text(sample.time.formatted(date: .abbreviated, time: .standard)).font(.caption)
-                                Text("HR \(sample.heartRate.map(String.init) ?? "—") bpm · O₂ \(sample.oxygen.map(String.init) ?? "—")%")
-                                Text(sample.source).font(.caption2).foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                    if !monitor.historyDays.isEmpty {
-                        Button("Prepare all 30 days as CSV") { historyExport = monitor.exportHistory() }
-                        if let url = historyExport { ShareLink("Share history CSV", item: url) }
-                        Button("Delete history", role: .destructive) { confirmDeleteHistory = true }
-                            .confirmationDialog("Delete all saved measurement history?", isPresented: $confirmDeleteHistory) {
-                                Button("Delete", role: .destructive) { monitor.clearHistory(); historyExport = nil }
-                            }
-                    }
-                    if let error = monitor.historyError { Text(error).foregroundStyle(coral) }
+                    }.frame(height: 130)
+                    Text("Example only. The event and reading logs below contain saved device data and parent notes.").font(.caption)
                 } }
             }
-            panel { VStack(alignment: .leading, spacing: 12) { Text("RAW CAPTURE").font(.caption.bold()).foregroundStyle(.white.opacity(0.55)); Text("\(monitor.readings.reduce(0) { $0 + $1.count }) samples").font(.title3.bold()); ForEach(monitor.readings.prefix(4)) { r in Text("\(r.id) · \(r.count) packets").font(.caption.monospaced()).foregroundStyle(.white.opacity(0.7)) } } }
+            if historySection == 0 {
+                Text("\(monitor.events.count) events · recorded as they happen").font(.subheadline)
+                if monitor.events.isEmpty { panel { Text("No events for this day. Connections, test alarms and your notes will appear here.").font(.subheadline) } }
+                ForEach(Array(monitor.events.reversed())) { event in
+                    panel { VStack(alignment: .leading, spacing: 9) {
+                        timestamp(event.time, tint: event.kind == "alarm" ? coral : lavender)
+                        Label(event.title, systemImage: event.kind == "alarm" ? "bell.fill" : event.kind == "note" ? "note.text" : "antenna.radiowaves.left.and.right").font(.headline)
+                        Text(event.detail).font(.subheadline).foregroundStyle(.white.opacity(0.8))
+                        if let bpm = event.heartRate { Text("\(bpm) bpm").font(.title3.bold()).foregroundStyle(coral) }
+                    } }
+                }
+                if let error = monitor.eventError { Text(error).foregroundStyle(coral) }
+            } else {
+                Text("\(monitor.history.count) readings on this day").font(.subheadline)
+                Text("New history snapshots are saved every 30 seconds while data arrives. Alarm checks use every valid incoming standard reading. Older imports keep their original timing.").font(.caption).foregroundStyle(.white.opacity(0.7))
+                if monitor.history.isEmpty { panel { Text("No saved readings for this day.") } }
+                else {
+                    panel { VStack(alignment: .leading, spacing: 12) {
+                        Label("Heart rate", systemImage: "heart.fill").foregroundStyle(coral).font(.headline)
+                        if let selected = selectedHistoryReading { Text("Selected: \(selected.time.formatted(date: .abbreviated, time: .standard)) · HR \(selected.heartRate.map(String.init) ?? "—") bpm · O₂ \(selected.oxygen.map(String.init) ?? "—")%").font(.caption.bold()).foregroundStyle(lavender) }
+                        Chart(DailyHistoryStore.chartSamples(monitor.history)) { sample in
+                            if let bpm = sample.heartRate { LineMark(x: .value("Time", sample.time), y: .value("BPM", bpm), series: .value("Source", sample.source)).foregroundStyle(coral) }
+                        }
+                        .chartOverlay { proxy in
+                            GeometryReader { geometry in
+                                Rectangle().fill(.clear).contentShape(Rectangle()).gesture(DragGesture(minimumDistance: 0).onChanged { value in
+                                    let origin = geometry[proxy.plotAreaFrame].origin
+                                    let x = value.location.x - origin.x
+                                    guard let date: Date = proxy.value(atX: x) else { return }
+                                    selectedHistoryReading = DailyHistoryStore.chartSamples(monitor.history).min { abs($0.time.timeIntervalSince(date)) < abs($1.time.timeIntervalSince(date)) }
+                                })
+                            }
+                        }
+                        .frame(height: 180)
+                        Label("Oxygen", systemImage: "lungs.fill").foregroundStyle(teal).font(.headline)
+                        Chart(DailyHistoryStore.chartSamples(monitor.history)) { sample in
+                            if let oxygen = sample.oxygen { LineMark(x: .value("Time", sample.time), y: .value("Oxygen %", oxygen), series: .value("Source", sample.source)).foregroundStyle(teal) }
+                        }.frame(height: 130)
+                    } }
+                    Text("Latest 50 readings for this day · export CSV for all entries").font(.caption)
+                    ForEach(Array(monitor.history.suffix(50).reversed())) { sample in
+                        panel { VStack(alignment: .leading, spacing: 9) {
+                            timestamp(sample.time, tint: lavender)
+                            HStack { Text(sample.heartRate.map { "\($0) bpm" } ?? "HR —").foregroundStyle(coral); Spacer(); Text(sample.oxygen.map { "O₂ \($0)%" } ?? "O₂ —").foregroundStyle(teal) }.font(.title3.bold())
+                            Text(sample.source == "experimental-FFE7" ? "Experimental NBO reading" : "Standard Bluetooth reading").font(.caption).foregroundStyle(.white.opacity(0.7))
+                        } }
+                    }
+                }
+                if let error = monitor.historyError { Text(error).foregroundStyle(coral) }
+            }
+            if !monitor.recordedDays.isEmpty {
+                DisclosureGroup("Export or delete history") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Button("Prepare readings CSV") { historyExport = monitor.exportHistory() }
+                        if let url = historyExport { ShareLink("Share readings CSV", item: url) }
+                        Button("Prepare events CSV") { eventsExport = monitor.exportEvents() }
+                        if let url = eventsExport { ShareLink("Share events CSV", item: url) }
+                        Button("Delete all history", role: .destructive) { confirmDeleteHistory = true }
+                    }.padding(.top, 10)
+                }
+                .confirmationDialog("Delete all saved readings, events and notes?", isPresented: $confirmDeleteHistory) {
+                    Button("Delete", role: .destructive) { monitor.clearHistory(); historyExport = nil; eventsExport = nil }
+                }
+            }
+        }
+    }
+    private func timestamp(_ time: Date, tint: Color) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(time.formatted(date: .omitted, time: .standard)).font(.system(size: 24, weight: .bold, design: .rounded)).monospacedDigit().foregroundStyle(tint)
+            Spacer()
+            Text(time.formatted(date: .abbreviated, time: .omitted)).font(.caption.weight(.semibold)).foregroundStyle(.white.opacity(0.75))
         }
     }
 
@@ -889,7 +1067,7 @@ struct ContentView: View {
 
     private var settings: some View { VStack(alignment: .leading, spacing: 18) {
         Text("Settings").font(.largeTitle.bold())
-        Text("Nivvi 0.3 · Build 3").font(.caption).foregroundStyle(.secondary)
+        Text("Nivvi 0.4 · Build 4").font(.caption).foregroundStyle(.secondary)
         panel { VStack(alignment: .leading, spacing: 10) {
             HStack { Label("Child profile", systemImage: "person.crop.circle"); Spacer(); Button("Edit") { showProfile = true }.buttonStyle(.bordered) }
             Text("\(displayName)\(ageText.isEmpty ? "" : " · \(ageText)")").font(.headline)
@@ -901,11 +1079,14 @@ struct ContentView: View {
         } }
         panel { VStack(alignment: .leading, spacing: 10) {
             Label("Family sharing", systemImage: "person.3.fill")
-            Text("Export a history CSV from History to share with a caregiver. Live remote sharing is not available.").font(.caption)
+            Text("Share readings and event logs using the CSV exports in History.").font(.caption)
+            Text("Live remote sharing is not connected yet. It needs secure caregiver access, a sync service, and clear stale/offline indicators. This version stores data on your iPhone only.").font(.caption).foregroundStyle(.white.opacity(0.7))
         } }
         panel { VStack(alignment: .leading, spacing: 12) {
             Text("Heart-rate test alarms").font(.headline)
-            Text("Standard heart-rate devices only. NBO FFE7 automatic alarms stay unavailable while the mapping is experimental.").font(.caption)
+            Text("NBO FFE7 values are experimental. Enable the test switch only to trial the mapped value against your care plan; verify readings independently.").font(.caption)
+            Toggle("Experimental NBO alarm test", isOn: $monitor.experimentalNBOAlarms).tint(lavender)
+                .onChange(of: monitor.experimentalNBOAlarms) { _ in monitor.silenceAlarm() }
             Toggle("High limit alarm", isOn: $monitor.alarmSettings.highEnabled).tint(coral)
                 .onChange(of: monitor.alarmSettings.highEnabled) { enabled in if enabled { monitor.requestNotificationPermission() } }
             HStack {
@@ -929,7 +1110,7 @@ struct ContentView: View {
             Button("Test notification in 10 seconds") { monitor.testNotification() }.buttonStyle(.bordered)
             Text(monitor.soundStatus).font(.caption)
             Text(monitor.notificationStatus).font(.caption)
-            Text("Foreground alarms repeat until silenced or a fresh reading returns within your limits. Lock-screen notifications use an 8-second siren. Silent mode, Focus and notification volume can suppress that sound; this build has no Critical Alerts approval.").font(.caption).foregroundStyle(.white.opacity(0.7))
+            Text("Low alarms fire strictly below the low limit; high alarms fire strictly above the high limit. Foreground alarms repeat until silenced or a fresh reading returns within your limits. Lock-screen notifications use an 8-second siren. Silent mode, Focus and notification volume can suppress that sound; this build has no Critical Alerts approval.").font(.caption).foregroundStyle(.white.opacity(0.7))
         } }
         panel { VStack(alignment: .leading, spacing: 10) {
             Label("Continuous Bluetooth session", systemImage: "antenna.radiowaves.left.and.right")

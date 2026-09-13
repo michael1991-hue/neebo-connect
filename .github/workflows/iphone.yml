@@ -1,4 +1,4 @@
-name: Build iPhone prototype
+name: Build Nivvi for iPhone
 on:
   workflow_dispatch:
   push:
@@ -27,8 +27,8 @@ jobs:
       - name: Save IPA for local signing
         uses: actions/upload-artifact@v4
         with:
-          name: NeeboConnect-unsigned
-          path: build/NeeboConnect-unsigned.ipa
+          name: Nivvi-unsigned
+          path: build/Nivvi-unsigned.ipa
           if-no-files-found: error
           retention-days: 7
 

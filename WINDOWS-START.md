@@ -1,36 +1,27 @@
-# iPhone testing from Windows
+# Install and test Nivvi from Windows
 
-## 1. Build online
-Create a PRIVATE GitHub repository named neebo-connect, initialized with a README.
-Grant the ChatGPT GitHub connection access to it. Share its URL in the conversation.
-The assistant can then add these prepared source and workflow files and inspect the build.
+## Download
+Open the latest successful run under [GitHub Actions](https://github.com/michael1991-hue/neebo-connect/actions).
+Download the **Nivvi-unsigned** artifact and extract **Nivvi-unsigned.ipa** from the ZIP.
+Version 0.4 includes event history, 30-second reading snapshots, profile photos, low/high standard-device test alarms, a siren and continuous Bluetooth sessions.
 
-Alternatively, put all these files at the root of your repository, including
-.github/workflows/iphone.yml. GitHub Actions runs build.sh on a macOS runner.
-The workflow produces an unsigned IPA; the workflow itself contains no signing credentials.
-Private repositories use your GitHub Actions allowance and may require Actions/billing to be enabled.
-Do not upload NBO.txt or personal sensor logs to the repository.
+## Install
+Use [AltStore Classic's official Windows instructions](https://faq.altstore.io/altstore-classic/how-to-install-altstore-windows) for AltServer and the required Apple components.
+Transfer the IPA into Files on the iPhone. Open AltStore Classic → My Apps → + and select the IPA.
+Install over the existing app with the same account to preserve local data; do not delete the previous app first.
+The internal bundle ID is unchanged. The displayed name and downloaded package are Nivvi.
+Check Settings shows **Nivvi 0.4 · Build 4**. Follow AltStore's signing/refresh and iOS Developer Mode instructions. Enter credentials only through its official flow.
 
-## 2. Download the resulting app
-After the workflow succeeds, open its Actions run and download NeeboConnect-unsigned.
-Extract the downloaded ZIP to obtain NeeboConnect-unsigned.ipa.
-This workflow has not run yet. Successful compilation is still required.
+## Connect and check
+1. Disconnect LightBlue and the original app from the wearable. Test only while you are not relying on the original monitor's alerts.
+2. In Nivvi, open Device → Scan for NBO → select NB0/NBO → Connect wearable.
+3. Check actual connection status, packet timestamps, battery and experimental FFE7 values. No proprietary resync or reset commands are sent.
+4. Keep the session running beyond two minutes, then lock/unlock the phone and inspect history. The diagnostic log ends after two minutes; the session and history continue. Background readings require the wearable to send notifications.
+5. Check automatic reconnection after temporary signal loss. Tap Disconnect to stop all reconnection attempts. Force-quitting, range/battery loss, permissions, signing expiry and iOS restrictions can interrupt operation.
+6. Open Settings → Child profile → Edit to add/change/remove the photo. Cancel preserves the old profile; Save commits it.
+7. History → Events shows connection/standard-input alarm events and parent notes. Readings shows 30-second snapshots and daily charts. Timestamps include seconds. CSV exports include retained days, not just the screen's recent rows.
+8. Use the five-second siren test and ten-second notification test. Set volume and notification permissions on the iPhone. Sound cannot be guaranteed through Silent mode or Focus.
 
-## 3. Sign and install from Windows
-Use the official AltStore Classic Windows instructions:
-https://faq.altstore.io/altstore-classic/how-to-install-altstore-windows
-Install AltServer and its required Apple components, connect the iPhone, and install AltStore Classic.
-Transfer the IPA to Files on the iPhone; open AltStore Classic > My Apps > + and select the IPA.
-Follow AltStore's own signing and Developer Mode steps. Enter credentials only in its official flow,
-never in GitHub, the app source, workflow secrets, or this chat.
-Free signing requires regular refreshes. This is a foreground research prototype, not a medical monitor.
+Automatic NBO alarms remain disabled while its measurement mapping is experimental. Only standard-format heart-rate inputs drive the low/high test alarm engine. This prototype is not a validated medical/SVT monitor. Restore and check the original monitor after testing.
 
-## 4. Short test
-Close LightBlue's connection. Test only when not relying on Neebo alerts.
-Scan, select NB0, and run the two-minute capture with the prototype open.
-If the original phone owns the connection, temporarily switch its Bluetooth off for the test.
-Stop capture, share the JSONL file here, then restore the original phone and check readings resume.
-Battery should be decoded; heart rate and oxygen must remain Not decoded.
-
-Build source has been inspected locally but cannot be compiled in this Linux environment.
-Hardware accuracy, iOS rendering, signing and actual BLE connection remain untested.
+The first two-minute diagnostic log is available to share from Device when troubleshooting. CI compiles the iPhone app and runs regression checks; Bluetooth hardware operation and physical sound still need testing on the iPhone.
