@@ -1,38 +1,35 @@
-# Neebo Connect — iPhone source prototype 0.1
+# Nivvi / Neebo Connect research prototype
 
-This is native SwiftUI/Core Bluetooth source, NOT an installable IPA or TestFlight build.
-It has not been compiled with an Apple SDK or tested on an iPhone here.
+Native SwiftUI/Core Bluetooth source for an iPhone prototype with day/night layouts, a child profile, measurement cards, demo history, device capture and settings.
 
-## Build and install (requires Mac with Xcode)
-1. In Xcode create a new iOS App named NeeboConnect; select Swift and SwiftUI, minimum iOS 16.
-2. Remove the two generated Swift files from the target and add NeeboConnect.swift.
-3. Set your own unique Bundle Identifier and select your signing team under Signing & Capabilities.
-4. Under target Info add Privacy - Bluetooth Always Usage Description (NSBluetoothAlwaysUsageDescription):
-   "Connect to your Neebo wearable to capture Bluetooth data for prototype testing."
-5. Add Application supports iTunes file sharing (UIFileSharingEnabled) = YES and
-   Supports opening documents in place (LSSupportsOpeningDocumentsInPlace) = YES.
-6. Connect your iPhone, choose it as the run destination, enable Developer Mode if Xcode prompts, then Run.
-A free Personal Team supports temporary on-device testing with periodic re-signing. TestFlight distribution
-requires the Apple Developer Program and an uploaded signed build. No signing identity is included.
+## Device mapping
 
-## Test
-Keep the original app installed and logged in. Do this only when you are not relying on Neebo alerts.
-Close LightBlue's connection. If NB0 is busy, temporarily switch off Bluetooth on the OTHER phone.
-Open this app, allow Bluetooth, tap Scan, select NB0 and start a two-minute capture.
-Keep this app foregrounded; backgrounding deliberately stops capture. No background monitoring is implemented.
-Battery should show a real value. Heart rate and oxygen stay Not decoded. FFEA is a candidate minute counter only.
-Tap Stop, share a saved JSONL recording or retrieve it through Files. Restore the original phone's Bluetooth
-and verify the original Neebo app resumes live readings. No pairing resets are needed.
+| Service / characteristic | Field | Status |
+| --- | --- | --- |
+| 180F / 2A19 | Battery percentage | Standard one-byte battery value |
+| FFE0 / FFE7 | Fourth byte: heart-rate candidate; sixth byte: oxygen candidate | Experimental; needs repeated timed comparison against Neebo |
+| FFE0 / FFEA | Possible minute counter | Unconfirmed |
+| FFA0 / FFA1 | Speex narrowband audio evidence | Not used as a heart-rate source |
 
-## Scope and limitations
-- Enumerates readable/notifiable services; reads values and subscribes. No proprietary command writes,
-  firmware updates, cloud accounts, medical alarms, automatic reconnection, or multi-phone sharing.
-- Notification subscriptions configure Bluetooth notifications; they are not a guarantee of sensor meaning.
-- Original app may own the sole wearable connection. Device names NB0/NBO are discovery filters, not identity proof.
-- Captures include device identifiers and raw sensor data. Share only with intended recipients.
-- Software/library health checks do not validate sensor accuracy. Never infer a vital sign from plausible bytes alone.
-- Known log: battery 0x43 = 67%; FFEA increments once/minute; FFE4 was 02; FFA1 had 8,676 opaque 20-byte packets.
+For example, the displayed FFE7 value 0000005F0063003F01 contains 0x5F = 95 and 0x63 = 99, matching the supplied Neebo screenshot. This supports the candidate mapping, but does not establish field widths, invalid-value flags or accuracy across all device states.
 
-Apple references:
-https://developer.apple.com/documentation/corebluetooth
-https://developer.apple.com/help/account/basics/about-your-developer-account
+FFE7 candidates are separate from standard heart-rate values and do not trigger alerts. Standard 2A37 parsing has a prototype alarm path; it has not been validated for monitoring.
+
+## Build
+
+Requires macOS with Xcode. Run `bash build.sh` to produce `build/NeeboConnect-unsigned.ipa`. The source file remains `NeeboConnect.swift`; its interface is Nivvi. The package is unsigned and requires your own signing setup.
+
+Alternatively create an iOS 16+ SwiftUI project in Xcode, replace generated Swift entry points with `NeeboConnect.swift`, and copy Bluetooth privacy and file-sharing settings from the build script. Choose your own bundle identifier and signing team.
+
+## Testing and current limitations
+
+- Scans for NB0/NBO, reads characteristics and subscribes to notifications.
+- Capture stops after two minutes or when the app backgrounds; no continuous background monitoring or automatic reconnect.
+- Raw JSONL captures are stored locally and accessible through Files when file sharing is enabled.
+- History charts currently show labelled example data. Persisted measurement history is outstanding.
+- Temperature and sleep decoding are outstanding. The day/night theme follows time; it does not establish sleep or wellbeing.
+- Family Circle is a local interface placeholder; sharing and CloudKit sync are not implemented.
+- FFE7 field validation, stale/invalid reading handling, alarm validation, iPhone testing and release preparation remain outstanding.
+- Compilation and live hardware operation have not been verified in this workspace. This is not a finished monitoring app or an App Store-ready build.
+
+Close the Bluetooth inspector before a short capture. Test only when not relying on the original monitor's alerts. Afterwards restore the original connection and check that readings resume. Raw logs include device identifiers and sensor data.
