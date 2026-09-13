@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - 'NeeboConnect.swift'
+      - 'MonitoringSupport.swift'
+      - 'prepare-sound.py'
       - 'build.sh'
       - 'prepare-icons.py'
       - 'Assets/**'
@@ -18,7 +20,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - name: Bluetooth and history regression checks
+      - name: Bluetooth, alarms and daily history regression checks
         run: bash Tests/run.sh
       - name: Compile iPhone app
         run: bash build.sh

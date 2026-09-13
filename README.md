@@ -1,61 +1,63 @@
 # Nivvi / Neebo Connect research prototype
 
-Native SwiftUI/Core Bluetooth source for an iPhone prototype with day/night layouts, a child profile, measurement cards, demo history, device capture and settings.
+Native SwiftUI / Core Bluetooth iPhone app with a child profile, day/night layouts, a wearable connection, local history and test alarms. Version 0.3 / Build 3 adds continuous sessions, low and high test thresholds, a siren, and 30-day history. The bundle ID is unchanged so an in-place AltStore update can preserve existing data.
 
 ## Device mapping
 
 | Service / characteristic | Field | Status |
 | --- | --- | --- |
-| 180F / 2A19 | Battery percentage | Standard one-byte battery value |
-| FFE0 / FFE7 | Fourth byte: heart-rate candidate; sixth byte: oxygen candidate | Experimental; needs repeated timed comparison against Neebo |
+| 180F / 2A19 | Battery percentage | Standard one-byte value |
+| 180D / 2A37 | Heart rate | Standard-format parser; supports prototype low/high alerts |
+| FFE0 / FFE7 | Fourth byte: heart-rate candidate; sixth byte: oxygen candidate | Experimental, display/history only; automatic alarms disabled |
 | FFE0 / FFEA | Possible minute counter | Unconfirmed |
-| FFA0 / FFA1 | Speex narrowband audio evidence | Not used as a heart-rate source |
+| FFA0 / FFA1 | Speex audio evidence | Excluded from measurement subscriptions |
 
-For example, the displayed FFE7 value 0000005F0063003F01 contains 0x5F = 95 and 0x63 = 99, matching the supplied Neebo screenshot. This supports the candidate mapping, but does not establish field widths, invalid-value flags or accuracy across all device states.
+The observed nine-byte `0000005F0063003F01` frame contains 95 and 99, matching a supplied Neebo screenshot. Unknown leading fields/high bytes, malformed lengths and unsupported values are rejected. This does not validate the mapping, invalid-value flags, device accuracy, or high/low medical alarm coverage. Temperature and sleep decoding remain unfinished. Standard-format parsing is not clinical validation either.
 
-FFE7 candidates are separate from standard heart-rate values and do not trigger alerts. Standard 2A37 parsing has a prototype alarm path; it has not been validated for monitoring.
+## Continuous Bluetooth
 
-## Build
+- Start a session from Device → Scan for NBO → select the wearable → Connect wearable. NB0 (zero), NBO (letter O), NEEBO and known service advertisements are recognised. An optional switch shows other devices for troubleshooting.
+- A session no longer stops after two minutes or when the phone locks. The selected peripheral and session intent are saved. `bluetooth-central` background support and a stable Core Bluetooth restoration identifier are included.
+- On link loss, values clear immediately and the app requests reconnection to the same device. Pending Core Bluetooth connection requests have no app-imposed timeout. Immediate connection failures back off before retrying. A connection-loss notification is requested.
+- Bluetooth being switched off preserves the intent; reconnection resumes when it becomes available. **Disconnect** cancels the session, pending connection and automatic retries. Launching again after an explicit disconnect does not reconnect.
+- Restored sessions rediscover services and resubscribe. Reads/subscriptions are restricted to FFE7, FFEA, FFE4, standard battery and standard HR. No undocumented device commands are written.
+- Background updates depend on the wearable actually sending notifications. Five-second read polling is a foreground fallback only. iOS suspension, force-quit, battery/range loss and permissions can interrupt operation. No promise of uninterrupted monitoring is made.
+- A separate raw diagnostic log records the first two minutes of a manually started session; ending that log does not end Bluetooth or measurement history. Logs remain shareable from Device.
 
-Requires macOS with Xcode and Python 3. Run `bash Tests/run.sh` for regression checks. Run `bash build.sh` to produce `build/NeeboConnect-unsigned.ipa`. The source file remains `NeeboConnect.swift`; its interface is Nivvi. The package is unsigned and requires your own signing setup.
+## High/low test alarms and sound
 
-Alternatively create an iOS 16+ SwiftUI project in Xcode, replace generated Swift entry points with `NeeboConnect.swift`, and copy Bluetooth privacy and file-sharing settings from the build script. Choose your own bundle identifier and signing team.
+- Low and high alarms have independent switches and user-entered limits. Both are off and limits are blank initially. Enter limits from the child's care plan; the app does not choose medical thresholds.
+- Settings persist locally. Invalid/missing enabled limits, inverted pairs and invalid durations cannot arm. A value at/below the low limit or at/above the high limit must persist for the configured 5–120 seconds, evaluated on fresh valid standard HR samples.
+- A gap over ten seconds or invalid measurement resets the dwell period. Experimental FFE7, unknown sources and demo data cannot trigger automatic alarms. A missing reading does not clear an already-triggered alarm.
+- An alarm shows a banner on every tab, loops a bundled siren while foregrounded, and requests a Time Sensitive local notification with an eight-second PCM siren. Silence acknowledges the current excursion until readings return in range or cross the other limit. Fresh in-range readings resolve the alarm.
+- **Test siren for 5 seconds** and **Test notification in 10 seconds** work independently of device measurements. Tests do not create fake history.
+- Foreground playback uses the phone's current media volume. Background notification sound follows notification/silent/Focus settings. No Critical Alerts entitlement or approval is included; neither maximum volume nor bypassing mute/Focus is guaranteed. There is no background-audio keepalive workaround.
+- **Automatic alarms for the user's NBO remain unavailable pending mapping validation. This build is not a reliable SVT/medical monitoring system.**
 
-## Testing and current limitations
+## History
 
-- Scans for NB0/NBO/NEEBO and known service advertisements; retrieves matching peripherals already connected to iOS. An optional discovery switch shows other nearby devices for troubleshooting. Names and service identifiers remain hints, not identity guarantees.
-- Separates scanning, connecting, service discovery and data receipt. Connection requests time out after 20 seconds.
-- Reads/subscribes only to FFE0/FFE7, FFEA, FFE4, standard battery and standard heart rate. The FFA1 audio stream is excluded. Readable FFE7 is polled every five seconds. No proprietary commands are written.
-- Capture stops after two minutes or when the app backgrounds; no continuous background monitoring or automatic reconnect.
-- Raw JSONL captures are stored locally and accessible through Files when file sharing is enabled.
-- History now persists up to 20,000 timestamped measurements across launches, charts the latest 300 heart-rate samples, lists recent heart-rate/oxygen values and exports CSV. Demo history is optional and off by default.
-- Temperature and sleep decoding are outstanding. The day/night theme follows time; it does not establish sleep or wellbeing.
-- Caregivers can receive exported history CSV files. Live family sharing and CloudKit sync are not implemented.
-- Readings clear on disconnect and after 30 seconds without fresh measurements. Invalid FFE7 fields clear independently. Standard heart-rate alarm timing resets across sample gaps and on disconnect. FFE7 field validation, background monitoring, alarm validation, iPhone testing and release preparation remain outstanding.
-- GitHub Actions compiles the iPhone app and produces an unsigned IPA; check the latest run for its result. Live hardware operation has not been verified here. This is not a finished monitoring app or an App Store-ready build.
+- Records every accepted measurement to one append-only file per calendar day. Retains today and the previous 29 calendar days; there is no 20,000-reading cap.
+- History has a day picker, recorded-day shortcuts, daily heart-rate/oxygen charts, recent rows and CSV export for all retained days. Chart reduction retains bucket extrema so isolated highs/lows are not discarded just to reduce plot points; the CSV retains every record.
+- The old `measurements.json` is migrated once through a staging directory. IDs, timestamps and experimental labels are preserved. The original migration file is retained as a recovery copy until Delete history is used.
+- Files can be appended while locked after the first unlock. Corrupt input or torn journal rows are reported and preserved, not silently replaced. A storage error does not disconnect Bluetooth.
+- Only the selected day's data is loaded for display. No cloud account or family live sharing is implemented. User-initiated CSV sharing is available.
 
-Close the Bluetooth inspector before a short capture. Test only when not relying on the original monitor's alerts. Afterwards restore the original connection and check that readings resume. Raw logs include device identifiers and sensor data.
+## Build and install
 
+Requires macOS with Xcode and Python 3. `bash Tests/run.sh` runs the Foundation-only regression suite; `bash build.sh` compiles the iPhone app, icon catalog and notification sound into `build/NeeboConnect-unsigned.ipa`.
 
-## Version 0.2: profile, connection diagnostics and icon
+GitHub Actions runs both automatically for source changes on main. Download **NeeboConnect-unsigned** from the latest successful run, extract the IPA, then install with AltStore using the same account as the existing app. Install over the existing app; do not delete it first if you want to retain local history. Settings should show **Nivvi 0.3 · Build 3**.
 
-- Profile uses inline gender choices and draft edits, committed only on Save; no nested gender picker page.
-- Connection confirmation owns the selected peripheral; connection status, packet counts, subscription/read errors and raw hexadecimal values are visible on Device.
-- Saved capture logs can be shared from Device after capture stops.
-- Includes the existing Nivvi heart/pulse logo at iPhone icon sizes. Display name is Nivvi; bundle identifier is unchanged for updates.
-- FFE7 decoder accepts the observed nine-byte frame only and rejects unknown leading/high bytes. Candidate values never drive NBO alerts.
-- The CI checks captured FFE7 examples, malformed frames, discovery rules, subscription selection, connection-state flags and persisted record labels, then compiles the iPhone app and icon catalog.
+## Required iPhone checks
 
-### Install this update
-Download the latest successful Actions artifact, extract the IPA, then install it through AltStore using the same Apple account. Install over the existing app to preserve its local data. Settings should show Nivvi 0.2 / Build 2.
+1. Check profile editing, including the inline gender choices, still saves normally.
+2. Disconnect LightBlue/the original app from the wearable. Connect from Nivvi only when not relying on the original monitor's alerts. Compare experimental FFE7 values with the original app and keep the raw log if values do not decode.
+3. Leave the connection running past two minutes. Lock the phone for several minutes, unlock, and check timestamps/history to establish whether this firmware sends usable notifications while locked.
+4. Move the wearable out of range, then return: look for Reconnecting → Connected. Switch Bluetooth off/on and repeat. Tap Disconnect and confirm that it stays disconnected, including after reopening Nivvi.
+5. Test the foreground siren at your chosen volume. Schedule the ten-second notification test and lock the phone. Repeat with actual notification/Focus/silent settings; observe the limitations rather than assuming sound bypasses them.
+6. With a standard HR test peripheral or simulator, verify low and high thresholds, duration, silence, malformed data and gaps. Do not alter a child's condition to test an alarm. NBO automatic alarms remain disabled.
+7. Check a previous history day, an in-place upgrade, and CSV export. Restore and verify the original monitor connection after testing.
 
-### Hardware retest
-1. Disconnect LightBlue from the wearable. Test only when you are not relying on the original monitor's alerts.
-2. Open Device, scan, tap the wearable row and choose Connect and start capture.
-3. Keep the app foregrounded. Device should progress from Connecting to Connected and show packet counts.
-4. If no measurements arrive, stop capture and share the capture log from Device; it records discovered services, characteristics and read/subscription errors.
-5. Restore the original monitor connection after the test.
+CI covers actual decoder/policy/storage code and builds the IPA; it cannot verify the user's Bluetooth hardware, audible volume, suspended execution or clinical reliability. This remains a prototype, not an App Store-ready monitoring release.
 
-The manufacturer describes a direct Bluetooth connection from band to phone and a charging/relay role for the base. This does not prove a docking resync is required. Reference: https://fccid.io/2ATQFNEEBOBAND/User-Manual/15-Neebo-band-UserMan-4401283.pdf
-
-The reported profile freeze and physical connection still require retesting on the user's iPhone. A successful compile is not proof of hardware operation or reliable monitoring.
+Apple references: [Core Bluetooth background processing and restoration](https://developer.apple.com/library/archive/documentation/NetworkingInternetWeb/Conceptual/CoreBluetooth_concepts/CoreBluetoothBackgroundProcessingForIOSApps/PerformingTasksWhileYourAppIsInTheBackground.html), [notification sounds](https://developer.apple.com/documentation/usernotifications/unnotificationsound), [Critical Alerts entitlement](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.usernotifications.critical-alerts).
