@@ -1,10 +1,29 @@
 import SwiftUI
 import CoreBluetooth
+import AudioToolbox
+import UserNotifications
+import Charts
 
 struct Reading: Identifiable {
     let id: String
     var count: Int
     var hex: String
+}
+
+enum DeviceProfile: String {
+    case nbo = "NBO custom wearable"
+    case heartRate = "Standard heart-rate device"
+    case pulseOximeter = "Standard pulse oximeter"
+    case thermometer = "Standard thermometer"
+    case generic = "Bluetooth device"
+    case unknown = "Profile not identified"
+}
+
+struct TrendSample: Identifiable {
+    let id: String
+    let day: String
+    let heartRate: Int
+    let oxygen: Int
 }
 
 final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPeripheralDelegate {
@@ -17,6 +36,16 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     @Published var recording: URL?
     @Published var files: [URL] = []
     @Published var lastSample: Date?
+    @Published var profile: DeviceProfile = .unknown
+    @Published var verifiedHeartRate: Int?
+    @Published var verifiedOxygen: Int?
+    @Published var ffe7HeartRateCandidate: Int?
+    @Published var ffe7OxygenCandidate: Int?
+    @Published var highRateAlarmEnabled = false
+    @Published var highRateThreshold = 200
+    @Published var highRateDurationSeconds = 15
+    @Published var alarmActive = false
+    private var highRateSince: Date?
     private var manager: CBCentralManager!
     private var peripheral: CBPeripheral?
     private var file: FileHandle?
@@ -24,9 +53,24 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     private let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     override init() {
         super.init()
+        requestNotificationPermission()
         manager = CBCentralManager(delegate: self, queue: .main)
         refreshFiles()
     }
+    private func requestNotificationPermission() {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge, .timeSensitive]) { _, _ in }
+    }
+
+    private func sendPriorityNotification() {
+        let content = UNMutableNotificationContent()
+        content.title = "Nivvi high-rate alert"
+        content.body = "Check your child and follow the cardiology plan."
+        content.sound = .default
+        if #available(iOS 15.0, *) { content.interruptionLevel = .timeSensitive }
+        let request = UNNotificationRequest(identifier: "nivvi-high-rate-\(UUID().uuidString)", content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request)
+    }
+
     func refreshFiles() {
         files = ((try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? [])
             .filter { $0.pathExtension == "jsonl" }.sorted { $0.lastPathComponent > $1.lastPathComponent }
@@ -69,7 +113,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     func connect(_ p: CBPeripheral) {
         guard !active else { return }
         manager.stopScan()
-        battery = "—"; counter = "—"; readings = []; lastSample = nil; recording = nil
+        battery = "—"; counter = "—"; readings = []; lastSample = nil; recording = nil; profile = .unknown; verifiedHeartRate = nil; verifiedOxygen = nil; ffe7HeartRateCandidate = nil; ffe7OxygenCandidate = nil
         do {
             let url = folder.appendingPathComponent("NB0-\(UUID().uuidString).jsonl")
             try Data().write(to: url)
@@ -93,10 +137,16 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         finish("Connection failed: \(error?.localizedDescription ?? "unknown error")")
     }
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral p: CBPeripheral, error: Error?) {
-        finish("Disconnected. Values are historical. Check original Neebo app resumes readings." + (error.map { " \($0.localizedDescription)" } ?? ""))
+        finish("Disconnected. Values are historical. Check original monitor app resumes readings." + (error.map { " \($0.localizedDescription)" } ?? ""))
     }
     func peripheral(_ p: CBPeripheral, didDiscoverServices error: Error?) {
         if let error = error { log(["error":error.localizedDescription]); return }
+        let services = Set((p.services ?? []).map { $0.uuid.uuidString.uppercased() })
+        if services.contains("FFE0") || services.contains("FFE5") || services.contains("FFA0") { profile = .nbo }
+        else if services.contains("180D") { profile = .heartRate }
+        else if services.contains("1822") { profile = .pulseOximeter }
+        else if services.contains("1809") { profile = .thermometer }
+        else { profile = .generic }
         for service in p.services ?? [] { p.discoverCharacteristics(nil, for: service) }
     }
     func peripheral(_ p: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
@@ -114,8 +164,26 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         guard active else { return }
         if let error = error { log(["error":error.localizedDescription, "uuid":c.uuid.uuidString]); return }
         guard let data = c.value else { return }
-        let uuid = c.uuid.uuidString
+        let uuid = c.uuid.uuidString.uppercased()
         let key = (c.service?.uuid.uuidString ?? "?") + "/" + uuid
+        if uuid == "2A37", data.count >= 2 {
+            let flags = data[0]
+            let is16Bit = (flags & 0x01) != 0
+            let bpm = is16Bit && data.count >= 3 ? Int(data[1]) | (Int(data[2]) << 8) : Int(data[1])
+            if bpm > 0 && bpm < 300 { verifiedHeartRate = bpm; evaluateHighRateAlarm() }
+        }
+        // NB0's custom FFE7 sample has matched the live inspector captures as:
+        // 00 00 00 [heart-rate candidate] 00 [oxygen candidate] ...
+        // Keep these separate from verified standard BLE measurements until a
+        // timed comparison with Neebo confirms the field meanings.
+        if uuid == "FFE7", c.service?.uuid.uuidString.uppercased() == "FFE0", data.count >= 6 {
+            let candidateHeartRate = Int(data[3])
+            let candidateOxygen = Int(data[5])
+            if (30...240).contains(candidateHeartRate) { ffe7HeartRateCandidate = candidateHeartRate }
+            if (70...100).contains(candidateOxygen) { ffe7OxygenCandidate = candidateOxygen }
+        }
+        // 2A5E/2A5F are standard pulse-ox measurements. Values stay hidden until
+        // a complete standards-compliant parser is added; never infer from raw bytes.
         let hex = data.map { String(format:"%02x", $0) }.joined()
         log(["event":"sample", "uuid":uuid, "service":c.service?.uuid.uuidString ?? "?", "hex":hex])
         lastSample = Date()
@@ -125,11 +193,32 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         if uuid == "2A19", data.count == 1, data[0] <= 100 { battery = "\(data[0])%" }
         if uuid == "FFEA", data.count == 2 { counter = "\(Int(data[0]) | (Int(data[1]) << 8)) — possible minutes" }
     }
+    private func evaluateHighRateAlarm() {
+        guard highRateAlarmEnabled, let bpm = verifiedHeartRate else { return }
+        if bpm >= highRateThreshold {
+            if highRateSince == nil { highRateSince = Date() }
+            if let since = highRateSince, Date().timeIntervalSince(since) >= Double(highRateDurationSeconds), !alarmActive {
+                alarmActive = true
+                AudioServicesPlayAlertSound(SystemSoundID(1005))
+                sendPriorityNotification()
+                status = "High-rate threshold reached — check the child profile and follow the cardiology plan."
+            }
+        } else {
+            highRateSince = nil
+            alarmActive = false
+        }
+    }
+
+    func silenceAlarm() {
+        alarmActive = false
+        highRateSince = nil
+    }
+
     func stop() {
         manager.stopScan()
         deadline?.invalidate()
         if let p = peripheral { manager.cancelPeripheralConnection(p) }
-        finish("Capture stopped. Values are historical. Restore original Neebo app readings.")
+        finish("Capture stopped. Values are historical. Restore original monitor app readings.")
     }
     private func finish(_ message: String) {
         active = false; deadline?.invalidate(); deadline = nil
@@ -142,70 +231,235 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     }
 }
 
-struct ContentView: View {
-    @StateObject private var monitor = Monitor()
-    @Environment(\.scenePhase) private var scenePhase
-    @State private var selected: CBPeripheral?
-    @State private var confirm = false
-    private let navy = Color(red:0.02, green:0.13, blue:0.23)
+enum NivviMode: String, CaseIterable {
+    case day = "Day"
+    case night = "Night"
+
+    var background: Color {
+        self == .night ? Color(red: 0.02, green: 0.13, blue: 0.23) : Color(red: 0.08, green: 0.28, blue: 0.36)
+    }
+    var secondary: Color { self == .night ? Color(red: 0.13, green: 0.27, blue: 0.37) : Color(red: 0.14, green: 0.39, blue: 0.46) }
+    var greeting: String { self == .night ? "Good night," : "Good morning," }
+    var symbol: String { self == .night ? "moon.stars.fill" : "sun.max.fill" }
+}
+
+struct ProfileSetupView: View {
+    @Binding var name: String
+    @Binding var birthDate: Date
+    @Binding var gender: String
+    @Environment(\.dismiss) private var dismiss
+    @State private var saved = false
+    private let genders = ["Girl", "Boy", "Other", "Prefer not to say"]
+
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment:.leading, spacing:20) {
-                    Text("Neebo Connect").font(.largeTitle.bold())
-                    Text("RESEARCH PROTOTYPE • No medical alerts").font(.caption).foregroundStyle(.yellow)
-                    Text(monitor.status).foregroundStyle(.cyan)
-                    card("Battery", monitor.battery, "Standard Bluetooth battery value")
-                    card("Heart rate", "Not decoded", "No guessed measurements")
-                    card("Blood oxygen", "Not decoded", "No guessed measurements")
-                    card("FFEA counter", monitor.counter, "Sleep duration is unverified")
-                    if let date = monitor.lastSample {
-                        Text("Last sample: \(date.formatted(date:.omitted, time:.standard))").font(.caption)
-                    }
-                    HStack {
-                        Button("Scan", action:monitor.scan).disabled(monitor.active)
-                        Button("Stop", action:monitor.stop)
-                    }.buttonStyle(.borderedProminent)
-                    ForEach(monitor.devices, id:\.identifier) { p in
-                        Button("Capture \(p.name ?? "NB0") for 2 minutes") { selected = p; confirm = true }
-                            .disabled(monitor.active)
-                    }
-                    Text("Raw data • \(monitor.readings.reduce(0) { $0 + $1.count }) samples").font(.headline)
-                    ForEach(monitor.readings) { r in
-                        VStack(alignment:.leading) {
-                            Text("\(r.id) • \(r.count) samples").font(.caption.bold())
-                            Text(r.hex).font(.system(.caption, design:.monospaced)).textSelection(.enabled)
-                        }
-                    }
-                    Text("Saved recordings").font(.headline)
-                    Text("Stop capture before sharing. Files also appear in Files → On My iPhone → Neebo Connect.").font(.caption)
-                    ForEach(monitor.files, id:\.self) { url in
-                        ShareLink(item:url) { Label(url.lastPathComponent, systemImage:"square.and.arrow.up").font(.caption) }
-                            .disabled(monitor.active)
-                    }
-                }.padding(24)
-            }.background(navy).foregroundStyle(.white)
-            .alert("Start a short test?", isPresented:$confirm) {
-                Button("Cancel", role:.cancel) {}
-                Button("Start") { if let p = selected { monitor.connect(p) } }
-            } message: {
-                Text("This can interrupt the original Neebo app. Test only when you are not relying on its alerts. Keep this app open, then reconnect the original app after testing.")
+            Form {
+                Section { Text("Nivvi is personalised to your child and stays on this iPhone by default.").font(.subheadline).foregroundStyle(.secondary) }
+                Section("Child profile") {
+                    TextField("Child’s name", text: $name)
+                    DatePicker("Date of birth", selection: $birthDate, in: ...Date(), displayedComponents: .date)
+                    Picker("Gender (optional)", selection: $gender) { ForEach(genders, id: \.self) { Text($0).tag($0) } }
+                }
+                Section { Button("Save profile") { saved = true; dismiss() }.disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
             }
-            .onChange(of:scenePhase) { phase in
-                if phase == .background { monitor.stop() }
-            }
-        }.preferredColorScheme(.dark)
-    }
-    private func card(_ title:String, _ value:String, _ note:String) -> some View {
-        VStack(alignment:.leading, spacing:7) {
-            Text(title).font(.headline).foregroundStyle(.cyan)
-            Text(value).font(.title2.bold())
-            Text(note).font(.caption).foregroundStyle(.secondary)
-        }.frame(maxWidth:.infinity, alignment:.leading).padding(18).background(.white.opacity(0.07)).clipShape(RoundedRectangle(cornerRadius:18))
+            .navigationTitle("Set up Nivvi")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+        .interactiveDismissDisabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
 }
 
-@main
-struct NeeboConnectApp: App {
-    var body: some Scene { WindowGroup { ContentView() } }
+struct ContentView: View {
+    @StateObject private var monitor = Monitor()
+    @Environment(\.scenePhase) private var scenePhase
+    @AppStorage("nivvi.profile.name") private var childName = ""
+    @AppStorage("nivvi.profile.birthDate") private var childBirthDate = 0.0
+    @AppStorage("nivvi.profile.gender") private var childGender = "Prefer not to say"
+    @AppStorage("nivvi.family.code") private var familyCode = ""
+    @AppStorage("nivvi.family.role") private var familyRole = "Primary monitor"
+    @AppStorage("nivvi.demo.mode") private var demoMode = true
+    @State private var showProfile = false
+    @State private var selected: CBPeripheral?
+    @State private var confirm = false
+    @State private var tab = 0
+    @State private var manualMode: NivviMode?
+    private let coral = Color(red: 1, green: 0.56, blue: 0.53)
+    private let lavender = Color(red: 0.85, green: 0.82, blue: 1.0)
+    private let teal = Color(red: 0.56, green: 0.89, blue: 0.82)
+
+    private var automaticMode: NivviMode {
+        let hour = Calendar.current.component(.hour, from: Date())
+        return (hour >= 20 || hour < 8) ? .night : .day
+    }
+    private var mode: NivviMode { manualMode ?? automaticMode }
+    private var connected: Bool { monitor.active }
+    private var heartRateDisplay: String { (monitor.verifiedHeartRate ?? monitor.ffe7HeartRateCandidate).map { "\($0) bpm" } ?? "Not decoded" }
+    private var oxygenDisplay: String { (monitor.verifiedOxygen ?? monitor.ffe7OxygenCandidate).map { "\($0)%" } ?? "Not decoded" }
+    private var liveMeasurementNote: String {
+        if monitor.verifiedHeartRate != nil || monitor.verifiedOxygen != nil { return "Standard Bluetooth value" }
+        if monitor.ffe7HeartRateCandidate != nil || monitor.ffe7OxygenCandidate != nil { return "FFE7 candidate · confirm against Neebo" }
+        return monitor.profile == .heartRate ? "Waiting for verified data" : "Waiting for device data"
+    }
+    private var demoHistory: [TrendSample] { [TrendSample(id: "mon", day: "Mon", heartRate: 86, oxygen: 98), TrendSample(id: "tue", day: "Tue", heartRate: 88, oxygen: 99), TrendSample(id: "wed", day: "Wed", heartRate: 87, oxygen: 99), TrendSample(id: "thu", day: "Thu", heartRate: 90, oxygen: 98), TrendSample(id: "fri", day: "Fri", heartRate: 88, oxygen: 99), TrendSample(id: "sat", day: "Sat", heartRate: 85, oxygen: 99), TrendSample(id: "sun", day: "Sun", heartRate: 88, oxygen: 99)] }
+    private var displayName: String { childName.isEmpty ? "Your child" : childName }
+    private var birthDate: Date { childBirthDate == 0 ? Date() : Date(timeIntervalSince1970: childBirthDate) }
+    private var ageText: String {
+        guard childBirthDate > 0 else { return "" }
+        let components = Calendar.current.dateComponents([.year, .month], from: birthDate, to: Date())
+        let years = components.year ?? 0; let months = components.month ?? 0
+        return years > 0 ? "\(years)y \(months)m" : "\(months)m"
+    }
+
+    var body: some View {
+        ZStack {
+            mode.background.ignoresSafeArea()
+            VStack(spacing: 0) {
+                header
+                ScrollView(showsIndicators: false) {
+                    Group {
+                        if tab == 0 { home } else if tab == 1 { history } else if tab == 2 { device } else { settings }
+                    }.padding(.horizontal, 20).padding(.bottom, 110)
+                }
+                bottomBar
+            }
+        }
+        .preferredColorScheme(.dark)
+        .alert("Start a short test?", isPresented: $confirm) {
+            Button("Cancel", role: .cancel) {}
+            Button("Start") { if let p = selected { monitor.connect(p) } }
+        } message: {
+            Text("This can interrupt the original monitor app. Use only when you are not relying on its alerts.")
+        }
+        .onAppear { if childName.isEmpty { showProfile = true } }
+        .sheet(isPresented: $showProfile) { ProfileSetupView(name: $childName, birthDate: Binding(get: { birthDate }, set: { childBirthDate = $0.timeIntervalSince1970 }), gender: $childGender) }
+        .onChange(of: scenePhase) { phase in if phase == .background { monitor.stop() } }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(mode.greeting).font(.subheadline).foregroundStyle(.white.opacity(0.72))
+                    Text(displayName).font(.system(size: 34, weight: .bold, design: .rounded))
+                }
+                Spacer()
+                Button { manualMode = manualMode == nil ? (mode == .night ? .day : .night) : nil } label: {
+                    Image(systemName: mode.symbol).font(.title3).foregroundStyle(mode == .night ? lavender : .yellow)
+                        .frame(width: 48, height: 48).background(.white.opacity(0.12)).clipShape(Circle())
+                }
+            }
+            HStack(spacing: 10) {
+                Circle().fill(connected ? teal : .gray).frame(width: 11, height: 11)
+                Text(demoMode ? "Preview trends · live device not connected" : (connected ? "Connected · live" : "Not connected")).font(.subheadline.weight(.semibold))
+                Spacer()
+                Text("\(mode.rawValue) mode").font(.caption.weight(.bold)).padding(.horizontal, 11).padding(.vertical, 6)
+                    .background(.white.opacity(0.12)).clipShape(Capsule())
+            }
+            if !ageText.isEmpty { Text("\(ageText) · \(childGender == "Prefer not to say" ? "" : childGender)").font(.caption).foregroundStyle(.white.opacity(0.6)) }
+        }.padding(.top, 16).padding(.bottom, 18)
+    }
+
+    private var home: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            if monitor.alarmActive {
+                HStack(spacing: 12) {
+                    Image(systemName: "bell.and.waves.fill").foregroundStyle(.white)
+                    VStack(alignment: .leading, spacing: 3) { Text("High-rate alert").font(.headline); Text("Check the child profile and follow the cardiology plan.").font(.caption) }
+                    Spacer()
+                    Button("Silence") { monitor.silenceAlarm() }.buttonStyle(.bordered).tint(.white)
+                }.padding(16).background(coral).clipShape(RoundedRectangle(cornerRadius: 20))
+            }
+            Text("CURRENT STATUS").font(.caption.weight(.bold)).tracking(1.2).foregroundStyle(.white.opacity(0.55))
+            HStack(alignment: .firstTextBaseline) { Text(mode == .night ? "Sleeping well" : "Daytime watch").font(.title2.bold()); Spacer(); Image(systemName: mode.symbol).foregroundStyle(mode == .night ? lavender : .yellow) }
+            HStack(spacing: 14) {
+                readingCard("Heart rate", heartRateDisplay, demoMode ? "See demo trend in History" : liveMeasurementNote, "heart.fill", coral)
+                readingCard("Oxygen", oxygenDisplay, demoMode ? "See demo trend in History" : liveMeasurementNote, "lungs.fill", teal)
+            }
+            HStack(spacing: 14) {
+                smallCard("Temperature", "Not decoded", "thermometer.medium", lavender)
+                smallCard("Sleep", "No data", "bed.double.fill", coral)
+            }
+            Button { tab = 1 } label: {
+                HStack { Text("View today’s story").font(.headline); Spacer(); Image(systemName: "arrow.right") }
+                    .foregroundStyle(Color(red: 0.06, green: 0.16, blue: 0.25)).padding(18).frame(maxWidth: .infinity)
+                    .background(lavender).clipShape(RoundedRectangle(cornerRadius: 20))
+            }
+            if !monitor.status.isEmpty { Text(monitor.status).font(.caption).foregroundStyle(.white.opacity(0.6)).lineLimit(2) }
+        }
+    }
+
+    private var history: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("History").font(.largeTitle.bold())
+            Text("Your recordings stay on this iPhone").foregroundStyle(.white.opacity(0.65))
+            if demoMode {
+                panel { VStack(alignment: .leading, spacing: 12) {
+                    HStack { Text("DEMO TREND · EXAMPLE DATA").font(.caption.bold()).foregroundStyle(.white.opacity(0.55)); Spacer(); Text("Not live").font(.caption.bold()).foregroundStyle(coral) }
+                    Text("Overnight heart rate").font(.title3.bold())
+                    Chart(demoHistory) { sample in
+                        LineMark(x: .value("Day", sample.day), y: .value("BPM", sample.heartRate)).foregroundStyle(coral)
+                        PointMark(x: .value("Day", sample.day), y: .value("BPM", sample.heartRate)).foregroundStyle(coral)
+                    }.chartYScale(domain: 80...95).chartXAxis { AxisMarks() }.chartYAxis { AxisMarks(position: .leading) }.frame(height: 180)
+                    Text("Example trend for exploring the interface. Live readings appear only after a verified device is connected.").font(.caption).foregroundStyle(.white.opacity(0.65))
+                } }
+            } else {
+                panel { VStack(alignment: .leading, spacing: 14) { Text("TODAY").font(.caption.bold()).foregroundStyle(.white.opacity(0.55)); Text("No verified readings yet").font(.title3.bold()); Text("Nivvi will build a timeline when the device format is decoded.").font(.subheadline).foregroundStyle(.white.opacity(0.65)) } }
+            }
+            panel { VStack(alignment: .leading, spacing: 12) { Text("RAW CAPTURE").font(.caption.bold()).foregroundStyle(.white.opacity(0.55)); Text("\(monitor.readings.reduce(0) { $0 + $1.count }) samples").font(.title3.bold()); ForEach(monitor.readings.prefix(4)) { r in Text("\(r.id) · \(r.count) packets").font(.caption.monospaced()).foregroundStyle(.white.opacity(0.7)) } } }
+        }
+    }
+
+    private var device: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Device").font(.largeTitle.bold())
+            panel { HStack(spacing: 14) { Image(systemName: "wave.3.right.circle.fill").font(.largeTitle).foregroundStyle(teal); VStack(alignment: .leading) { Text("NBO wearable").font(.headline); Text(connected ? "Connected" : "Ready to connect").foregroundStyle(connected ? teal : .white.opacity(0.6)) }; Spacer() } }
+            panel { VStack(alignment: .leading, spacing: 6) { Text("PROFILE").font(.caption.bold()).foregroundStyle(.white.opacity(0.55)); Text(monitor.profile.rawValue).font(.headline); Text("Nivvi only displays measurements when the Bluetooth format is recognised.").font(.caption).foregroundStyle(.white.opacity(0.6)) } }
+            HStack(spacing: 14) { metric("Battery", monitor.battery == "—" ? "—" : monitor.battery); metric("Mode", mode.rawValue) }
+            Button { monitor.active ? monitor.stop() : monitor.scan() } label: { Text(monitor.active ? "Stop capture" : "Scan for NBO").font(.headline).frame(maxWidth: .infinity).padding(17) }.buttonStyle(.borderedProminent).tint(coral)
+            ForEach(monitor.devices, id: \.identifier) { p in Button("Capture \(p.name ?? "NBO") for 2 minutes") { selected = p; confirm = true }.buttonStyle(.bordered) }
+            Text("The charger appears as NC0 and is not the wearable.").font(.caption).foregroundStyle(.white.opacity(0.55))
+        }
+    }
+
+    private var settings: some View { VStack(alignment: .leading, spacing: 18) {
+        Text("Settings").font(.largeTitle.bold())
+        panel { VStack(alignment: .leading, spacing: 10) {
+            HStack { Label("Child profile", systemImage: "person.crop.circle"); Spacer(); Button("Edit") { showProfile = true }.buttonStyle(.bordered) }
+            Text("\(displayName)\(ageText.isEmpty ? "" : " · \(ageText)")").font(.headline)
+            Text("Stored on this iPhone by default.").font(.caption).foregroundStyle(.white.opacity(0.6))
+        } }
+        panel { VStack(alignment: .leading, spacing: 10) {
+            Toggle("Demo mode", isOn: $demoMode).tint(teal)
+            Text("Shows clearly labelled example readings for exploring Nivvi. Demo data never triggers alarms or uploads to CloudKit.").font(.caption).foregroundStyle(.white.opacity(0.6))
+        } }
+        panel { VStack(alignment: .leading, spacing: 12) {
+            HStack { Label("Family Circle", systemImage: "person.3.fill"); Spacer(); Text(familyCode.isEmpty ? "Not set up" : "Active").font(.caption).foregroundStyle(familyCode.isEmpty ? .white.opacity(0.55) : teal) }
+            Picker("Your role", selection: $familyRole) { Text("Primary monitor").tag("Primary monitor"); Text("Parent/caregiver").tag("Parent/caregiver"); Text("View only").tag("View only") }.pickerStyle(.menu)
+            if familyCode.isEmpty {
+                Button("Create family share code") { familyCode = String(format: "%06d", Int.random(in: 100000...999999)) }.buttonStyle(.borderedProminent).tint(teal)
+            } else {
+                HStack { Text(familyCode).font(.system(.title2, design: .monospaced).bold()); Spacer(); ShareLink(item: "Join our Nivvi Family Circle with code: \(familyCode)") { Image(systemName: "square.and.arrow.up") } }
+                Text("Share this code with Mum, Dad or another trusted caregiver. CloudKit will sync members and alerts after the family container is configured.").font(.caption).foregroundStyle(.white.opacity(0.6))
+            }
+        } }
+        panel { VStack(alignment: .leading, spacing: 12) {
+            Toggle("High heart-rate alarm", isOn: $monitor.highRateAlarmEnabled).tint(coral)
+            Stepper("Threshold: \(monitor.highRateThreshold) bpm", value: $monitor.highRateThreshold, in: 120...260, step: 5)
+            Stepper("Must stay high: \(monitor.highRateDurationSeconds) seconds", value: $monitor.highRateDurationSeconds, in: 5...120, step: 5)
+            Text("Set these values only from your child’s cardiology or nursery plan. The alarm remains off until enabled, and only works with verified heart-rate data.").font(.caption).foregroundStyle(.white.opacity(0.6))
+            Text("Nivvi sends a Time Sensitive iPhone notification and sound. Critical Alerts require Apple approval and cannot be guaranteed by an ordinary app.").font(.caption).foregroundStyle(.white.opacity(0.6))
+        } }
+        panel { Label("Day/night mode", systemImage: "sun.and.horizon.fill"); Text("Automatic mode follows local time. Sleep detection will be added once movement data is decoded.").font(.caption).foregroundStyle(.white.opacity(0.6)) }
+        panel { Label("Privacy", systemImage: "lock.fill"); Text("No legacy login. No cloud history by default.").font(.caption).foregroundStyle(.white.opacity(0.6)) }
+    } }
+
+    private var bottomBar: some View { HStack { nav("house.fill", "Home", 0); nav("chart.xyaxis.line", "History", 1); nav("wave.3.right", "Device", 2); nav("gearshape.fill", "Settings", 3) }.padding(8).background(.white.opacity(0.1)).clipShape(Capsule()).padding(.horizontal, 18).padding(.bottom, 10) }
+    private func nav(_ icon: String, _ title: String, _ index: Int) -> some View { Button { withAnimation(.easeInOut(duration: 0.2)) { tab = index } } label: { VStack(spacing: 4) { Image(systemName: icon); Text(title).font(.caption2) }.foregroundStyle(tab == index ? lavender : .white.opacity(0.65)).frame(maxWidth: .infinity).padding(.vertical, 8).background(tab == index ? .white.opacity(0.12) : .clear).clipShape(Capsule()) } }
+    private func panel<Content: View>(@ViewBuilder _ content: () -> Content) -> some View { content().padding(18).frame(maxWidth: .infinity, alignment: .leading).background(.white.opacity(0.09)).clipShape(RoundedRectangle(cornerRadius: 22)) }
+    private func readingCard(_ title: String, _ value: String, _ note: String, _ icon: String, _ tint: Color) -> some View { VStack(alignment: .leading, spacing: 10) { Image(systemName: icon).foregroundStyle(tint); Text(title).font(.subheadline); Text(value).font(.headline); Text(note).font(.caption2).foregroundStyle(.white.opacity(0.55)) }.padding(16).frame(maxWidth: .infinity, minHeight: 150, alignment: .leading).background(.white.opacity(0.09)).clipShape(RoundedRectangle(cornerRadius: 22)) }
+    private func smallCard(_ title: String, _ value: String, _ icon: String, _ tint: Color) -> some View { HStack { Image(systemName: icon).foregroundStyle(tint); VStack(alignment: .leading) { Text(title).font(.subheadline); Text(value).font(.caption).foregroundStyle(.white.opacity(0.6)) } }.padding(16).frame(maxWidth: .infinity, alignment: .leading).background(.white.opacity(0.09)).clipShape(RoundedRectangle(cornerRadius: 18)) }
+    private func metric(_ title: String, _ value: String) -> some View { VStack(alignment: .leading) { Text(title).font(.caption).foregroundStyle(.white.opacity(0.55)); Text(value).font(.headline) }.padding(16).frame(maxWidth: .infinity, alignment: .leading).background(.white.opacity(0.09)).clipShape(RoundedRectangle(cornerRadius: 18)) }
 }
+
+@main
+struct NivviApp: App { var body: some Scene { WindowGroup { ContentView() } } }
