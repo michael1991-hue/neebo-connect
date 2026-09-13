@@ -56,12 +56,14 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     @Published var history: [SavedMeasurement] = []
     @Published var measurementTime: Date?
     @Published var historyError: String?
+    private var historyLoadFailed = false
     private var freshnessTimer: Timer?
     private var previousHeartRateTime: Date?
     private var highRateSince: Date?
     private var historyURL: URL { folder.appendingPathComponent("measurements.json") }
     private func saveMeasurement(heartRate: Int?, oxygen: Int?, source: String) {
         measurementTime = Date()
+        guard !historyLoadFailed else { return }
         history.append(SavedMeasurement(time: Date(), heartRate: heartRate, oxygen: oxygen, source: source))
         // Bound local storage to the latest 20,000 readings.
         if history.count > 20_000 { history.removeFirst(history.count - 20_000) }
@@ -69,7 +71,9 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         catch { historyError = "History could not be saved: \(error.localizedDescription)" }
     }
     func clearHistory() {
-        do { try Data("[]".utf8).write(to: historyURL, options: .atomic); history = []; historyError = nil }
+        do { try Data("[]".utf8).write(to: historyURL, options: .atomic); history = []; historyError = nil; historyLoadFailed = false
+            try? FileManager.default.removeItem(at: folder.appendingPathComponent("Nivvi-history.csv"))
+        }
         catch { historyError = "History could not be cleared." }
     }
     func exportHistory() -> URL? {
@@ -99,7 +103,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         refreshFiles()
         if FileManager.default.fileExists(atPath: historyURL.path) {
             do { history = try JSONDecoder().decode([SavedMeasurement].self, from: Data(contentsOf: historyURL)) }
-            catch { historyError = "Saved history could not be read. Original file preserved." }
+            catch { historyLoadFailed = true; historyError = "Saved history could not be read. Original file preserved; new history storage is paused." }
         }
         freshnessTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.expireMeasurements() }
     }
@@ -476,6 +480,11 @@ struct ContentView: View {
                                 LineMark(x: .value("Time", sample.time), y: .value("BPM", bpm), series: .value("Source", sample.source)).foregroundStyle(coral)
                             }
                         }.frame(height: 180)
+                        Chart(Array(monitor.history.suffix(300))) { sample in
+                            if let oxygen = sample.oxygen {
+                                LineMark(x: .value("Time", sample.time), y: .value("Oxygen %", oxygen), series: .value("Source", sample.source)).foregroundStyle(teal)
+                            }
+                        }.frame(height: 140)
                         ForEach(Array(monitor.history.suffix(20).reversed())) { sample in
                             VStack(alignment: .leading) {
                                 Text(sample.time.formatted(date: .abbreviated, time: .standard)).font(.caption)
