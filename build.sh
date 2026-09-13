@@ -10,7 +10,7 @@ Path('build/Nivvi-unsigned.ipa').unlink(missing_ok=True)
 PYCLEAN
 mkdir -p "$app_dir"
 sdk_path="$(xcrun --sdk iphoneos --show-sdk-path)"
-xcrun swiftc -swift-version 5 -parse-as-library -O \
+SDKROOT="$sdk_path" xcrun --sdk iphoneos swiftc -swift-version 5 -parse-as-library -O \
   -sdk "$sdk_path" -target arm64-apple-ios16.0 \
   -module-name Nivvi -framework SwiftUI -framework CoreBluetooth -framework Charts -framework AudioToolbox -framework UserNotifications -framework AVFoundation -framework PhotosUI -framework ImageIO \
   -Xlinker -rpath -Xlinker @executable_path/Frameworks \
