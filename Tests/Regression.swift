@@ -73,6 +73,7 @@ engine.reset(); limits.experimentalNBOEnabled = true
 for time in stride(from: 0.0, through: 60.0, by: 5.0) { _ = sample(220, time, source: "experimental-FFE7", allowExperimental: true) }
 check(engine.active == .high, "explicit experimental NBO alarm opt-in works")
 limits.experimentalNBOEnabled = false
+engine.reset()
 for time in stride(from: 0.0, through: 60.0, by: 5.0) { _ = sample(40, time, source: "demo") }
 check(engine.active == nil, "demo data never drives alarms")
 limits.lowThreshold = 190
