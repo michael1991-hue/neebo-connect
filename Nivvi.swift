@@ -142,6 +142,58 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     private var readQueue: [CBCharacteristic] = []
     private var measurementCharacteristic: CBCharacteristic?
     private var lastCustomMeasurement: Date?
+    private var transportPolicy = MeasurementTransportPolicy()
+    private var retryScan = false
+    private var backgroundEnteredAt: Date?
+    private var backgroundReminder = BackgroundDataReminderPolicy()
+    @Published private(set) var measurementNotificationsEnabled = false
+    @Published private(set) var lastBackgroundReading: Date?
+    @Published private(set) var lastBackgroundSave: Date?
+    @Published private(set) var backgroundReadingCount = 0
+    var backgroundDeliverySummary: String {
+        if !connection.isConnected { return "Waiting for connection" }
+        if lastBackgroundReading != nil { return "Background readings observed · check History for gaps" }
+        return measurementNotificationsEnabled ? "Subscribed · phone test needed" : "Polling only · background unconfirmed"
+    }
+    private func startMeasurementPolling() {
+        guard pollTimer == nil else { return }
+        let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
+            // This timer runs only while iOS grants execution. BLE events wake us;
+            // never use audio, a busy loop or chained reads to prevent suspension.
+            self?.requestCustomFallback()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        pollTimer = timer
+    }
+    private func requestCustomFallback() {
+        guard let p = peripheral, owns(p), let c = measurementCharacteristic,
+              pendingRead == nil, c.properties.contains(.read),
+              transportPolicy.shouldRead(at: Date(), lastMeasurement: lastCustomMeasurement) else { return }
+        enqueueRead(c)
+    }
+    private func refreshBackgroundDelivery() {
+        guard let p = peripheral, owns(p) else { measurementNotificationsEnabled = false; return }
+        measurementNotificationsEnabled = (p.services ?? []).contains { service in
+            let sid = BluetoothPolicy.normalized(service.uuid.uuidString)
+            return (service.characteristics ?? []).contains { c in
+                let cid = BluetoothPolicy.normalized(c.uuid.uuidString)
+                let used = profile.hasStandardHeartRate ? (sid == "180D" && cid == "2A37") :
+                    profile.hasPulseOximeter ? (sid == "1822" && cid == "2A5F") :
+                    (sid == "FFE0" && cid == BluetoothPolicy.customMeasurementUUID)
+                return used && c.isNotifying
+            }
+        }
+    }
+    private func cancelBackgroundWatchdog() {
+        backgroundReminder.reset()
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["nivvi-background-data"])
+    }
+    private func scheduleBackgroundWatchdog() {
+        guard !foreground, session.enabled else { return }
+        guard let delay = backgroundReminder.delay(at: Date(), lastMeasurement: lastHeartRateUpdate) else { return }
+        notify(title: "Check sensor data", body: "Nivvi has not received a recent heart-rate update. Open the app to check the wearable and connection.",
+               identifier: "nivvi-background-data", delay: delay, soundName: "NivviSensor.wav")
+    }
     private func note(_ text: String) {
         diagnostics.append(text)
         if diagnostics.count > 30 { diagnostics.removeFirst(diagnostics.count - 30) }
@@ -155,6 +207,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     private func readNext() {
         guard connection.isConnected, pendingRead == nil, !readQueue.isEmpty, let p = peripheral else { return }
         pendingRead = readQueue.removeFirst()
+        if pendingRead === measurementCharacteristic { transportPolicy.didRequest(at: Date()) }
         p.readValue(for: pendingRead!)
     }
     private func owns(_ p: CBPeripheral) -> Bool { p === peripheral && session.shouldReconnect(p.identifier) && p.state == .connected && connection != .stopping }
@@ -274,6 +327,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             let today = Calendar.current.startOfDay(for: entry.time)
             if !historyDays.contains(today) { historyDays = try archive.days() }
             historyError = nil
+            if !foreground { lastBackgroundSave = entry.time }
         } catch { historyError = "History could not be saved: \(error.localizedDescription)" }
     }
     func selectHistoryDay(_ day: Date) {
@@ -323,6 +377,11 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     }
     private func receiveHeartRate(at time: Date) {
         lastHeartRateUpdate = time
+        if !foreground {
+            lastBackgroundReading = time
+            backgroundReadingCount += 1
+            scheduleBackgroundWatchdog()
+        }
         if let interval = heartRateFreshness.receive(at: time) {
             sampling.reset()
             recordEvent(kind: "measurement", title: "Heart-rate readings resumed", detail: "Usable heart-rate data received again. \(Int(interval)) seconds between usable readings; this does not identify the cause of the gap.")
@@ -351,9 +410,16 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     private let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     override init() {
         super.init()
+        // App notifications are delivered with the SwiftUI scene lifecycle too.
+        // Keep these on the long-lived monitor, independent of the selected tab.
+        NotificationCenter.default.addObserver(self, selector: #selector(enteredBackground),
+                                               name: UIApplication.didEnterBackgroundNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(becameActive),
+                                               name: UIApplication.didBecomeActiveNotification, object: nil)
         if let data = UserDefaults.standard.data(forKey: "nivvi.alarms"), let saved = try? JSONDecoder().decode(AlarmSettings.self, from: data) { alarmSettings = saved; experimentalCustomAlarms = saved.experimentalCustomEnabled }
         session.deviceID = UserDefaults.standard.string(forKey: "nivvi.session.device").flatMap(UUID.init(uuidString:))
         session.enabled = UserDefaults.standard.bool(forKey: "nivvi.session.enabled")
+        if session.enabled && UIApplication.shared.applicationState == .background { backgroundEnteredAt = Date() }
         UNUserNotificationCenter.current().delegate = self
         // Instantiate at launch with the same identifier, including a Bluetooth restoration launch.
         manager = CBCentralManager(delegate: self, queue: .main, options: [CBCentralManagerOptionRestoreIdentifierKey: "nivvi.wearable.session"])
@@ -471,20 +537,42 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             }
         }
     }
+    @objc private func enteredBackground() { applicationActive(false) }
+    @objc private func becameActive() { applicationActive(true) }
     func applicationActive(_ isActive: Bool) {
+        guard foreground != isActive else { return }
         foreground = isActive
         if isActive {
+            cancelBackgroundWatchdog()
             expireMeasurements(); refreshNotificationStatus()
+            if let start = backgroundEnteredAt {
+                let count = backgroundReadingCount
+                recordEvent(kind: "measurement", title: "Background recording check",
+                            detail: "\(count) usable heart-rate updates received while away for \(Int(Date().timeIntervalSince(start))) seconds. Saved history retains its 30-second sampling interval; gaps remain visible.")
+                backgroundEnteredAt = nil
+            }
             if criticalAlertActive && !alarmAcknowledged { startSiren(loop: true) }
-            if let c = measurementCharacteristic { enqueueRead(c) }
-            if !active && session.enabled && manager.state == .poweredOn { resumeSession() }
+            // Resume a failed/suspended retry even when the UI still says reconnecting.
+            if session.enabled && manager.state == .poweredOn { resumeSession() }
+            requestCustomFallback()
         } else {
-            if criticalAlertActive, !alarmAcknowledged {
-                if alarmActive { notify(title: attentionTitle, body: "A heart-rate alarm is still active. Open Nivvi to acknowledge it.", identifier: "nivvi-rate-alarm") }
+            backgroundReadingCount = 0
+            if session.enabled {
+                backgroundEnteredAt = Date()
+                recordEvent(kind: "measurement", title: "Background monitoring started",
+                            detail: "Recording continues for usable Bluetooth updates delivered by iOS. A polling-only device may stop supplying data while the app is suspended.")
+                scheduleBackgroundWatchdog()
+            }
+            if criticalAlertActive, !alarmAcknowledged, alarmActive {
+                notify(title: attentionTitle, body: "A heart-rate alarm is still active. Open Nivvi to acknowledge it.", identifier: "nivvi-rate-alarm")
             }
             stopSiren()
-            // Notification delivery is owned by iOS; do not fake background audio to stay awake.
-            if isScanning { scanToken = UUID(); scanDeadline?.invalidate(); manager.stopScan(); connection = .idle }
+            // Stop only a user-initiated broad scan. Preserve saved-device recovery.
+            if isScanning {
+                scanToken = UUID(); scanDeadline?.invalidate(); manager.stopScan(); connection = .idle
+            }
+            if retryTimer != nil { beginRecoveryScan() }
+            requestCustomFallback()
         }
     }
     private func saveSession() {
@@ -492,32 +580,81 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         UserDefaults.standard.set(session.deviceID?.uuidString, forKey: "nivvi.session.device")
     }
     private func resetTransport() {
-        pollTimer?.invalidate(); noDataTimer?.invalidate(); retryTimer?.invalidate()
+        pollTimer?.invalidate(); pollTimer = nil; noDataTimer?.invalidate()
+        retryTimer?.invalidate(); retryTimer = nil; transportPolicy.reset()
+        measurementNotificationsEnabled = false
         readQueue = []; pendingRead = nil; measurementCharacteristic = nil
         clearLiveValues(); battery = "—"; lastSample = nil
     }
+    private func beginRecoveryScan() {
+        guard session.enabled, manager.state == .poweredOn else { return }
+        retryTimer?.invalidate(); retryTimer = nil
+        retryScan = true; connection = .reconnecting
+        // A filtered scan is retained by Core Bluetooth while this process sleeps.
+        manager.scanForPeripherals(withServices: BluetoothPolicy.measurementServices.map { CBUUID(string: $0) })
+    }
     private func resumeSession() {
         guard session.enabled, let id = session.deviceID, manager.state == .poweredOn else { return }
+        retryTimer?.invalidate(); retryTimer = nil
         if peripheral == nil { peripheral = manager.retrievePeripherals(withIdentifiers: [id]).first }
         guard let p = peripheral else {
-            connection = .reconnecting; status = "Looking for your saved wearable…"
-            manager.scanForPeripherals(withServices: BluetoothPolicy.measurementServices.map { CBUUID(string: $0) })
-            return
+            status = "Looking for your saved device…"
+            beginRecoveryScan(); return
         }
         p.delegate = self
-        if p.state == .connected {
-            connection = .discovering; p.discoverServices(nil)
-        } else {
-            connection = .reconnecting; status = "Reconnecting automatically. Keep the wearable nearby, or tap Disconnect to stop."
-            if p.state == .disconnected { manager.connect(p, options: [CBConnectPeripheralOptionNotifyOnDisconnectionKey: true]) }
+        switch p.state {
+        case .connected:
+            if retryScan { manager.stopScan(); retryScan = false }
+            if !connection.isConnected {
+                connection = .discovering
+                configureConnectedServices(p)
+            } else {
+                refreshBackgroundDelivery()
+            }
+        case .connecting:
+            connection = .reconnecting // Keep the existing OS-managed request.
+        case .disconnected:
+            if retryScan { manager.stopScan(); retryScan = false }
+            connection = .reconnecting
+            status = "Reconnecting automatically. Keep the device nearby, or tap Disconnect to stop."
+            manager.connect(p, options: [CBConnectPeripheralOptionNotifyOnDisconnectionKey: true])
+        case .disconnecting:
+            connection = .reconnecting // didDisconnect will resume after teardown.
+        @unknown default:
+            connection = .reconnecting
         }
     }
     func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
         let restored = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] ?? []
         for p in restored {
-            if session.shouldReconnect(p.identifier) { peripheral = p; p.delegate = self; connection = .reconnecting }
-            else { central.cancelPeripheralConnection(p) }
+            if session.shouldReconnect(p.identifier) {
+                peripheral = p; p.delegate = self; connection = .reconnecting
+                if p.state == .connected {
+                    connection = .discovering
+                    configureConnectedServices(p)
+                    note("Restored the saved Bluetooth connection and subscriptions.")
+                }
+            } else { central.cancelPeripheralConnection(p) }
         }
+    }
+    private func configureConnectedServices(_ p: CBPeripheral) {
+        guard owns(p) else { return }
+        guard let services = p.services, !services.isEmpty else { p.discoverServices(nil); return }
+        configureProfile(services)
+        for service in services {
+            if service.characteristics != nil { configureCharacteristics(service, peripheral: p) }
+            else { p.discoverCharacteristics(nil, for: service) }
+        }
+        if connection != .receiving { connection = .waiting }
+        refreshBackgroundDelivery()
+    }
+    private func configureProfile(_ services: [CBService]) {
+        let ids = Set(services.map { BluetoothPolicy.normalized($0.uuid.uuidString) })
+        if ids.contains("180D") && ids.contains("1822") { profile = .combined }
+        else if ids.contains("180D") { profile = .heartRate }
+        else if ids.contains("1822") { profile = .pulseOximeter }
+        else if ids.contains("FFE0") { profile = .custom }
+        else { profile = .generic }
     }
 
     func refreshFiles() {
@@ -576,7 +713,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     }
     func centralManager(_ central: CBCentralManager, didDiscover p: CBPeripheral, advertisementData: [String: Any], rssi RSSI: NSNumber) {
         if connection == .reconnecting && session.shouldReconnect(p.identifier) {
-            central.stopScan(); peripheral = p; p.delegate = self
+            central.stopScan(); retryScan = false; peripheral = p; p.delegate = self
             central.connect(p, options: [CBConnectPeripheralOptionNotifyOnDisconnectionKey: true]); return
         }
         guard connection == .scanning else { return }
@@ -601,6 +738,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             file = try FileHandle(forWritingTo: url); recording = url
         } catch { status = "Cannot create recording: \(error.localizedDescription)"; return }
         session.start(p.identifier); saveSession(); sampling.reset()
+        lastBackgroundReading = nil; lastBackgroundSave = nil; backgroundReadingCount = 0; retryScan = false
         recordEvent(kind: "connection", title: "Session started", detail: "Connecting to the selected wearable.")
         peripheral = p; p.delegate = self; connection = .connecting
         status = "Connecting to \(deviceNames[p.identifier] ?? p.name ?? "wearable")…"
@@ -617,7 +755,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     }
     func centralManager(_ central: CBCentralManager, didConnect p: CBPeripheral) {
         guard p === peripheral, session.shouldReconnect(p.identifier), connection != .stopping else { central.cancelPeripheralConnection(p); return }
-        resetTransport(); retrySeconds = 2; connection = .discovering; p.delegate = self
+        resetTransport(); retrySeconds = 2; retryScan = false; central.stopScan(); connection = .discovering; p.delegate = self
         status = "Connected. Discovering battery and measurement services…"
         note("Bluetooth connection established. Continuous session enabled.")
         recordEvent(kind: "connection", title: "Wearable connected", detail: "Continuous Bluetooth session active. Awaiting fresh measurements.")
@@ -633,9 +771,14 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         if !session.shouldReconnect(p.identifier) { finish("Disconnected."); return }
         resetTransport(); connection = .reconnecting
         status = "Connection failed. Retrying automatically: \(error?.localizedDescription ?? "wearable unavailable")"
-        // Avoid a tight retry loop on an immediate platform error. A pending BLE request itself has no timeout.
-        retryTimer = Timer.scheduledTimer(withTimeInterval: retrySeconds, repeats: false) { [weak self] _ in self?.resumeSession() }
-        retrySeconds = min(60, retrySeconds * 2)
+        // Leave a filtered scan owned by the OS in the background, rather than
+        // relying on a suspended timer or repeatedly reconnecting in a tight loop.
+        beginRecoveryScan()
+        if foreground {
+            let timer = Timer(timeInterval: retrySeconds, repeats: false) { [weak self] _ in self?.resumeSession() }
+            RunLoop.main.add(timer, forMode: .common); retryTimer = timer
+            retrySeconds = min(60, retrySeconds * 2)
+        }
     }
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral p: CBPeripheral, error: Error?) {
         guard p === peripheral else { return }
@@ -649,53 +792,62 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     }
     func peripheral(_ p: CBPeripheral, didDiscoverServices error: Error?) {
         guard owns(p) else { return }
-        if let error = error { note("Service discovery failed: \(error.localizedDescription)"); status = "Service discovery failed. Stop and reconnect."; return }
-        let services = Set((p.services ?? []).map { BluetoothPolicy.normalized($0.uuid.uuidString) })
-        note("Services: \(services.sorted().joined(separator: ", "))")
-        if services.contains("180D") && services.contains("1822") { profile = .combined }
-        else if services.contains("180D") { profile = .heartRate }
-        else if services.contains("1822") { profile = .pulseOximeter }
-        else if services.contains("FFE0") { profile = .custom }
-        else { profile = .generic }
-        if services.isEmpty { status = "Connected, but no services were returned. Stop and reconnect."; return }
-        for service in p.services ?? [] { p.discoverCharacteristics(nil, for: service) }
-        connection = .waiting
-        status = profile == .generic ? "Connected, but no supported heart-rate or oxygen service was found. This device may require a separate integration." : "Connected. Waiting for measurement data…"
+        if let error { note("Service discovery failed: \(error.localizedDescription)"); status = "Service discovery failed. Stop and reconnect."; return }
+        guard let services = p.services, !services.isEmpty else { status = "Connected, but no services were returned."; return }
+        configureProfile(services)
+        note("Services: \(services.map { $0.uuid.uuidString }.sorted().joined(separator: ", "))")
+        for service in services { p.discoverCharacteristics(nil, for: service) }
+        if connection != .receiving { connection = .waiting }
+        status = profile == .generic ? "Connected, but no supported measurement service was found." : "Connected. Waiting for measurement data…"
     }
     func peripheral(_ p: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
         guard owns(p) else { return }
-        if let error = error { note("Characteristic discovery failed: \(error.localizedDescription)"); return }
+        if let error { note("Characteristic discovery failed: \(error.localizedDescription)"); return }
+        configureCharacteristics(service, peripheral: p)
+    }
+    private func configureCharacteristics(_ service: CBService, peripheral p: CBPeripheral) {
         for c in (service.characteristics ?? []).sorted(by: { $0.uuid.uuidString < $1.uuid.uuidString }) {
             let sid = BluetoothPolicy.normalized(service.uuid.uuidString), cid = BluetoothPolicy.normalized(c.uuid.uuidString)
             log(["event": "characteristic", "service": sid, "uuid": cid, "properties": String(c.properties.rawValue)])
             guard BluetoothPolicy.shouldObserve(service: sid, characteristic: cid) else { continue }
             if (profile.hasStandardHeartRate || profile.hasPulseOximeter) && sid == "FFE0" { continue }
-            note("Found \(sid)/\(cid): read=\(c.properties.contains(.read)), notify=\(c.properties.contains(.notify))")
+            note("Found \(sid)/\(cid): read=\(c.properties.contains(.read)), notify=\(c.properties.contains(.notify)), indicate=\(c.properties.contains(.indicate)), subscribed=\(c.isNotifying)")
             if sid == "FFE0" && cid == BluetoothPolicy.customMeasurementUUID {
                 measurementCharacteristic = c
-                measurementStatus = "custom measurement found. Requesting measurements…"
-                pollTimer?.invalidate()
-                pollTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
-                    guard let self = self, self.owns(p), self.foreground else { return }
-                    if let c = self.measurementCharacteristic { self.enqueueRead(c) }
-                }
+                startMeasurementPolling()
+            }
+            // Preserve subscriptions restored by iOS. Never decode the cached
+            // c.value here as a newly received measurement.
+            if (c.properties.contains(.notify) || c.properties.contains(.indicate)) && !c.isNotifying {
+                p.setNotifyValue(true, for: c)
             }
             enqueueRead(c)
-            if c.properties.contains(.notify) || c.properties.contains(.indicate) { p.setNotifyValue(true, for: c) }
         }
+        refreshBackgroundDelivery()
     }
     func peripheral(_ p: CBPeripheral, didUpdateNotificationStateFor c: CBCharacteristic, error: Error?) {
         guard owns(p) else { return }
         note("\(c.uuid.uuidString) notifications \(c.isNotifying ? "on" : "off")\(error.map { ": " + $0.localizedDescription } ?? "")")
-        if c === measurementCharacteristic && error != nil { measurementStatus = "custom measurement notifications failed; trying readable values instead." }
+        refreshBackgroundDelivery()
+        if c === measurementCharacteristic && (error != nil || !c.isNotifying) {
+            measurementStatus = "Measurement notifications unavailable. Polling works only when iOS allows execution; background recording is unconfirmed."
+        }
     }
     func peripheral(_ p: CBPeripheral, didUpdateValueFor c: CBCharacteristic, error: Error?) {
-        defer { publishFamilySnapshot() }
         guard owns(p) else { return }
+        defer { publishFamilySnapshot() }
         // Check before accepting this packet: iOS may have suspended the timer.
         expireMeasurements()
-        if c === pendingRead { pendingRead = nil }
-        defer { readNext() }
+        let wasReadResponse = c === pendingRead
+        if wasReadResponse { pendingRead = nil }
+        defer {
+            readNext()
+            // A real auxiliary BLE notification can wake the process and allow
+            // one throttled measurement read. Read responses never chain reads.
+            if !wasReadResponse, c !== measurementCharacteristic, c.isNotifying, error == nil {
+                requestCustomFallback()
+            }
+        }
         if let error = error { note("Read failed for \(c.uuid.uuidString): \(error.localizedDescription)"); return }
         guard let data = c.value else { return }
         let uuid = BluetoothPolicy.normalized(c.uuid.uuidString)
@@ -884,7 +1036,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     }
     func stop() {
         if session.enabled { recordEvent(kind: "connection", title: "Session disconnected", detail: "Disconnected by the user. Automatic reconnection is off.") }
-        session.stop(); saveSession()
+        session.stop(); saveSession(); cancelBackgroundWatchdog(); retryScan = false; backgroundEnteredAt = nil
         scanToken = UUID(); scanDeadline?.invalidate(); manager.stopScan()
         resetTransport(); closeCaptureLog(); alarmEngine.reset(); alarmKind = nil; staleHeartRate.reset(); staleHeartRateDetected = false; alarmAcknowledged = false; clearAlarmNotifications(); stopSiren()
         if let p = peripheral, p.state != .disconnected && manager.state == .poweredOn {
@@ -1219,8 +1371,7 @@ struct ContentView: View {
         }
         .onChange(of: monitor.selectedHistoryDay) { _ in selectedHistoryReading = nil }
         .onChange(of: monitor.history.count) { count in if count == 0 { selectedHistoryReading = nil } }
-        .onChange(of: scenePhase) { phase in monitor.applicationActive(phase == .active) }
-        .onAppear { monitor.applicationActive(scenePhase == .active) }
+        // Monitoring lifecycle belongs to the long-lived monitor, independent of this view.
         .onReceive(NotificationCenter.default.publisher(for: .nivviShowLiveHeartRate)) { _ in tab = 0 }
         .scrollDismissesKeyboard(.interactively)
     }
@@ -1579,6 +1730,11 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 10) {
                 readinessRow("Bluetooth", monitor.bluetoothReady ? "On" : "Unavailable", monitor.bluetoothReady)
                 readinessRow("Device", connected ? "Connected" : "Not connected", connected)
+                Text("Background: " + monitor.backgroundDeliverySummary).font(.caption.bold())
+                if let time = monitor.lastBackgroundSave {
+                    Text("Last background history save: \(time.formatted(date: .omitted, time: .standard))").font(.caption)
+                }
+                Text("Switch apps or lock the phone normally. Swiping Nivvi away stops background monitoring until reopened. Polling-only devices may not supply readings while iOS suspends the app.").font(.caption)
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     let fresh = connected && heartRateDisplay != "No reading" && !monitor.staleHeartRateDetected &&
                         monitor.lastHeartRateUpdate.map { (0...30).contains(context.date.timeIntervalSince($0)) } == true

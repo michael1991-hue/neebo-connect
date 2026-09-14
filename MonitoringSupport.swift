@@ -378,3 +378,35 @@ final class EventHistoryStore {
         try output.write(to: destination, atomically: true, encoding: .utf8)
     }
 }
+
+
+// A single fallback read may follow a real BLE event, but reads never create
+// their own event loop. Both recent data and recent attempts throttle polling.
+struct MeasurementTransportPolicy {
+    private(set) var lastAttempt: Date?
+    func shouldRead(at now: Date, lastMeasurement: Date?) -> Bool {
+        for time in [lastAttempt, lastMeasurement].compactMap({ $0 }) {
+            if (0..<5).contains(now.timeIntervalSince(time)) { return false }
+        }
+        return true
+    }
+    mutating func didRequest(at now: Date) { lastAttempt = now }
+    mutating func reset() { lastAttempt = nil }
+}
+
+// Refresh the system-scheduled advisory without postponing it on unrelated data.
+// A newly received measurement must replace an imminent stale-data warning.
+struct BackgroundDataReminderPolicy {
+    private(set) var scheduledAt: Date?
+    private(set) var deadline: Date?
+    mutating func delay(at now: Date, lastMeasurement: Date?) -> TimeInterval? {
+        if let scheduledAt, let deadline,
+           (0..<5).contains(now.timeIntervalSince(scheduledAt)),
+           deadline.timeIntervalSince(now) > 30 { return nil }
+        let age = max(0, now.timeIntervalSince(lastMeasurement ?? now))
+        let delay = max(1, 40 - age)
+        scheduledAt = now; deadline = now.addingTimeInterval(delay)
+        return delay
+    }
+    mutating func reset() { self = Self() }
+}

@@ -50,6 +50,8 @@ jobs:
         run: brew install xcodegen
       - name: Validate App Store archive structure without signing
         run: bash scripts/archive.sh
+      - name: Check packaged Apple metadata, icon and Bluetooth background mode
+        run: python3 scripts/check-archive.py
       - name: Save archive for inspection
         uses: actions/upload-artifact@v4
         with:

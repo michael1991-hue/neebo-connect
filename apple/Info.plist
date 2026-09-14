@@ -13,13 +13,13 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.10.0</string>
+	<string>0.10.2</string>
 	<key>CFBundleSupportedPlatforms</key>
 	<array>
 		<string>iPhoneOS</string>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>15</string>
+	<string>17</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
@@ -27,7 +27,7 @@
 	<key>MinimumOSVersion</key>
 	<string>16.0</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>Connect to a compatible Bluetooth heart-rate device to display readings and save history on this iPhone.</string>
+	<string>Connect to a compatible Bluetooth device to receive readings, save history and check enabled alerts, including while you use another app or lock your iPhone.</string>
 	<key>NivviFamilyPrivacyURL</key>
 	<string></string>
 	<key>NivviFamilyServerURL</key>
@@ -48,10 +48,6 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>bluetooth-central</string>
-	</array>
-	<key>UIDeviceFamily</key>
-	<array>
-		<integer>1</integer>
 	</array>
 	<key>UIFileSharingEnabled</key>
 	<true/>
