@@ -27,6 +27,8 @@ import plistlib
 from pathlib import Path
 path = Path("build/Payload/Nivvi.app/Info.plist")
 with path.open("rb") as f: info = plistlib.load(f)
+# Xcode supplies this from TARGETED_DEVICE_FAMILY; the direct Swift build must set it.
+info["UIDeviceFamily"] = [1]
 with Path("build/icon-info.plist").open("rb") as f: info.update(plistlib.load(f))
 with path.open("wb") as f: plistlib.dump(info, f)
 assert info.get("CFBundleIcons", {}).get("CFBundlePrimaryIcon"), "App icon metadata is missing"

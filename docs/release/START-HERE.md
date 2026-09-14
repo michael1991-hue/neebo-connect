@@ -11,7 +11,8 @@ This update improves recording when the user switches apps or locks the phone. A
 - Schedule a quiet missing-data notification with iOS while backgrounded, refreshing it as usable heart-rate data arrives. Notification permission and phone settings still apply.
 - Record background entry and the number of usable updates received while away. Show the last successful background history save in Home's Monitoring readiness.
 - Preserve the 30-second history snapshot interval, per-reading alarm evaluation, timestamp expiry and visible gaps.
-- Check the built archive's version, icon, sounds, privacy manifest, iOS SDK and Bluetooth background mode in CI.
+- Set the iPhone device family at the Xcode target level, preventing XcodeGen defaults from producing an unintended iPad archive.
+- Check the built archive's version, icon, device family, sounds, privacy manifest, iOS SDK and Bluetooth background mode in CI.
 
 ## Evidence required before submission
 
