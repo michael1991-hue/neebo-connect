@@ -1560,7 +1560,7 @@ struct ContentView: View {
                 let alarmsEnabled = (monitor.alarmSettings.highEnabled || monitor.alarmSettings.lowEnabled) &&
                     (monitor.profile.hasStandardHeartRate || monitor.profile.hasPulseOximeter || (monitor.profile == .custom && monitor.experimentalCustomAlarms))
                 readinessRow("Rate alerts", alarmsEnabled ? "Configured" : "Off or unavailable", alarmsEnabled)
-                Text("Permission does not confirm audibility. Volume, Silent mode, Focus and iOS restrictions still apply.").font(.caption)
+                Text("Silent mode and Focus can silence alerts. Critical Alerts are not available in this build. Test your actual phone settings before use.").font(.caption)
                 Button("Guided alarm check") { showReadinessTest = true }.buttonStyle(.bordered)
                 Text("History saves every 30 seconds while data arrives. Alarms check incoming usable readings.").font(.caption)
             }.padding(.top, 8)
@@ -1606,10 +1606,10 @@ struct ReadingUpdateIcon: View {
         TimelineView(.animation(minimumInterval: 1.0 / 20, paused: !enabled || reduceMotion)) { context in
             let age = receivedAt.map { context.date.timeIntervalSince($0) } ?? 100
             let pulse = enabled && !reduceMotion && age >= 0 && age < 0.8 ? sin(age / 0.8 * .pi) : 0
-            Image(systemName: symbol).foregroundStyle(tint)
+            Image(systemName: symbol).font(.system(size: 44, weight: .medium)).foregroundStyle(tint)
                 .scaleEffect(1 + 0.12 * pulse)
                 .accessibilityHidden(true)
-        }.frame(height: 28)
+        }.frame(height: 60)
     }
 }
 
