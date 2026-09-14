@@ -1396,30 +1396,37 @@ struct ContentView: View {
         }
     }
 
-    private var settings: some View { VStack(alignment: .leading, spacing: 18) {
+    private var configuredRangeLabel: String {
+        let limits = monitor.alarmSettings
+        guard limits.validationMessage == nil else { return "Check limits" }
+        if limits.lowEnabled, limits.highEnabled, let low = limits.lowThreshold, let high = limits.highThreshold {
+            return "\(low)–\(high) bpm"
+        }
+        if limits.lowEnabled, let low = limits.lowThreshold { return "\(low) bpm or above" }
+        if limits.highEnabled, let high = limits.highThreshold { return "\(high) bpm or below" }
+        return "Not configured"
+    }
+
+    private var settings: some View { VStack(alignment: .leading, spacing: 16) {
         Text("Settings").font(.largeTitle.bold())
-        Text("Nivvi 0.8 · Build 8").font(.caption).foregroundStyle(.secondary)
         panel { VStack(alignment: .leading, spacing: 10) {
             HStack { Label("Child profile", systemImage: "person.crop.circle"); Spacer(); Button("Edit") { showProfile = true }.buttonStyle(.bordered) }
             Text("\(displayName)\(ageText.isEmpty ? "" : " · \(ageText)")").font(.headline)
             Text("Stored on this iPhone by default.").font(.caption).foregroundStyle(.white.opacity(0.6))
         } }
-        panel { VStack(alignment: .leading, spacing: 10) {
-            Label("Family circle", systemImage: "person.3.fill")
-            Text("Share saved readings and event logs using the CSV exports in History.").font(.caption)
-            Text("Live remote sharing is not enabled in this build. Readings remain on this iPhone; use the History exports to share saved records.").font(.caption).foregroundStyle(.white.opacity(0.7))
-        } }
         panel { VStack(alignment: .leading, spacing: 12) {
-            Text("Heart-rate alarm ranges").font(.headline)
-            HStack(spacing: 8) {
-                Text("LOW").foregroundStyle(coral).frame(maxWidth: .infinity)
-                Text("WITHIN LIMITS").foregroundStyle(teal).frame(maxWidth: .infinity)
-                Text("HIGH").foregroundStyle(coral).frame(maxWidth: .infinity)
-            }.font(.caption.bold()).padding(.vertical, 8).background(.white.opacity(0.08)).clipShape(Capsule())
-            Text("Within limits means between your configured low and high limits; it is not a health assessment. Limits come from your child’s care plan; Nivvi does not set them for you.").font(.caption)
-            Text("Mapped Bluetooth values should be checked independently. Enable this alarm option only when the mapped reading has been checked against your care plan.").font(.caption)
-            Toggle("Enable alarms for mapped readings", isOn: $monitor.experimentalCustomAlarms).tint(lavender)
-                .onChange(of: monitor.experimentalCustomAlarms) { _ in monitor.silenceAlarm() }
+            Text("Heart-rate alerts").font(.headline)
+            HStack { Label("Low", systemImage: "arrow.down.heart"); Spacer(); Text(monitor.alarmSettings.lowEnabled ? monitor.alarmSettings.lowThreshold.map { "Below \($0) bpm" } ?? "Set a limit" : "Off") }.foregroundStyle(coral)
+            Divider()
+            HStack { Text("Within limits"); Spacer(); Text(configuredRangeLabel) }.foregroundStyle(teal)
+            Divider()
+            HStack { Label("High", systemImage: "arrow.up.heart"); Spacer(); Text(monitor.alarmSettings.highEnabled ? monitor.alarmSettings.highThreshold.map { "Above \($0) bpm" } ?? "Set a limit" : "Off") }.foregroundStyle(coral)
+            Text("Use the limits from your care plan.").font(.caption)
+            DisclosureGroup("Adjust limits") { VStack(alignment: .leading, spacing: 12) {
+            if monitor.profile == .custom {
+                Text("Mapped readings require independent checking before enabling alarms.").font(.caption)
+                Toggle("Enable alarms for mapped readings", isOn: $monitor.experimentalCustomAlarms).tint(lavender)
+            }
             Toggle("High limit alarm", isOn: $monitor.alarmSettings.highEnabled).tint(coral)
                 .onChange(of: monitor.alarmSettings.highEnabled) { enabled in if enabled { monitor.requestNotificationPermission() } }
             HStack {
@@ -1437,33 +1444,20 @@ struct ContentView: View {
             if editingLimit { Button("Done entering limits") { editingLimit = false } }
             Stepper("Duration: \(monitor.alarmSettings.durationSeconds) seconds", value: $monitor.alarmSettings.durationSeconds, in: 5...120, step: 5)
             if let message = monitor.alarmSettings.validationMessage { Text(message).font(.caption).foregroundStyle(coral) }
-            Text("Enter limits from your child’s care plan. Each enabled limit must be crossed for the selected duration with continuous valid samples. Gaps restart the timer. Settings stay saved on this phone.").font(.caption)
+            Text("A limit must stay crossed for this duration. Gaps restart the timer.").font(.caption)
+                Text("Changes save automatically.").font(.caption).foregroundStyle(.secondary)
+            }.padding(.top, 12) }
+        } }
+        panel { DisclosureGroup("Sounds and notifications") { VStack(alignment: .leading, spacing: 12) {
             Button(monitor.testingSiren ? "Stop test siren" : "Test siren for 5 seconds") { monitor.testSiren() }
                 .buttonStyle(.borderedProminent).tint(coral).disabled(monitor.criticalAlertActive)
             Button("Test notification in 10 seconds") { monitor.testNotification() }.buttonStyle(.bordered)
             Text(monitor.soundStatus).font(.caption)
             Text(monitor.notificationStatus).font(.caption)
             Text("Low alarms fire strictly below the low limit; high alarms fire strictly above the high limit. The alarm self-clears after a fresh in-range reading. Lock-screen sounds depend on iPhone volume, Silent mode, Focus and notification permissions; Critical Alerts approval is not included.").font(.caption).foregroundStyle(.white.opacity(0.7))
-        } }
-        panel { VStack(alignment: .leading, spacing: 10) {
-            Label("Continuous Bluetooth session", systemImage: "antenna.radiowaves.left.and.right")
-            Text("Keeps the Bluetooth session active and attempts reconnection after signal loss. Tap Disconnect to end the session.").font(.caption)
-            Text("Background readings require device notifications. Keep Nivvi open if the wearable only responds to reads. Force-quitting the app, Bluetooth being off, an empty battery or iOS restrictions can interrupt monitoring.").font(.caption).foregroundStyle(.white.opacity(0.7))
-        } }
-        panel { Label("Day/night mode", systemImage: "sun.and.horizon.fill"); Text("Automatic mode follows local time. This setting does not detect sleep.").font(.caption).foregroundStyle(.white.opacity(0.6)) }
-        panel { VStack(alignment: .leading, spacing: 12) {
-            Label("Share to family member", systemImage: "person.2.fill")
-            Text("Use History → export to share a readings or events CSV with a trusted family member. The current build has no account service or live remote sharing.").font(.caption)
-            Text("Member access and invitations will be added only with an authenticated, consent-based service; this build never uploads a child’s readings automatically.").font(.caption).foregroundStyle(.white.opacity(0.7))
-        } }
-        panel { VStack(alignment: .leading, spacing: 12) {
-            Label("About your system", systemImage: "info.circle")
-            Text("Nivvi 0.8 · Build 8").font(.headline)
-            Text("Bluetooth: \(monitor.connection.label) · Profile: \(monitor.profile.rawValue) · Battery: \(monitor.battery)").font(.caption)
-            Text("Readings, events and notes are retained locally for 30 calendar days. The iPhone controls Bluetooth and notifications; Nivvi cannot activate cellular service or update proprietary device firmware.").font(.caption).foregroundStyle(.white.opacity(0.7))
-        } }
-        panel { VStack(alignment: .leading, spacing: 12) {
-            Label("FAQ", systemImage: "questionmark.bubble")
+        }.padding(.top, 12) } }
+        Group {
+        panel { DisclosureGroup("FAQ") { VStack(alignment: .leading, spacing: 12) {
             DisclosureGroup("Why does it say connected but waiting?") {
                 Text("Connected means the iPhone has a Bluetooth link. A measurement appears only after Nivvi receives a valid Heart Rate Service (180D/2A37), Pulse Oximeter Service (1822), or explicitly mapped packet. A base station or proprietary monitor may need its documented API or a wearable contact signal.").font(.caption).padding(.top, 6)
             }
@@ -1479,22 +1473,36 @@ struct ContentView: View {
             DisclosureGroup("How much history is kept?") {
                 Text("Readings are sampled into history every 30 seconds while usable data arrives. Alarm checks still use each valid incoming reading. The app keeps 30 calendar days locally and can export CSV files; deletion removes saved readings, events and notes from this app’s storage.").font(.caption).padding(.top, 6)
             }
-        } }
-        panel { VStack(alignment: .leading, spacing: 12) {
-            Label("Privacy", systemImage: "lock.fill")
+
+        }.padding(.top, 12) } }
+        panel { DisclosureGroup("Privacy") { VStack(alignment: .leading, spacing: 12) {
             Text("No account is required. Readings, events, notes and the child profile are saved on this iPhone by default. Nivvi does not use analytics, an AI service, or a remote caregiver backend in this build.").font(.caption)
             Text("Sharing is user-initiated through the iOS share sheet. iOS backups and any recipient may create additional copies. Bluetooth, photo and notification permissions can be withdrawn in iPhone Settings.").font(.caption).foregroundStyle(.white.opacity(0.7))
-        } }
-        panel { VStack(alignment: .leading, spacing: 12) {
-            Label("Terms and use of system", systemImage: "doc.text")
+
+        }.padding(.top, 12) } }
+        panel { DisclosureGroup("Terms") { VStack(alignment: .leading, spacing: 12) {
             Text("Nivvi is a record-and-alert companion, not a medical device, diagnosis or emergency service. Bluetooth links, sensors, alarms and notifications can fail or be delayed. Follow your child’s care plan and seek urgent help for serious symptoms; do not wait for this app.").font(.caption)
             Text("Before public release, the operator name, monitored support address, final privacy notice and jurisdiction-specific terms must be completed in the support documentation.").font(.caption).foregroundStyle(.white.opacity(0.7))
-        } }
-        panel { VStack(alignment: .leading, spacing: 12) {
-            Label("Support and device information", systemImage: "wrench.and.screwdriver")
-            Text("Support guidance, compatibility notes and the long-term support materials are included with the release documentation. A monitored support email and live member service are not configured in this build.").font(.caption)
-            Text("Firmware updates and 4G activation are vendor-controlled features and are intentionally not exposed as pretend buttons here.").font(.caption).foregroundStyle(.white.opacity(0.7))
-        } }
+
+        }.padding(.top, 12) } }
+        panel { DisclosureGroup("Family sharing") { VStack(alignment: .leading, spacing: 12) {
+            Text("Use History → export to share a readings or events CSV with a trusted family member. The current build has no account service or live remote sharing.").font(.caption)
+            Text("Member access and invitations will be added only with an authenticated, consent-based service; this build never uploads a child’s readings automatically.").font(.caption).foregroundStyle(.white.opacity(0.7))
+
+        }.padding(.top, 12) } }
+        panel { DisclosureGroup("Connection and support") { VStack(alignment: .leading, spacing: 12) {
+            Text("Keeps the Bluetooth session active and attempts reconnection after signal loss. Tap Disconnect to end the session.").font(.caption)
+            Text("Background readings require device notifications. Keep Nivvi open if the wearable only responds to reads. Force-quitting the app, Bluetooth being off, an empty battery or iOS restrictions can interrupt monitoring.").font(.caption).foregroundStyle(.white.opacity(0.7))
+
+        }.padding(.top, 12) } }
+        panel { DisclosureGroup("About Nivvi") { VStack(alignment: .leading, spacing: 12) {
+            Text("Nivvi 0.8 · Build 8").font(.headline)
+            Text("Bluetooth: \(monitor.connection.label) · Profile: \(monitor.profile.rawValue) · Battery: \(monitor.battery)").font(.caption)
+            Text("Readings, events and notes are retained locally for 30 calendar days. The iPhone controls Bluetooth and notifications; Nivvi cannot activate cellular service or update proprietary device firmware.").font(.caption).foregroundStyle(.white.opacity(0.7))
+
+        }.padding(.top, 12) } }
+        }
+        Text("Nivvi 0.8 · Build 8").font(.caption).foregroundStyle(.secondary)
     } }
 
     private var bottomBar: some View { HStack { nav("house.fill", "Home", 0); nav("chart.xyaxis.line", "History", 1); nav("wave.3.right", "Device", 2); nav("gearshape.fill", "Settings", 3) }.padding(8).background(.white.opacity(0.1)).clipShape(Capsule()).padding(.horizontal, 18).padding(.bottom, 10) }
