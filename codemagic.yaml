@@ -1,0 +1,55 @@
+workflows:
+  ios-app-store:
+    name: Upload Nivvi to App Store Connect
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    integrations:
+      app_store_connect: Apple
+    environment:
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.michael1991.nivvi
+      vars:
+        BUNDLE_ID: com.michael1991.nivvi
+        XCODE_PROJECT: Nivvi.xcodeproj
+        XCODE_SCHEME: Nivvi
+      xcode: latest
+    scripts:
+      - name: Install XcodeGen
+        script: brew install xcodegen
+      - name: Prepare icons, sounds and Xcode project
+        script: |
+          python3 prepare-icons.py
+          python3 prepare-sound.py
+          xcodegen generate --spec project.yml
+      - name: Set up keychain
+        script: keychain initialize
+      - name: Fetch App Store signing files
+        script: |
+          app-store-connect fetch-signing-files "$BUNDLE_ID" \
+            --type IOS_APP_STORE \
+            --create
+      - name: Add certificates to keychain
+        script: keychain add-certificates
+      - name: Apply signing to the Xcode project
+        script: xcode-project use-profiles
+      - name: Archive and export IPA
+        script: |
+          xcode-project build-ipa \
+            --project "$XCODE_PROJECT" \
+            --scheme "$XCODE_SCHEME" \
+            --archive-xcargs "MARKETING_VERSION=1.0 CURRENT_PROJECT_VERSION=18 CODE_SIGN_ENTITLEMENTS=apple/FamilySharing.entitlements"
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+    publishing:
+      email:
+        recipients:
+          - hello.nivvi@outlook.com
+        notify:
+          success: true
+          failure: true
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true
+        submit_to_app_store: false
