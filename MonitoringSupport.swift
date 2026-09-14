@@ -23,6 +23,45 @@ struct HeartRateFreshness {
     mutating func reset() { self = Self() }
 }
 
+// A valid Bluetooth link is not proof that the optical sensor is still producing
+// new physiology. Some optical devices can repeat their last value after contact
+// loss or during a rapid transition. This detector deliberately uses exact values:
+// twenty identical usable readings are an unvalidated heuristic, not proof of
+// sensor failure: rounding, averaging and cached reads can also repeat values.
+struct StaleHeartRateDetector {
+    let consecutiveLimit: Int
+    private(set) var lastValue: Double?
+    private(set) var consecutiveCount = 0
+    private(set) var lastTime: Date?
+
+    init(consecutiveLimit: Int = 20) {
+        self.consecutiveLimit = max(2, consecutiveLimit)
+    }
+
+    var isStale: Bool { consecutiveCount >= consecutiveLimit }
+
+    // Returns true only when this observation crosses the stale threshold.
+    mutating func observe(_ value: Double, at time: Date) -> Bool {
+        guard value.isFinite, value > 0 else { reset(); return false }
+        if let lastTime, time < lastTime { reset() }
+        let wasStale = isStale
+        if lastValue == value {
+            consecutiveCount = min(consecutiveLimit, consecutiveCount + 1)
+        } else {
+            lastValue = value
+            consecutiveCount = 1
+        }
+        lastTime = time
+        return !wasStale && isStale
+    }
+
+    mutating func reset() {
+        lastValue = nil
+        consecutiveCount = 0
+        lastTime = nil
+    }
+}
+
 enum HistoryMetric { case heartRate, oxygen
     func value(_ entry: SavedMeasurement) -> Double? { self == .heartRate ? entry.heartRateValue : entry.oxygenValue }
 }

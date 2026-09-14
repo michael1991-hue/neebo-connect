@@ -214,6 +214,19 @@ check(freshness.isExpired(at: now), "backward clock change does not keep future-
 freshness.reset()
 check(freshness.lastValid == nil && freshness.pausedSince == nil, "new session cannot reuse old pulse freshness")
 
+var stale = StaleHeartRateDetector(consecutiveLimit: 20)
+let staleOrigin = Date(timeIntervalSince1970: 1_790_000_000)
+check(!stale.observe(100, at: staleOrigin), "first repeated value is not stale")
+for index in 1..<19 {
+    check(!stale.observe(100, at: staleOrigin.addingTimeInterval(Double(index))), "stale detector waits for twenty readings")
+}
+check(stale.observe(100, at: staleOrigin.addingTimeInterval(19)), "twentieth identical reading raises a stale-data warning")
+check(stale.isStale && stale.consecutiveCount == 20, "stale warning remains latched for the repeated sequence")
+check(!stale.observe(100, at: staleOrigin.addingTimeInterval(20)), "stale warning fires once per repeated sequence")
+check(!stale.observe(101, at: staleOrigin.addingTimeInterval(21)) && !stale.isStale, "a changed value clears stale status")
+stale.reset()
+check(stale.lastValue == nil && stale.consecutiveCount == 0, "stale detector resets between sessions")
+
 let oldJSON = Data(#"{"id":"00000000-0000-0000-0000-000000000001","time":0,"heartRate":100,"oxygen":99,"source":"experimental-custom"}"#.utf8)
 let oldEntry = try JSONDecoder().decode(SavedMeasurement.self, from: oldJSON)
 check(oldEntry.continuityID == nil && oldEntry.heartRate == 100, "existing history loads without a continuity identifier")
