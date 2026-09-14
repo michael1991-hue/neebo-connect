@@ -8,6 +8,7 @@ on:
     paths:
       - 'Nivvi.swift'
       - 'MonitoringSupport.swift'
+      - 'PulseOximetry.swift'
       - 'prepare-sound.py'
       - 'build.sh'
       - 'prepare-icons.py'

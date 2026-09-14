@@ -2,7 +2,7 @@
 
 Draft date: 13 September 2026. Not yet published or presented for acceptance.
 
-Before publication, replace [OPERATOR LEGAL NAME], [SERVICE ADDRESS], [SUPPORT EMAIL] and [EFFECTIVE DATE], confirm the intended use and obtain a UK consumer-law/medical-device review. This document describes version 0.5, not future subscriptions or remote sharing.
+Before publication, replace [OPERATOR LEGAL NAME], [SERVICE ADDRESS], [SUPPORT EMAIL] and [EFFECTIVE DATE], confirm the intended use and obtain a UK consumer-law/medical-device review. This document describes version 0.6, not future subscriptions or remote sharing.
 
 ## 1. Who provides Nivvi
 
@@ -22,7 +22,7 @@ This prototype has not been clinically validated. It does not diagnose a conditi
 
 High and low test alerts use limits entered by you and a configured duration. Custom-format alerts require separate experimental opt-in. Readings and alerts may be missing, delayed or incorrect because of contact, movement, device format, Bluetooth, battery, phone settings or operating-system restrictions. No sound-through-mute, uninterrupted connection or delivery guarantee is offered. These explanations do not remove any legal duties owed by the operator.
 
-Follow instructions from your care team. Do not delay urgent help while checking the app or contacting support. Built-in supportive text is general guidance, not an AI assessment or personalised medical advice.
+Follow instructions from your care team. Do not delay urgent help while checking the app or contacting support. Built-in supportive text is general guidance, not personalised medical advice.
 
 ## 4. Your information and device
 

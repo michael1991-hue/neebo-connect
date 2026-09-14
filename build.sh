@@ -14,7 +14,7 @@ SDKROOT="$sdk_path" xcrun --sdk iphoneos swiftc -swift-version 5 -parse-as-libra
   -sdk "$sdk_path" -target arm64-apple-ios16.0 \
   -module-name Nivvi -framework SwiftUI -framework CoreBluetooth -framework Charts -framework AudioToolbox -framework UserNotifications -framework AVFoundation -framework PhotosUI -framework ImageIO \
   -Xlinker -rpath -Xlinker @executable_path/Frameworks \
-  Nivvi.swift MonitoringSupport.swift -o "$app_dir/Nivvi"
+  Nivvi.swift MonitoringSupport.swift PulseOximetry.swift -o "$app_dir/Nivvi"
 cat > "$app_dir/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -24,8 +24,8 @@ cat > "$app_dir/Info.plist" <<'PLIST'
 <key>CFBundleDisplayName</key><string>Nivvi</string>
 <key>CFBundleExecutable</key><string>Nivvi</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleVersion</key><string>6</string>
-<key>CFBundleShortVersionString</key><string>0.6</string>
+<key>CFBundleVersion</key><string>8</string>
+<key>CFBundleShortVersionString</key><string>0.8</string>
 <key>MinimumOSVersion</key><string>16.0</string>
 <key>CFBundleSupportedPlatforms</key><array><string>iPhoneOS</string></array>
 <key>UIDeviceFamily</key><array><integer>1</integer></array>
@@ -63,4 +63,3 @@ plutil -lint "$app_dir/Info.plist"
 # This package is intentionally unsigned. AltStore signs it on the user's computer.
 cd build
 /usr/bin/zip -qry Nivvi-unsigned.ipa Payload
-
