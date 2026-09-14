@@ -1,58 +1,53 @@
-> 0.10.0 update: optional family-sharing code is now included but not deployed/configured. See [family service setup](../../family-server/README.md) and the [family privacy addendum](FAMILY-PRIVACY-DRAFT.md). Earlier local-only statements below apply only with sharing disabled. Do not publish this draft unchanged.
+# Nivvi 0.10.2 (17) release preparation
 
-# Nivvi Apple release pack
+This update improves recording when the user switches apps or locks the phone. A successful build is not evidence that a particular wearable supplies background readings.
 
-Prepared 14 September 2026 for 0.9.5, build 14. **Preparation complete is not release approval.** The current target is a controlled TestFlight evaluation, not paid monitoring distribution.
+## Changes
 
-## Latest change
+- The monitor listens to application lifecycle notifications independently of the selected SwiftUI tab.
+- Restore the saved peripheral's existing services and notification subscriptions after a Core Bluetooth restoration launch. Cached characteristic values are not counted as fresh readings.
+- Keep the five-second read fallback available whenever iOS grants execution. Auxiliary Bluetooth notifications can trigger a throttled read; read responses do not create a continuous read loop.
+- Use an OS-managed filtered scan to recover failed connections in the background. Resume outstanding recovery on foreground entry.
+- Schedule a quiet missing-data notification with iOS while backgrounded, refreshing it as usable heart-rate data arrives. Notification permission and phone settings still apply.
+- Record background entry and the number of usable updates received while away. Show the last successful background history save in Home's Monitoring readiness.
+- Preserve the 30-second history snapshot interval, per-reading alarm evaluation, timestamp expiry and visible gaps.
+- Check the built archive's version, icon, sounds, privacy manifest, iOS SDK and Bluetooth background mode in CI.
 
-Removed the manual sleep/activity card, timer, asleep/awake editor and decorative sleep animations. Existing historical entries remain readable. Heart-rate and oxygen handling is unchanged.
+## Evidence required before submission
 
-## Release preparation included
+Run the [background recording test](BACKGROUND-RECORDING.md) on the actual wearable and iPhone. Check the Actions run for this commit for compilation, regression and archive results. No physical-device test was performed by the build system.
 
-- An XcodeGen project and unsigned Xcode archive validation alongside the existing AltStore IPA.
-- Xcode 26 selection in CI and an iOS SDK 26 minimum for the archive script. Deployment target remains iOS 16.
-- A privacy manifest declaring app-only UserDefaults use; no tracking or developer collection in the inspected implementation.
-- About screen reads the packaged version instead of displaying an obsolete constant.
-- Updated privacy/terms drafts, support FAQ, review notes, test evidence template and business/email setup instructions.
+The device advertising name alone does not establish its role or protocol. The owner's suggestion that NCO is a base station remains unverified; do not advertise that device as a supported direct sensor without identifying its services and behaviour.
 
-## Release gates
+Apple permits background Bluetooth event handling. It does not provide an uninterrupted timer: a read-only peripheral that never notifies may stop yielding data when iOS suspends Nivvi. Force-quitting Nivvi requires the user to reopen it. Do not market this as guaranteed continuous recording or guaranteed alarms.
 
-| Gate | Current evidence / action |
-| --- | --- |
-| Compile and regression tests | Check the Actions run on the exact commit; a passing job is not hardware validation. |
-| Heart-rate reliability | Owner reported degraded reception. Reproduce with packet timestamps, device model/firmware and phone state; no hardware cause proven yet. |
-| Custom measurements | Packet fixtures exist; accuracy, unknown status fields and device failure states still need independent validation. |
-| Silent / Focus alarms | Reported failures; Critical Alerts entitlement is absent. Do not claim these modes are bypassed. |
-| Sleep | Manual feature removed at owner request. No automatic sleep classifier is included. |
-| Medical intended purpose | Obtain written classification assessment for child-focused threshold alerts and oxygen displays before distribution decisions. |
-| Operator and Apple enrolment | Confirm legal entity, service address, Apple team and ownership of bundle ID. Review guideline 5.1.1(ix) for sensitive/healthcare apps. |
-| Legal pages and support | Drafts ready; operator details, domain, actual email/hosting providers and retention decisions outstanding. |
-| App Store metadata | Draft review copy ready; screenshots must be captured from the release build using fictional data. |
-| TestFlight | Not uploaded. Signed archive, Apple account access and completed beta metadata required. |
+## Apple build and upload
 
-## Build and upload route
+The app icon is already included at 1024 × 1024 with iPhone variants. App Store Connect obtains it from the uploaded build; the placeholder on the listing is not a separate logo upload task.
 
-1. On macOS install Xcode 26+ and XcodeGen (`brew install xcodegen`). Select Xcode in its Settings → Locations or with `xcode-select`.
-2. From this branch run `bash Tests/run.sh`, then `bash scripts/archive.sh`. The second command generates `Nivvi.xcodeproj` and an **unsigned** archive for inspection.
-3. Add the enrolled Apple account to Xcode. Confirm/register `com.michael1991.nivvi` under the correct team; do not silently change the identifier because that can separate existing local app data.
-4. Set `NIVVI_APPLE_TEAM_ID` locally and run `bash scripts/archive.sh --signed`. Signing requires your Apple account and provisioning access. Never commit credentials or certificates.
-5. Open `build/Nivvi-signed.xcarchive` in Xcode Organizer. Validate, then distribute to App Store Connect after the applicable release gates have passed. The unsigned AltStore IPA is not an App Store upload.
-6. Complete App Store Connect app/beta information and export-compliance answers from actual implementation; do not guess. Start with authorised internal testers, then external beta review if appropriate.
+1. Use Xcode 26+ on macOS, install XcodeGen and run `bash Tests/run.sh`.
+2. Run `bash scripts/archive.sh`, then `python3 scripts/check-archive.py` to validate an unsigned archive.
+3. Confirm that the App Store Connect listing and registered App ID exactly match the project's `com.michael1991.nivvi`. A display name of “Nivvi” does not confirm the identifier. A suffix added by AltStore must not be assumed to be the distribution identifier.
+4. With the enrolled Apple account configured in Xcode and the matching App ID provisioned, set `NIVVI_APPLE_TEAM_ID` locally and run `bash scripts/archive.sh --signed`.
+5. Validate the signed archive in Xcode Organizer, then upload to App Store Connect for TestFlight. The unsigned IPA is for local signing/AltStore and cannot be submitted to Apple.
 
-Windows can download CI artifacts and sideload with AltStore. Apple signing/upload still needs the enrolled account and a macOS signing route; this repository does not contain its credentials.
+Apple signing credentials are not present in this repository. The signed path requests the Push Notifications entitlement; the App ID must support it. Server APNs configuration is separate. The owner's last server health result reported `push_configured: false`.
 
-## Reading issue investigation
+## Family service and privacy
 
-History intentionally saves at 30-second intervals; reception and alarm evaluation are separate. The custom profile uses notifications with a five-second read fallback while foregrounded. A locked phone therefore needs the device to deliver notifications. Battery packets are not evidence of fresh heart-rate data.
+The owner reports that the Windows server responds through a public Tailscale Funnel and Resend accepts verification email. This build still has blank family endpoint/privacy configuration, so its family setup remains pending. Do not advertise remote sharing as active in this package.
 
-Record a two-minute capture during failure, whether the phone was locked, and screenshots of Connection details and the source app at matching times. Remove identifying information before sharing. The serialized read queue currently depends on a callback to advance; a missing callback is a possible stall mechanism, not an established diagnosis. No decoder relaxation or freshness extension was made to conceal missing readings in this release.
+The privacy manifest declares the potential family data flow. Before signing the release, audit the **actual configuration** and complete App Store Connect App Privacy accordingly. If family sharing is enabled and transmits stored health readings, account emails or identifiers, “Data Not Collected” is not an accurate blanket answer. Use the [privacy audit](PRIVACY-AUDIT.md) and [family addendum](FAMILY-PRIVACY-DRAFT.md), and check retention, deletion, processors and the published policy.
 
-## Sources and related documents
+Support contact: hello.nivvi@outlook.com. Owned domain: nivvi.app. Verify live support and privacy pages before entering their URLs in the listing; repository files alone do not prove publication.
 
-- [Apple SDK requirements](https://developer.apple.com/news/upcoming-requirements/)
-- [Apple review guidelines](https://developer.apple.com/app-store/review/guidelines/)
-- [Review notes](APP-REVIEW-NOTES.md), [validation record](VALIDATION.md), [business setup](BUSINESS-SETUP.md), [privacy audit](PRIVACY-AUDIT.md), [regulatory brief](REGULATORY-BRIEF.md)
-- [Privacy draft](../PRIVACY-DRAFT.md), [terms draft](../TERMS-DRAFT.md), [support FAQ](SUPPORT-FAQ.md)
+## Remaining release work
 
-Older support PDFs/video in `docs/support` are historical material. Do not publish them as current instructions without recapturing and checking the current build.
+- Recorded background, disconnection/reconnection, locked-phone and alert tests on the actual hardware.
+- Document device model, firmware, decoding methodology and limitations for Apple review.
+- Silent/Focus alarms: Critical Alerts entitlement is absent. Do not claim these modes are bypassed.
+- Exact Apple team/bundle matching, distribution signing and TestFlight upload.
+- Actual-build privacy answers, age rating, export-compliance answers, screenshots, review contact and hardware access.
+- Resolve the intended-purpose and operator/legal-entity questions identified in [regulatory brief](REGULATORY-BRIEF.md). This build does not settle those assessments.
+
+See [review notes](APP-REVIEW-NOTES.md), [validation record](VALIDATION.md), [Apple SDK requirements](https://developer.apple.com/news/upcoming-requirements/) and [Apple Bluetooth background guidance](https://developer.apple.com/library/archive/documentation/NetworkingInternetWeb/Conceptual/CoreBluetooth_concepts/CoreBluetoothBackgroundProcessingForIOSApps/PerformingTasksWhileYourAppIsInTheBackground.html).
