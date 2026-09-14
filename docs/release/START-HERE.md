@@ -1,8 +1,12 @@
 # Nivvi Apple release pack
 
-Prepared 14 September 2026 for 0.9.4, build 13. **Preparation complete is not release approval.** The current target is a controlled TestFlight evaluation, not paid monitoring distribution.
+Prepared 14 September 2026 for 0.9.5, build 14. **Preparation complete is not release approval.** The current target is a controlled TestFlight evaluation, not paid monitoring distribution.
 
-## Delivered in this revision
+## Latest change
+
+Removed the manual sleep/activity card, timer, asleep/awake editor and decorative sleep animations. Existing historical entries remain readable. Heart-rate and oxygen handling is unchanged.
+
+## Release preparation included
 
 - An XcodeGen project and unsigned Xcode archive validation alongside the existing AltStore IPA.
 - Xcode 26 selection in CI and an iOS SDK 26 minimum for the archive script. Deployment target remains iOS 16.
@@ -18,7 +22,7 @@ Prepared 14 September 2026 for 0.9.4, build 13. **Preparation complete is not re
 | Heart-rate reliability | Owner reported degraded reception. Reproduce with packet timestamps, device model/firmware and phone state; no hardware cause proven yet. |
 | Custom measurements | Packet fixtures exist; accuracy, unknown status fields and device failure states still need independent validation. |
 | Silent / Focus alarms | Reported failures; Critical Alerts entitlement is absent. Do not claim these modes are bypassed. |
-| Sleep | Parent-marked timer only. No automatic sleep classifier or validated movement input. |
+| Sleep | Manual feature removed at owner request. No automatic sleep classifier is included. |
 | Medical intended purpose | Obtain written classification assessment for child-focused threshold alerts and oxygen displays before distribution decisions. |
 | Operator and Apple enrolment | Confirm legal entity, service address, Apple team and ownership of bundle ID. Review guideline 5.1.1(ix) for sensitive/healthcare apps. |
 | Legal pages and support | Drafts ready; operator details, domain, actual email/hosting providers and retention decisions outstanding. |

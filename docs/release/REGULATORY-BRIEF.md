@@ -2,7 +2,7 @@
 
 Status: classification not determined. This document provides facts for a qualified UK medical-device/data-protection adviser; it is not a declaration that Nivvi is exempt or approved.
 
-Nivvi displays heart rate and, for supported protocols, oxygen saturation from external Bluetooth hardware. Adults may enter a child's profile. It stores history, evaluates configurable high/low HR thresholds, warns about repeated/missing readings and provides local alerts. A custom adapter uses inferred packet fields with limited paired observations. Sleep is parent-marked. No clinical diagnosis, validated automatic sleep inference or emergency response service is implemented.
+Nivvi displays heart rate and, for supported protocols, oxygen saturation from external Bluetooth hardware. Adults may enter a child's profile. It stores history, evaluates configurable high/low HR thresholds, warns about repeated/missing readings and provides local alerts. A custom adapter uses inferred packet fields with limited paired observations. The manual sleep feature has been removed. No clinical diagnosis, validated automatic sleep inference or emergency response service is implemented.
 
 Assess the intended population, environment, reliance on alarms and foreseeable use, including the user's stated concern about SVT. Intended purpose must reflect the real functionality, instructions and marketing. Renaming the app “generic Bluetooth” or adding a “not a medical device” sentence does not settle classification. The in-app categorical exemption wording has been removed.
 

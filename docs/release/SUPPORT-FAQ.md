@@ -26,7 +26,7 @@ This build does not have Apple's Critical Alerts entitlement. Phone settings and
 
 ## Is sleep automatic?
 
-No. An adult marks asleep/awake and the app times that observation. Animated Zs or activity figures describe the selected state; they are not sensor-derived sleep detection.
+Sleep tracking is not included. The manual timer, asleep/awake buttons and animated sleep/activity card have been removed. Previously saved events remain in history until deleted or expired.
 
 ## Can family watch remotely?
 

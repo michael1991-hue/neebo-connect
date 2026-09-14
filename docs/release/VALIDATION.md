@@ -22,7 +22,7 @@ Use controlled test packets or a spare test setup, not deliberately induced chan
 | History across midnight / DST | Correct dates and timestamps, graph selection and 30-calendar-day retention | NOT RUN |
 | Delete history / relaunch | Readings, events, notes and sleep timer removed; separately exported copies handled honestly | NOT RUN |
 | Profile edit / photo crop/remove | No freeze; persistence and removal correct | NOT RUN |
-| Sleep timer | Parent-marked label; edit, transition, relaunch and elapsed time correct; no automatic inference | NOT RUN |
+| Upgrade after sleep removal | No sleep card or controls; existing historical events remain readable and deletable | NOT RUN |
 | Permissions denied / revoked | Clear usable explanation, no crash or misleading active state | NOT RUN |
 | Upgrade from installed version | Profile, settings and retained data migrate correctly | NOT RUN |
 | Accessibility / energy | Larger text and Reduce Motion usable; run Instruments for animation/CPU and background energy | NOT RUN |

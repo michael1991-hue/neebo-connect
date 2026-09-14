@@ -2,7 +2,7 @@
 
 Draft date: 13 September 2026. Not yet published or presented for acceptance.
 
-Before publication, replace [OPERATOR LEGAL NAME], [SERVICE ADDRESS], [SUPPORT EMAIL] and [EFFECTIVE DATE], confirm the intended use and obtain a UK consumer-law/medical-device review. This document describes version 0.9.4, not future subscriptions or remote sharing.
+Before publication, replace [OPERATOR LEGAL NAME], [SERVICE ADDRESS], [SUPPORT EMAIL] and [EFFECTIVE DATE], confirm the intended use and obtain a UK consumer-law/medical-device review. This document describes version 0.9.5, not future subscriptions or remote sharing.
 
 ## 1. Who provides Nivvi
 

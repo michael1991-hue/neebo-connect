@@ -1,6 +1,6 @@
 # Nivvi privacy notice — review draft
 
-Draft date: 14 September 2026. Applies to the inspected version 0.9.4 code only. Not ready for publication until the bracketed information and the processing decisions below are completed.
+Draft date: 14 September 2026. Applies to the inspected version 0.9.5 code only. Not ready for publication until the bracketed information and the processing decisions below are completed.
 
 ## Who is responsible
 
@@ -14,7 +14,7 @@ Draft date: 14 September 2026. Applies to the inspected version 0.9.4 code only.
 | Optional profile photo | Resized image stored in app documents; only the image you select is used | Replace/remove through Edit profile; removing a photo does not erase copies you exported elsewhere |
 | Heart rate, oxygen where supported (including inferred custom readings), source label and timestamps | Displays readings and creates local history | Main history retains today plus the previous 29 calendar days; cleanup occurs when the app prepares/writes its stores |
 | Connection/alert events and user-entered notes | Local event timeline | Same main 30-calendar-day retention; Delete all history removes these logs |
-| Parent-marked sleep/awake state and starting time | Local preferences and transition events; not automatic sleep inference | Until changed/stopped or history is cleared; events follow the history retention window |
+| Legacy parent-marked sleep records | Previous versions stored timer preferences and transition events; the manual feature is now removed | Existing events follow history retention; Delete all history also removes the legacy timer preference |
 | Alert settings and selected Bluetooth identifier | Applies your limits and reconnects the selected device | Saved in app preferences until changed or app data is removed; Disconnect disables reconnection but does not erase the saved identifier |
 | Diagnostic captures | Short local troubleshooting capture with service identifiers, packet values, timing and diagnostic messages | Captures run for two minutes per manual session; files are not automatically subject to the 30-day history cleanup |
 | CSV exports and older migration backup files | Sharing or recovery | Separate copies can remain beyond the main history window; Delete all history removes the app's prepared history/event CSVs and migration source, but not externally shared copies or diagnostic captures |

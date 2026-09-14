@@ -1,11 +1,11 @@
-# Privacy disclosure audit — 0.9.4
+# Privacy disclosure audit — 0.9.5
 
 Scope: the three Swift source files and current bundled-resource build. No third-party runtime SDK was found. This is a code audit, not a network trace of the signed release.
 
 | Data/use | Current implementation | Disclosure implication |
 | --- | --- | --- |
 | Profile, photo, HR, oxygen, notes, events | Stored in the app container/preferences | Sensitive local information; explain retention and controls |
-| Sleep state/time | Parent-entered preferences and event log | Include in privacy notice; not inferred from sensors |
+| Legacy sleep state/time | Previous versions stored preferences and events; no new sleep entries are created | Existing events retain normal retention/deletion; legacy preference is removed by Delete all history |
 | Bluetooth identifier and limits | UserDefaults | Required-reason API manifest declares CA92.1, own-app preferences |
 | Manual diagnostic capture | Local packet/status log | Not automatically sent; separately retained and can be shared |
 | Exports/share sheet | User selects recipient/service | Review disclosure if support starts receiving these routinely |
