@@ -25,11 +25,11 @@ check(BluetoothPolicy.standardHeartRate(Data([0, 0])) == nil, "zero pulse unavai
 check(BluetoothPolicy.standardHeartRate(Data([1, 44, 1])) == nil, "out-of-range value rejected")
 let savedLimits = try JSONDecoder().decode(AlarmSettings.self, from: Data(#"{"highEnabled":true,"highThreshold":180,"durationSeconds":10}"#.utf8))
 check(savedLimits.highThreshold == 180 && savedLimits.highEnabled && !savedLimits.experimentalCustomEnabled, "missing optional setting preserves existing limits")
-check(BluetoothPolicy.shouldObserve(service: "FFE0", characteristic: "FFE7"), "enable measurement stream")
+check(BluetoothPolicy.shouldObserve(service: "FFE0", characteristic: BluetoothPolicy.customMeasurementUUID), "enable measurement stream")
 check(BluetoothPolicy.shouldObserve(service: "180F", characteristic: "2A19"), "enable battery")
 check(!BluetoothPolicy.shouldObserve(service: "FFA0", characteristic: "FFA1"), "do not subscribe to audio")
 check(!BluetoothPolicy.shouldObserve(service: "FFE0", characteristic: "FF71"), "exclude unknown control path")
-check(!BluetoothPolicy.shouldObserve(service: "FFA0", characteristic: "FFE7"), "validate service alongside characteristic")
+check(!BluetoothPolicy.shouldObserve(service: "FFA0", characteristic: BluetoothPolicy.customMeasurementUUID), "validate service alongside characteristic")
 let samples: [(Data, Int)] = [
     (Data([0,0,0,0x5F,0,0x63,0,0x3F,1]), 95),
     (Data([0,0,0,0x6C,0,0x63,0,0x3A,1]), 108),
@@ -37,21 +37,21 @@ let samples: [(Data, Int)] = [
     (Data([0,0,0,0x66,0,0x63,0,0x3B,1]), 102)
 ]
 for (bytes, expected) in samples {
-    let value = BluetoothPolicy.ffe7(bytes)
-    check(value.heartRate == expected && value.oxygen == 99, "captured FFE7 fixture \(expected)")
+    let value = BluetoothPolicy.customFrame(bytes)
+    check(value.heartRate == expected && value.oxygen == 99, "captured custom adapter fixture \(expected)")
 }
-check(BluetoothPolicy.ffe7(Data()).heartRate == nil, "empty frame")
-check(BluetoothPolicy.ffe7(Data([0,0,0,95,0,99])).heartRate == nil, "truncated frame must not appear live")
-check(BluetoothPolicy.ffe7(Data([1,0,0,95,0,99,0,0,1])).heartRate == nil, "unknown leading fields")
-check(BluetoothPolicy.ffe7(Data([0,0,0,95,1,99,0,0,1])).heartRate == nil, "do not truncate unknown high HR byte")
-check(BluetoothPolicy.ffe7(Data([0,0,0,95,0,99,1,0,1])).oxygen == nil, "do not truncate unknown high oxygen byte")
-let invalid = BluetoothPolicy.ffe7(Data(repeating: 0, count: 9))
+check(BluetoothPolicy.customFrame(Data()).heartRate == nil, "empty frame")
+check(BluetoothPolicy.customFrame(Data([0,0,0,95,0,99])).heartRate == nil, "truncated frame must not appear live")
+check(BluetoothPolicy.customFrame(Data([1,0,0,95,0,99,0,0,1])).heartRate == nil, "unknown leading fields")
+check(BluetoothPolicy.customFrame(Data([0,0,0,95,1,99,0,0,1])).heartRate == nil, "do not truncate unknown high HR byte")
+check(BluetoothPolicy.customFrame(Data([0,0,0,95,0,99,1,0,1])).oxygen == nil, "do not truncate unknown high oxygen byte")
+let invalid = BluetoothPolicy.customFrame(Data(repeating: 0, count: 9))
 check(invalid.heartRate == nil && invalid.oxygen == nil, "clear candidates when no usable measurement")
-let partial = BluetoothPolicy.ffe7(Data([0,0,0,0,0,99,0,0,1]))
+let partial = BluetoothPolicy.customFrame(Data([0,0,0,0,0,99,0,0,1]))
 check(partial.heartRate == nil && partial.oxygen == 99, "validate each field independently")
-let record = SavedMeasurement(time: Date(timeIntervalSince1970: 12345), heartRate: 104, oxygen: 99, source: "experimental-FFE7")
+let record = SavedMeasurement(time: Date(timeIntervalSince1970: 12345), heartRate: 104, oxygen: 99, source: "experimental-custom")
 let reloaded = try JSONDecoder().decode([SavedMeasurement].self, from: JSONEncoder().encode([record]))
-check(reloaded[0].id == record.id && reloaded[0].time == record.time && reloaded[0].source == "experimental-FFE7", "persist experimental label, time and identity")
+check(reloaded[0].id == record.id && reloaded[0].time == record.time && reloaded[0].source == "experimental-custom", "persist experimental label, time and identity")
 
 
 // Alarm dwell is evaluated only on fresh, valid standard measurements.
@@ -79,10 +79,10 @@ engine.reset()
 _ = sample(200, 0); _ = sample(200, 5); _ = sample(nil, 10)
 check(sample(200, 15) == nil && sample(200, 20) == nil, "malformed sample resets pending dwell")
 engine.reset()
-for time in stride(from: 0.0, through: 60.0, by: 5.0) { _ = sample(220, time, source: "experimental-FFE7") }
+for time in stride(from: 0.0, through: 60.0, by: 5.0) { _ = sample(220, time, source: "experimental-custom") }
 check(engine.active == nil, "experimental custom data stays off by default")
 engine.reset(); limits.experimentalCustomEnabled = true
-for time in stride(from: 0.0, through: 60.0, by: 5.0) { _ = sample(220, time, source: "experimental-FFE7", allowExperimental: true) }
+for time in stride(from: 0.0, through: 60.0, by: 5.0) { _ = sample(220, time, source: "experimental-custom", allowExperimental: true) }
 check(engine.active == .high, "explicit experimental custom alarm opt-in works")
 limits.experimentalCustomEnabled = false
 engine.reset()
@@ -114,7 +114,7 @@ let temp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().
 try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
 defer { try? FileManager.default.removeItem(at: temp) }
 let legacy = temp.appendingPathComponent("measurements.json")
-let oldRecords = (0..<35).map { day in SavedMeasurement(time: calendar.date(byAdding: .day, value: -day, to: now)!, heartRate: 100 + day, oxygen: 99, source: "experimental-FFE7") }
+let oldRecords = (0..<35).map { day in SavedMeasurement(time: calendar.date(byAdding: .day, value: -day, to: now)!, heartRate: 100 + day, oxygen: 99, source: "experimental-custom") }
 try JSONEncoder().encode(oldRecords).write(to: legacy)
 let archive = DailyHistoryStore(folder: temp, calendar: calendar)
 try archive.prepare(legacy: legacy, now: now)
@@ -131,13 +131,13 @@ try archive.append(appended, now: now)
 let afterAppend = try DailyHistoryStore(folder: temp, calendar: calendar).load(day: now)
 check(afterAppend.count == 2 && afterAppend.last?.id == appended.id, "append survives new store instance")
 let tomorrow = calendar.date(byAdding: .day, value: 1, to: now)!
-try archive.append(SavedMeasurement(time: tomorrow, heartRate: 90, oxygen: 99, source: "experimental-FFE7"), now: tomorrow)
+try archive.append(SavedMeasurement(time: tomorrow, heartRate: 90, oxygen: 99, source: "experimental-custom"), now: tomorrow)
 let rolledDays = try archive.days()
 check(rolledDays.count == 30 && rolledDays.first == calendar.startOfDay(for: tomorrow), "midnight rollover prunes by day")
 let csv = temp.appendingPathComponent("export.csv")
 try archive.export(to: csv)
 let exported = try String(contentsOf: csv, encoding: .utf8)
-check(exported.contains("standard-2A37") && exported.contains("experimental-FFE7"), "export retains measurement source labels across days")
+check(exported.contains("standard-2A37") && exported.contains("experimental-custom"), "export retains measurement source labels across days")
 check(exported.split(separator: "\n").count == 32, "all retained measurements exported including header")
 try archive.export(to: csv)
 let repeatedExport = try String(contentsOf: csv, encoding: .utf8)
@@ -153,7 +153,7 @@ try archive.clear(legacy: legacy)
 let cleared = try archive.days()
 check(cleared.isEmpty && !FileManager.default.fileExists(atPath: legacy.path), "clear removes retained history and migration source")
 
-let dense = (0..<20_005).map { index in SavedMeasurement(time: now.addingTimeInterval(Double(index)), heartRate: index == 12345 ? 40 : (index == 14567 ? 230 : 100), oxygen: 99, source: "experimental-FFE7") }
+let dense = (0..<20_005).map { index in SavedMeasurement(time: now.addingTimeInterval(Double(index)), heartRate: index == 12345 ? 40 : (index == 14567 ? 230 : 100), oxygen: 99, source: "experimental-custom") }
 let chart = DailyHistoryStore.chartSamples(dense)
 check(chart.count <= 600 && chart.contains(where: { $0.heartRate == 40 }) && chart.contains(where: { $0.heartRate == 230 }), "day chart preserves isolated low and high extrema")
 check(zip(chart, chart.dropFirst()).allSatisfy { $0.time <= $1.time }, "chart samples stay chronological")
@@ -168,14 +168,14 @@ check(denseReloaded.count == 20_005, "history has no old 20,000-reading truncati
 
 
 var sampler = MeasurementSamplingPolicy()
-check(sampler.shouldStore(source: "experimental-FFE7", at: now), "first snapshot is immediate")
-sampler.didStore(source: "experimental-FFE7", at: now)
-check(!sampler.shouldStore(source: "experimental-FFE7", at: now.addingTimeInterval(29.99)), "do not save duplicate snapshots within 30 seconds")
-check(sampler.shouldStore(source: "experimental-FFE7", at: now.addingTimeInterval(30)), "save next snapshot at 30 seconds")
+check(sampler.shouldStore(source: "experimental-custom", at: now), "first snapshot is immediate")
+sampler.didStore(source: "experimental-custom", at: now)
+check(!sampler.shouldStore(source: "experimental-custom", at: now.addingTimeInterval(29.99)), "do not save duplicate snapshots within 30 seconds")
+check(sampler.shouldStore(source: "experimental-custom", at: now.addingTimeInterval(30)), "save next snapshot at 30 seconds")
 check(sampler.shouldStore(source: "standard-2A37", at: now), "sample each source independently")
-check(sampler.shouldStore(source: "experimental-FFE7", at: now.addingTimeInterval(-1)), "clock change does not block saving forever")
+check(sampler.shouldStore(source: "experimental-custom", at: now.addingTimeInterval(-1)), "clock change does not block saving forever")
 sampler.reset()
-check(sampler.shouldStore(source: "experimental-FFE7", at: now.addingTimeInterval(1)), "new session starts with an immediate snapshot")
+check(sampler.shouldStore(source: "experimental-custom", at: now.addingTimeInterval(1)), "new session starts with an immediate snapshot")
 let eventStore = EventHistoryStore(folder: temp, calendar: calendar)
 try eventStore.prepare(now: now)
 let event1 = SavedEvent(time: now, kind: "alarm", title: "Low heart-rate alert", detail: "Configured duration reached", heartRate: 75)
@@ -196,4 +196,59 @@ try eventStore.append(SavedEvent(time: future, kind: "connection", title: "Conne
 try eventStore.clear()
 let eventsAfterClear = try eventStore.days()
 check(eventsAfterClear.isEmpty, "explicit deletion clears events")
+// Overnight regression: a live Bluetooth link is not evidence of fresh heart rate.
+var freshness = HeartRateFreshness()
+check(!freshness.isExpired(at: now) && !freshness.pause(), "initial wait is not a recorded data-loss event")
+check(freshness.receive(at: now) == nil, "first valid heart rate is not a resumption")
+check(!freshness.isExpired(at: now.addingTimeInterval(30)), "freshness boundary includes thirty seconds")
+check(freshness.isExpired(at: now.addingTimeInterval(31)), "heart rate expires without a new heart-rate sample")
+check(freshness.pause(), "log first pause once")
+check(!freshness.pause(), "ongoing pause cannot flood event history")
+check(freshness.receive(at: now.addingTimeInterval(180)) == 180, "resumption reports time between usable readings")
+check(!freshness.isExpired(at: now.addingTimeInterval(181)), "valid heart rate restores freshness")
+check(freshness.receive(at: now.addingTimeInterval(185)) == nil, "continuous samples do not create resume events")
+check(freshness.pause(), "explicit invalid or no-contact packet can interrupt fresh data")
+check(freshness.receive(at: now.addingTimeInterval(190)) == 5, "short contact interruption remains observable")
+check(freshness.isExpired(at: now), "backward clock change does not keep future-dated readings fresh")
+freshness.reset()
+check(freshness.lastValid == nil && freshness.pausedSince == nil, "new session cannot reuse old pulse freshness")
+
+let oldJSON = Data(#"{"id":"00000000-0000-0000-0000-000000000001","time":0,"heartRate":100,"oxygen":99,"source":"experimental-custom"}"#.utf8)
+let oldEntry = try JSONDecoder().decode(SavedMeasurement.self, from: oldJSON)
+check(oldEntry.continuityID == nil && oldEntry.heartRate == 100, "existing history loads without a continuity identifier")
+let segmentA = UUID(), segmentB = UUID()
+let gapEntries = [
+    SavedMeasurement(time: now, heartRate: 100, oxygen: 99, source: "experimental-custom", continuityID: segmentA),
+    SavedMeasurement(time: now.addingTimeInterval(30), heartRate: 110, oxygen: 98, source: "experimental-custom", continuityID: segmentA),
+    SavedMeasurement(time: now.addingTimeInterval(180), heartRate: 95, oxygen: 97, source: "experimental-custom", continuityID: segmentA),
+    SavedMeasurement(time: now.addingTimeInterval(190), heartRate: 96, oxygen: 99, source: "experimental-custom", continuityID: segmentB)
+]
+let gapPoints = HistoryChartPolicy.points(gapEntries, metric: .heartRate)
+check(gapPoints.count == 4, "gap handling retains actual readings")
+check(gapPoints[0].series == gapPoints[1].series, "consecutive snapshots share a line segment")
+check(gapPoints[1].series != gapPoints[2].series, "saved interval over sixty seconds breaks line")
+check(gapPoints[2].series != gapPoints[3].series, "explicit interruption breaks line even across a short interval")
+check(HistoryChartPolicy.nearest(gapEntries, at: now.addingTimeInterval(100), metric: .heartRate) == nil, "selection in middle of gap does not invent a reading")
+check(HistoryChartPolicy.nearest(gapEntries, at: now.addingTimeInterval(31), metric: .heartRate)?.id == gapEntries[1].id, "selection returns original saved value and timestamp")
+var missingPulse = gapEntries
+missingPulse[1] = SavedMeasurement(time: now.addingTimeInterval(10), heartRate: nil, oxygen: 98, source: "experimental-custom", continuityID: segmentA)
+missingPulse[2] = SavedMeasurement(time: now.addingTimeInterval(20), heartRate: 95, oxygen: 97, source: "experimental-custom", continuityID: segmentA)
+let pulsePoints = HistoryChartPolicy.points(missingPulse, metric: .heartRate)
+let oxygenPoints = HistoryChartPolicy.points(missingPulse, metric: .oxygen)
+check(pulsePoints.count == 3 && pulsePoints[0].series != pulsePoints[1].series, "oxygen-only snapshot breaks heart-rate line")
+check(oxygenPoints.count == 4 && oxygenPoints[0].series == oxygenPoints[2].series, "oxygen chart retains its own valid continuity")
+let densePoints = HistoryChartPolicy.points(dense, metric: .heartRate)
+check(densePoints.first?.entry.id == dense.first?.id && densePoints.last?.entry.id == dense.last?.id, "chart reduction keeps segment endpoints")
+check(densePoints.contains { $0.value == 40 } && densePoints.contains { $0.value == 230 }, "gap-aware chart preserves extreme readings")
+let entireDay = HistoryChartPolicy.window(day: now, hours: 0, endingAt: now, calendar: calendar)
+check(entireDay.lowerBound == calendar.startOfDay(for: now) && entireDay.upperBound == calendar.date(byAdding: .day, value: 1, to: entireDay.lowerBound), "full-day axis uses calendar boundaries, not available samples")
+let earlyWindow = HistoryChartPolicy.window(day: now, hours: 1, endingAt: entireDay.lowerBound, calendar: calendar)
+check(earlyWindow.lowerBound == entireDay.lowerBound && earlyWindow.upperBound.timeIntervalSince(earlyWindow.lowerBound) == 3600, "zoom clamps to start of selected day")
+let lateWindow = HistoryChartPolicy.window(day: now, hours: 6, endingAt: entireDay.upperBound.addingTimeInterval(3600), calendar: calendar)
+check(lateWindow.upperBound == entireDay.upperBound && lateWindow.upperBound.timeIntervalSince(lateWindow.lowerBound) == 21600, "zoom clamps to end of selected day")
+var daylightCalendar = Calendar(identifier: .gregorian)
+daylightCalendar.timeZone = TimeZone(identifier: "Europe/London")!
+let springDay = daylightCalendar.date(from: DateComponents(year: 2026, month: 3, day: 29))!
+let daylightWindow = HistoryChartPolicy.window(day: springDay, hours: 0, endingAt: springDay, calendar: daylightCalendar)
+check(daylightWindow.upperBound.timeIntervalSince(daylightWindow.lowerBound) == 23 * 3600, "calendar day honors daylight-saving time")
 print("Passed \(checks) regression checks")

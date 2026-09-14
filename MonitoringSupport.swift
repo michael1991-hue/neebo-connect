@@ -1,5 +1,79 @@
 import Foundation
 
+// Heart-rate freshness is independent of battery, oxygen and other BLE traffic.
+struct HeartRateFreshness {
+    static let timeout: TimeInterval = 30
+    private(set) var lastValid: Date?
+    private(set) var pausedSince: Date?
+    func isExpired(at now: Date) -> Bool {
+        guard let last = lastValid else { return false }
+        return now.timeIntervalSince(last) > Self.timeout || now < last
+    }
+    mutating func pause() -> Bool {
+        guard let last = lastValid, pausedSince == nil else { return false }
+        pausedSince = last
+        return true
+    }
+    // Returns the interval between usable readings, not a claimed disconnection duration.
+    mutating func receive(at now: Date) -> TimeInterval? {
+        let interval = pausedSince.map { max(0, now.timeIntervalSince($0)) }
+        lastValid = now; pausedSince = nil
+        return interval
+    }
+    mutating func reset() { self = Self() }
+}
+
+enum HistoryMetric { case heartRate, oxygen
+    func value(_ entry: SavedMeasurement) -> Int? { self == .heartRate ? entry.heartRate : entry.oxygen }
+}
+struct HistoryChartPoint: Identifiable {
+    var id: UUID { entry.id }
+    let entry: SavedMeasurement
+    let value: Int
+    let series: String
+}
+enum HistoryChartPolicy {
+    // Historical snapshots are normally 30 seconds apart. Older records have no
+    // continuity ID, so a saved interval over 60 seconds also breaks their line.
+    static func points(_ entries: [SavedMeasurement], metric: HistoryMetric, maximum: Int = 600) -> [HistoryChartPoint] {
+        var result: [HistoryChartPoint] = []
+        for (source, values) in Dictionary(grouping: entries, by: { $0.source }) {
+            var segment: [SavedMeasurement] = []
+            var number = 0
+            func flush() {
+                guard let first = segment.first, let last = segment.last else { return }
+                let budget = max(4, maximum * segment.count / max(1, entries.count))
+                let reduced = [first] + DailyHistoryStore.chartSamples(segment, maximum: budget) + [last]
+                var seen = Set<UUID>()
+                for entry in reduced.sorted(by: { $0.time < $1.time }) where seen.insert(entry.id).inserted {
+                    if let value = metric.value(entry) { result.append(HistoryChartPoint(entry: entry, value: value, series: "\(source)-\(number)")) }
+                }
+                segment = []; number += 1
+            }
+            for entry in values.sorted(by: { $0.time < $1.time }) {
+                guard metric.value(entry) != nil else { flush(); continue }
+                if let last = segment.last,
+                   entry.time.timeIntervalSince(last.time) > 60 || last.continuityID != entry.continuityID { flush() }
+                segment.append(entry)
+            }
+            flush()
+        }
+        return result.sorted { $0.entry.time < $1.entry.time }
+    }
+    static func nearest(_ entries: [SavedMeasurement], at date: Date, metric: HistoryMetric) -> SavedMeasurement? {
+        entries.filter { metric.value($0) != nil && abs($0.time.timeIntervalSince(date)) <= 30 }
+            .min { abs($0.time.timeIntervalSince(date)) < abs($1.time.timeIntervalSince(date)) }
+    }
+    static func window(day: Date, hours: Int, endingAt end: Date, calendar: Calendar = .current) -> ClosedRange<Date> {
+        let start = calendar.startOfDay(for: day)
+        let finish = calendar.date(byAdding: .day, value: 1, to: start)!
+        guard hours > 0 else { return start...finish }
+        let duration = min(Double(hours) * 3600, finish.timeIntervalSince(start))
+        let boundedEnd = min(finish, max(start.addingTimeInterval(duration), end))
+        return boundedEnd.addingTimeInterval(-duration)...boundedEnd
+    }
+}
+
 // Settings are deliberately unconfigured and off until the user enters their care-plan limits.
 struct AlarmSettings: Codable, Equatable {
     var highEnabled = false
@@ -46,7 +120,7 @@ struct RateAlarmEngine {
     mutating func silence() { muted = active; active = nil }
     mutating func ingest(bpm: Int?, source: String, at now: Date, settings: AlarmSettings, allowExperimentalCustom: Bool = false) -> RateAlarm? {
         guard settings.validationMessage == nil, settings.highEnabled || settings.lowEnabled else { reset(); return nil }
-        guard (source == "standard-2A37" || (allowExperimentalCustom && source == "experimental-FFE7")), let bpm = bpm, (1...299).contains(bpm) else { interrupt(); return nil }
+        guard (source == "standard-2A37" || (allowExperimentalCustom && source == "experimental-custom")), let bpm = bpm, (1...299).contains(bpm) else { interrupt(); return nil }
         if let last = previous, now.timeIntervalSince(last) > 10 || now < last { interrupt() }
         previous = now
         let direction: RateAlarm?
@@ -87,7 +161,8 @@ final class DailyHistoryStore {
     }
     func key(_ date: Date) -> String { formatter.string(from: date) }
     private func files() throws -> [URL] {
-        try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        guard fm.fileExists(atPath: directory.path) else { return [] }
+        return try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
             .filter { $0.pathExtension == "jsonl" && formatter.date(from: $0.deletingPathExtension().lastPathComponent) != nil }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
@@ -220,7 +295,8 @@ final class EventHistoryStore {
         for day in try days() where day < cutoff { try fm.removeItem(at: url(day)) }
     }
     func days() throws -> [Date] {
-        try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        guard fm.fileExists(atPath: directory.path) else { return [] }
+        return try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
             .filter { $0.pathExtension == "json" }.compactMap { formatter.date(from: $0.deletingPathExtension().lastPathComponent) }.sorted(by: >)
     }
     func load(day: Date) throws -> [SavedEvent] {

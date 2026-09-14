@@ -24,8 +24,8 @@ cat > "$app_dir/Info.plist" <<'PLIST'
 <key>CFBundleDisplayName</key><string>Nivvi</string>
 <key>CFBundleExecutable</key><string>Nivvi</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleVersion</key><string>5</string>
-<key>CFBundleShortVersionString</key><string>0.5</string>
+<key>CFBundleVersion</key><string>6</string>
+<key>CFBundleShortVersionString</key><string>0.6</string>
 <key>MinimumOSVersion</key><string>16.0</string>
 <key>CFBundleSupportedPlatforms</key><array><string>iPhoneOS</string></array>
 <key>UIDeviceFamily</key><array><integer>1</integer></array>
@@ -36,6 +36,12 @@ cat > "$app_dir/Info.plist" <<'PLIST'
 <key>LSSupportsOpeningDocumentsInPlace</key><true/>
 <key>UILaunchScreen</key><dict/>
 <key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string></array>
+<key>UIApplicationShortcutItems</key><array><dict>
+<key>UIApplicationShortcutItemType</key><string>com.michael1991.nivvi.live-heart-rate</string>
+<key>UIApplicationShortcutItemTitle</key><string>Live heart rate</string>
+<key>UIApplicationShortcutItemSubtitle</key><string>Open the live reading</string>
+<key>UIApplicationShortcutItemIconType</key><string>UIApplicationShortcutIconTypeCapturePhoto</string>
+</dict></array>
 </dict></plist>
 PLIST
 python3 prepare-icons.py
