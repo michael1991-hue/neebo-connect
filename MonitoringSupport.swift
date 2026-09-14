@@ -393,3 +393,20 @@ struct MeasurementTransportPolicy {
     mutating func didRequest(at now: Date) { lastAttempt = now }
     mutating func reset() { lastAttempt = nil }
 }
+
+// Refresh the system-scheduled advisory without postponing it on unrelated data.
+// A newly received measurement must replace an imminent stale-data warning.
+struct BackgroundDataReminderPolicy {
+    private(set) var scheduledAt: Date?
+    private(set) var deadline: Date?
+    mutating func delay(at now: Date, lastMeasurement: Date?) -> TimeInterval? {
+        if let scheduledAt, let deadline,
+           (0..<5).contains(now.timeIntervalSince(scheduledAt)),
+           deadline.timeIntervalSince(now) > 30 { return nil }
+        let age = max(0, now.timeIntervalSince(lastMeasurement ?? now))
+        let delay = max(1, 40 - age)
+        scheduledAt = now; deadline = now.addingTimeInterval(delay)
+        return delay
+    }
+    mutating func reset() { self = Self() }
+}

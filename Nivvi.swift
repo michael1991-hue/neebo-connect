@@ -145,7 +145,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     private var transportPolicy = MeasurementTransportPolicy()
     private var retryScan = false
     private var backgroundEnteredAt: Date?
-    private var watchdogScheduledAt: Date?
+    private var backgroundReminder = BackgroundDataReminderPolicy()
     @Published private(set) var measurementNotificationsEnabled = false
     @Published private(set) var lastBackgroundReading: Date?
     @Published private(set) var lastBackgroundSave: Date?
@@ -185,16 +185,12 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         }
     }
     private func cancelBackgroundWatchdog() {
-        watchdogScheduledAt = nil
+        backgroundReminder.reset()
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["nivvi-background-data"])
     }
     private func scheduleBackgroundWatchdog() {
         guard !foreground, session.enabled else { return }
-        let now = Date()
-        if let scheduled = watchdogScheduledAt, (0..<5).contains(now.timeIntervalSince(scheduled)) { return }
-        let last = lastHeartRateUpdate ?? now
-        let delay = max(1, 40 - max(0, now.timeIntervalSince(last)))
-        watchdogScheduledAt = now
+        guard let delay = backgroundReminder.delay(at: Date(), lastMeasurement: lastHeartRateUpdate) else { return }
         notify(title: "Check sensor data", body: "Nivvi has not received a recent heart-rate update. Open the app to check the wearable and connection.",
                identifier: "nivvi-background-data", delay: delay, soundName: "NivviSensor.wav")
     }
@@ -560,8 +556,9 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             if session.enabled && manager.state == .poweredOn { resumeSession() }
             requestCustomFallback()
         } else {
-            backgroundEnteredAt = Date(); backgroundReadingCount = 0
+            backgroundReadingCount = 0
             if session.enabled {
+                backgroundEnteredAt = Date()
                 recordEvent(kind: "measurement", title: "Background monitoring started",
                             detail: "Recording continues for usable Bluetooth updates delivered by iOS. A polling-only device may stop supplying data while the app is suspended.")
                 scheduleBackgroundWatchdog()
@@ -811,6 +808,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     private func configureCharacteristics(_ service: CBService, peripheral p: CBPeripheral) {
         for c in (service.characteristics ?? []).sorted(by: { $0.uuid.uuidString < $1.uuid.uuidString }) {
             let sid = BluetoothPolicy.normalized(service.uuid.uuidString), cid = BluetoothPolicy.normalized(c.uuid.uuidString)
+            log(["event": "characteristic", "service": sid, "uuid": cid, "properties": String(c.properties.rawValue)])
             guard BluetoothPolicy.shouldObserve(service: sid, characteristic: cid) else { continue }
             if (profile.hasStandardHeartRate || profile.hasPulseOximeter) && sid == "FFE0" { continue }
             note("Found \(sid)/\(cid): read=\(c.properties.contains(.read)), notify=\(c.properties.contains(.notify)), indicate=\(c.properties.contains(.indicate)), subscribed=\(c.isNotifying)")
@@ -1373,7 +1371,7 @@ struct ContentView: View {
         }
         .onChange(of: monitor.selectedHistoryDay) { _ in selectedHistoryReading = nil }
         .onChange(of: monitor.history.count) { count in if count == 0 { selectedHistoryReading = nil } }
-        // Monitoring lifecycle belongs to the app delegate, independent of this view.
+        // Monitoring lifecycle belongs to the long-lived monitor, independent of this view.
         .onReceive(NotificationCenter.default.publisher(for: .nivviShowLiveHeartRate)) { _ in tab = 0 }
         .scrollDismissesKeyboard(.interactively)
     }
