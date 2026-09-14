@@ -6,9 +6,6 @@ workflows:
     integrations:
       app_store_connect: Apple
     environment:
-      ios_signing:
-        distribution_type: app_store
-        bundle_identifier: com.michael1991.nivvi
       vars:
         BUNDLE_ID: com.michael1991.nivvi
         XCODE_PROJECT: Nivvi.xcodeproj
@@ -24,9 +21,17 @@ workflows:
           xcodegen generate --spec project.yml
       - name: Set up keychain
         script: keychain initialize
-      - name: Fetch App Store signing files
+      - name: Register bundle ID if needed
+        script: |
+          app-store-connect bundle-ids create "Nivvi" \
+            --identifier "$BUNDLE_ID" \
+            --platform IOS \
+            --capabilities PUSH_NOTIFICATIONS \
+            || true
+      - name: Create App Store certificate and profile
         script: |
           app-store-connect fetch-signing-files "$BUNDLE_ID" \
+            --platform IOS \
             --type IOS_APP_STORE \
             --create
       - name: Add certificates to keychain
