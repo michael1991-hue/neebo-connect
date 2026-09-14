@@ -1,0 +1,13 @@
+file '/workspace/scratch/680b842f5e43/Nivvi-App-Store/65-01-welcome-profile.png'
+duration 3
+file '/workspace/scratch/680b842f5e43/Nivvi-App-Store/65-02-day-dashboard.png'
+duration 4
+file '/workspace/scratch/680b842f5e43/Nivvi-App-Store/65-03-night-dashboard.png'
+duration 4
+file '/workspace/scratch/680b842f5e43/Nivvi-App-Store/65-04-family-circle.png'
+duration 4
+file '/workspace/scratch/680b842f5e43/Nivvi-App-Store/05-history.png'
+duration 4
+file '/workspace/scratch/680b842f5e43/Nivvi-App-Store/06-alerts.png'
+duration 4
+file '/workspace/scratch/680b842f5e43/Nivvi-App-Store/06-alerts.png'
