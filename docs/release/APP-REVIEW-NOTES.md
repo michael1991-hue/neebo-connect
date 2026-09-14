@@ -1,3 +1,5 @@
+> 0.10.0 update: optional family-sharing code is now included but not deployed/configured. See [family service setup](../../family-server/README.md) and the [family privacy addendum](FAMILY-PRIVACY-DRAFT.md). Earlier local-only statements below apply only with sharing disabled. Do not publish this draft unchanged.
+
 # App Store and TestFlight copy — draft
 
 Not submitted. Complete the missing operator/contact/hardware details and resolve the release gates first.

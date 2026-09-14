@@ -1,3 +1,5 @@
+> 0.10.0 update: optional family-sharing code is now included but not deployed/configured. See [family service setup](../family-server/README.md) and the [family privacy addendum](release/FAMILY-PRIVACY-DRAFT.md). Earlier local-only statements below apply only with sharing disabled. Do not publish this draft unchanged.
+
 # Nivvi terms of use — review draft
 
 Draft date: 13 September 2026. Not yet published or presented for acceptance.

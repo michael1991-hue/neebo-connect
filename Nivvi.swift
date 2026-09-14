@@ -6,6 +6,7 @@ import UserNotifications
 import Charts
 import PhotosUI
 import ImageIO
+import Security
 
 struct Reading: Identifiable {
     let id: String
@@ -250,6 +251,16 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     private var freshnessTimer: Timer?
     private lazy var archive = DailyHistoryStore(folder: folder)
     private var historyURL: URL { folder.appendingPathComponent("measurements.json") }
+    private func publishFamilySnapshot() {
+        let now = Date()
+        let hrTime = lastHeartRateUpdate
+        let oxTime = lastOxygenUpdate
+        let hr = hrTime.map { now.timeIntervalSince($0) <= 30 } == true ? (pulseOximeterRate ?? verifiedHeartRate.map(Double.init) ?? customHeartRateCandidate.map(Double.init)) : nil
+        let ox = oxTime.map { now.timeIntervalSince($0) <= 30 } == true ? (pulseOximeterOxygen ?? verifiedOxygen.map(Double.init) ?? customOxygenCandidate.map(Double.init)) : nil
+        let times = [(hr == nil ? nil : hrTime), (ox == nil ? nil : oxTime)].compactMap { $0 }
+        let snapshot = FamilySnapshot(captured: (times.min() ?? now).timeIntervalSince1970, heart_rate: hr, oxygen: ox, source: profile.rawValue, alarm: alarmKind.map { $0 == .high ? "high" : "low" } ?? (staleHeartRateDetected ? "sensor" : "none"), connection: connection.label)
+        Task { @MainActor in FamilyRelay.shared.capture(snapshot) }
+    }
     private func saveMeasurement(heartRate: Int?, oxygen: Int?, source: String, exactHeartRate: Double? = nil, exactOxygen: Double? = nil, segment: UUID? = nil) {
         let entry = SavedMeasurement(time: Date(), heartRate: heartRate, oxygen: oxygen, source: source, continuityID: segment ?? continuityID, exactHeartRate: exactHeartRate, exactOxygen: exactOxygen)
         // Oxygen-only packets must not refresh the live-heart-rate freshness timer.
@@ -302,6 +313,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         if heartRateFreshness.pause() {
             continuityID = UUID(); sampling.reset()
             recordEvent(kind: "measurement", title: "Heart-rate readings paused", detail: reason)
+            if !alarmActive { notify(title: "Check sensor data", body: "No fresh reading received. Check the wearable and connection.", identifier: "nivvi-sensor-paused", soundName: "NivviSensor.wav") }
         }
         verifiedHeartRate = nil; customHeartRateCandidate = nil; alarmEngine.interrupt()
         pulseOximeterRate = nil
@@ -319,6 +331,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         status = "Receiving fresh heart-rate readings."
     }
     private func expireMeasurements() {
+        defer { publishFamilySnapshot() }
         if let time = oxygenTime, Date().timeIntervalSince(time) > 30 || Date() < time {
             pulseOximeterOxygen = nil; oxygenTime = nil
             plxContinuityID = UUID(); sampling.reset(source: "standard-PLX-oxygen")
@@ -377,7 +390,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         } else {
             content.sound = sirenSound ? UNNotificationSound(named: UNNotificationSoundName(rawValue: "NivviSiren.wav")) : .default
         }
-        content.interruptionLevel = .timeSensitive
+        content.interruptionLevel = soundName == "NivviSensor.wav" ? .active : .timeSensitive
         let trigger: UNNotificationTrigger?
         if let repeatInterval {
             trigger = UNTimeIntervalNotificationTrigger(timeInterval: max(60, repeatInterval), repeats: true)
@@ -389,12 +402,15 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         }
     }
     private func scheduleAlarmNotifications(title: String? = nil, body: String? = nil) {
+        let sensorOnly = staleHeartRateDetected && !alarmActive
+        let selectedSound = sensorOnly ? "NivviSensor.wav" : "NivviSiren.wav"
+        let selectedTitle = sensorOnly ? "Check sensor data" : (title ?? attentionTitle)
         let alertBody = body ?? "\(alarmDetail) Check \(displayNameForAlert) and follow the care plan."
-        notify(title: title ?? attentionTitle, body: alertBody, identifier: "nivvi-rate-alarm")
+        notify(title: selectedTitle, body: alertBody, identifier: "nivvi-rate-alarm", soundName: selectedSound)
         // iOS does not permit an app to hold an audio session open indefinitely
         // after backgrounding. Repeating time-sensitive reminders keep notifying
         // the caregiver until acknowledgement or a fresh in-range reading.
-        notify(title: title ?? attentionTitle, body: "This critical alert is still active. Open Nivvi to acknowledge it.", identifier: "nivvi-rate-alarm-reminder", repeatInterval: 60)
+        if !sensorOnly { notify(title: selectedTitle, body: "This heart-rate alert is still active. Open Nivvi to acknowledge it.", identifier: "nivvi-rate-alarm-reminder", soundName: selectedSound, repeatInterval: 60) }
     }
     private func clearAlarmNotifications() {
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["nivvi-rate-alarm", "nivvi-rate-alarm-reminder"])
@@ -420,13 +436,14 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     private func startSiren(loop: Bool) {
         guard foreground else { return }
         do {
-            guard let url = Bundle.main.url(forResource: "NivviSiren", withExtension: "wav") else { throw CocoaError(.fileNoSuchFile) }
+            let sensorOnly = staleHeartRateDetected && !alarmActive && !testingSiren
+            guard let url = Bundle.main.url(forResource: sensorOnly ? "NivviSensor" : "NivviSiren", withExtension: "wav") else { throw CocoaError(.fileNoSuchFile) }
             let audio = AVAudioSession.sharedInstance()
             try audio.setCategory(.playback, mode: .default, options: [.duckOthers])
             try audio.setActive(true)
-            siren = try AVAudioPlayer(contentsOf: url); siren?.numberOfLoops = loop ? -1 : 0; siren?.volume = 1
+            siren = try AVAudioPlayer(contentsOf: url); siren?.numberOfLoops = sensorOnly ? 0 : (loop ? -1 : 0); siren?.volume = sensorOnly ? 0.4 : 1
             guard siren?.play() == true else { throw CocoaError(.fileReadUnknown) }
-            soundStatus = "Siren playing at the iPhone’s current media volume."
+            soundStatus = sensorOnly ? "Gentle sensor-check chime." : "Siren playing at the iPhone’s current media volume."
         } catch { soundStatus = "Siren could not play: \(error.localizedDescription)" }
     }
     private func stopSiren() {
@@ -463,7 +480,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             if !active && session.enabled && manager.state == .poweredOn { resumeSession() }
         } else {
             if criticalAlertActive, !alarmAcknowledged {
-                notify(title: attentionTitle, body: "An alarm is still active. Open Nivvi to acknowledge it.", identifier: "nivvi-rate-alarm")
+                if alarmActive { notify(title: attentionTitle, body: "A heart-rate alarm is still active. Open Nivvi to acknowledge it.", identifier: "nivvi-rate-alarm") }
             }
             stopSiren()
             // Notification delivery is owned by iOS; do not fake background audio to stay awake.
@@ -673,6 +690,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         if c === measurementCharacteristic && error != nil { measurementStatus = "custom measurement notifications failed; trying readable values instead." }
     }
     func peripheral(_ p: CBPeripheral, didUpdateValueFor c: CBCharacteristic, error: Error?) {
+        defer { publishFamilySnapshot() }
         guard owns(p) else { return }
         // Check before accepting this packet: iOS may have suspended the timer.
         expireMeasurements()
@@ -773,16 +791,17 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             staleHeartRateDetected = true
             alarmAcknowledged = false
             let value = MetricText.number(bpm)
-            recordEvent(kind: "critical", title: attentionTitle, detail: "The wearable repeated \(value) bpm for three minutes of \(source) readings. Check sensor contact, fit and the child; this may be stale device data.", heartRate: Int(bpm.rounded()))
+            recordEvent(kind: "measurement", title: "Check sensor data", detail: "The wearable repeated \(value) bpm for three minutes of \(source) readings. Check sensor contact, fit and the child; this may be stale device data.", heartRate: Int(bpm.rounded()))
             startSiren(loop: true)
             if !alarmActive {
+                clearAlarmNotifications()
                 scheduleAlarmNotifications(title: attentionTitle, body: "The wearable repeated \(value) bpm for three minutes. Check \(displayNameForAlert), the sensor fit and the care plan.")
             }
         } else if wasStale && !staleHeartRate.isStale {
             staleHeartRateDetected = false
             if !alarmActive {
                 alarmAcknowledged = false
-                recordEvent(kind: "critical", title: "Fresh heart-rate reading restored", detail: "A changed \(source) value replaced the repeated reading. This does not establish sensor accuracy or a medical all-clear.", heartRate: Int(bpm.rounded()))
+                recordEvent(kind: "measurement", title: "Fresh heart-rate reading restored", detail: "A changed \(source) value replaced the repeated reading. This does not establish sensor accuracy or a medical all-clear.", heartRate: Int(bpm.rounded()))
                 clearAlarmNotifications()
                 if !testingSiren { stopSiren() }
                 playReliefSound()
@@ -857,7 +876,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         } else {
             detail = "\(attentionTitle) stale-data warning acknowledged by the caregiver. Check the sensor and child; it remains visible until fresh data replaces the repeated value."
         }
-        recordEvent(kind: "critical", title: "Alarm acknowledged", detail: detail)
+        recordEvent(kind: alarmActive ? "critical" : "measurement", title: alarmActive ? "Alarm acknowledged" : "Sensor warning acknowledged", detail: detail)
         alarmAcknowledged = true
         stopSiren()
         clearAlarmNotifications()
@@ -1070,6 +1089,7 @@ struct ContentView: View {
     @AppStorage("nivvi.profile.birthDate") private var childBirthDate = 0.0
     @AppStorage("nivvi.profile.gender") private var childGender = "Prefer not to say"
     @AppStorage("nivvi.favorite.device.ids") private var favoriteDeviceIDs = ""
+    @State private var showFamily = false
     @State private var showProfile = false
     @State private var showReadinessTest = false
     @State private var captureRequest: CaptureRequest?
@@ -1236,14 +1256,14 @@ struct ContentView: View {
                 HStack(spacing: 12) {
                     Image(systemName: "bell.and.waves.fill").foregroundStyle(.white)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("\(displayName) needs your attention").font(.headline)
+                        Text(monitor.alarmActive ? "\(displayName) needs your attention" : "Check sensor data").font(.headline)
                         Text(monitor.staleHeartRateDetected ? (monitor.alarmAcknowledged ? "Acknowledged · repeated reading still needs checking." : "Repeated heart-rate value detected. Check sensor contact and your child.") : (monitor.alarmAcknowledged ? "Acknowledged · waiting for a fresh in-range reading." : "Check your child and follow their care plan.")).font(.caption)
                     }
                     Spacer()
                     if !monitor.alarmAcknowledged {
                         Button("Acknowledge") { monitor.silenceAlarm() }.buttonStyle(.bordered).tint(.white)
                     }
-                }.padding(16).background(coral).clipShape(RoundedRectangle(cornerRadius: 20))
+                }.padding(16).background(monitor.alarmActive ? coral : Color.orange.opacity(0.75)).clipShape(RoundedRectangle(cornerRadius: 20))
     }
 
     private var home: some View {
@@ -1504,8 +1524,8 @@ struct ContentView: View {
 
         }.padding(.top, 12) } }
         panel { DisclosureGroup("Privacy") { VStack(alignment: .leading, spacing: 12) {
-            Text("No account is required. Readings, events, notes and the child profile are saved on this iPhone by default. Nivvi does not use analytics, an AI service, or a remote caregiver backend in this build.").font(.caption)
-            Text("Sharing is user-initiated through the iOS share sheet. iOS backups and any recipient may create additional copies. Bluetooth, photo and notification permissions can be withdrawn in iPhone Settings.").font(.caption).foregroundStyle(.white.opacity(0.7))
+            Text("Local monitoring needs no account. Optional family sharing uses verified email accounts and uploads the latest readings and status only after you enable it. Photos, birth dates, notes and historical readings stay on this phone. No analytics or AI service is used.").font(.caption)
+            Text("Family sharing has its own privacy notice and Stop sharing control. You can remove members and delete the online account. File exports, recipients and iOS backups can retain separate copies.").font(.caption).foregroundStyle(.white.opacity(0.7))
 
         }.padding(.top, 12) } }
         panel { DisclosureGroup("Terms") { VStack(alignment: .leading, spacing: 12) {
@@ -1513,11 +1533,10 @@ struct ContentView: View {
             Text("Before public release, the operator name, monitored support address, final privacy notice and jurisdiction-specific terms must be completed in the support documentation.").font(.caption).foregroundStyle(.white.opacity(0.7))
 
         }.padding(.top, 12) } }
-        panel { DisclosureGroup("Family sharing") { VStack(alignment: .leading, spacing: 12) {
-            Text("Use History → export to share a readings or events CSV with a trusted family member. The current build has no account service or live remote sharing.").font(.caption)
-            Text("Member access and invitations will be added only with an authenticated, consent-based service; this build never uploads a child’s readings automatically.").font(.caption).foregroundStyle(.white.opacity(0.7))
-
-        }.padding(.top, 12) } }
+        panel {
+            Button { showFamily = true } label: { Label("Family sharing", systemImage: "person.2.fill") }
+            Text("Invite family members to view shared readings securely.").font(.caption)
+        }.sheet(isPresented: $showFamily) { NavigationStack { FamilySharingView().toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showFamily = false } } } } }
         panel { DisclosureGroup("Connection and support") { VStack(alignment: .leading, spacing: 12) {
             Text("Keeps the Bluetooth session active and attempts reconnection after signal loss. Tap Disconnect to end the session.").font(.caption)
             Text("Background readings require device notifications. Keep Nivvi open if the wearable only responds to reads. Force-quitting the app, Bluetooth being off, an empty battery or iOS restrictions can interrupt monitoring.").font(.caption).foregroundStyle(.white.opacity(0.7))
@@ -1530,7 +1549,7 @@ struct ContentView: View {
 
         }.padding(.top, 12) } }
         }
-        Text("Nivvi 0.8 · Build 8").font(.caption).foregroundStyle(.secondary)
+        Text("Nivvi " + (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")).font(.caption).foregroundStyle(.secondary)
     } }
 
     private var bottomBar: some View { HStack { nav("house.fill", "Home", 0); nav("chart.xyaxis.line", "History", 1); nav("wave.3.right", "Device", 2); nav("gearshape.fill", "Settings", 3) }.padding(8).background(.white.opacity(0.1)).clipShape(Capsule()).padding(.horizontal, 18).padding(.bottom, 10) }
@@ -1590,6 +1609,13 @@ extension Notification.Name {
 
 final class NivviAppDelegate: NSObject, UIApplicationDelegate {
     let monitor = Monitor()
+    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        let token = deviceToken.map { String(format: "%02x", $0) }.joined()
+        Task { @MainActor in await FamilyRelay.shared.registerDevice(token) }
+    }
+    func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        Task { @MainActor in FamilyRelay.shared.message = "Remote notifications unavailable: " + error.localizedDescription }
+    }
     func application(_ application: UIApplication, performActionFor shortcutItem: UIApplicationShortcutItem, completionHandler: @escaping (Bool) -> Void) {
         if shortcutItem.type == "com.michael1991.nivvi.live-heart-rate" {
             NotificationCenter.default.post(name: .nivviShowLiveHeartRate, object: nil)

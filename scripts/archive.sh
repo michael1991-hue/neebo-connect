@@ -15,7 +15,7 @@ if [ "${1:-}" = "--signed" ]; then
   : "${NIVVI_APPLE_TEAM_ID:?Set NIVVI_APPLE_TEAM_ID to your enrolled Apple team ID}"
   xcodebuild -project Nivvi.xcodeproj -scheme Nivvi -configuration Release \
     -destination 'generic/platform=iOS' -archivePath build/Nivvi-signed.xcarchive \
-    DEVELOPMENT_TEAM="$NIVVI_APPLE_TEAM_ID" -allowProvisioningUpdates archive
+    DEVELOPMENT_TEAM="$NIVVI_APPLE_TEAM_ID" CODE_SIGN_ENTITLEMENTS=apple/FamilySharing.entitlements -allowProvisioningUpdates archive
 else
   xcodebuild -project Nivvi.xcodeproj -scheme Nivvi -configuration Release \
     -destination 'generic/platform=iOS' -archivePath build/Nivvi-unsigned.xcarchive \

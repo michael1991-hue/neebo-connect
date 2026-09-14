@@ -1,3 +1,7 @@
+# Nivvi 0.10.0 (15): family-sharing implementation
+
+See [family service setup](family-server/README.md). Accounts, private invitations, remote readings and push delivery code are included, but **hosting, email delivery and Apple push provisioning are not configured**. Local monitoring remains available. Sensor warnings now use a gentle advisory chime rather than the critical siren.
+
 # Release preparation: 0.9.5 (14)
 
 See [Apple release pack](docs/release/START-HERE.md) for the current audit, Xcode archive route, legal drafts and unresolved release gates. Not yet submitted to Apple. Older release sections below describe previous work.

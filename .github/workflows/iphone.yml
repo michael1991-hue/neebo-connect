@@ -7,6 +7,8 @@ on:
     branches: [main]
     paths:
       - 'Nivvi.swift'
+      - 'FamilySharing.swift'
+      - 'family-server/**'
       - 'MonitoringSupport.swift'
       - 'PulseOximetry.swift'
       - 'prepare-sound.py'
@@ -55,3 +57,14 @@ jobs:
           path: build/Nivvi-unsigned.xcarchive
           if-no-files-found: error
           retention-days: 7
+
+  family-access-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r family-server/requirements.txt pytest
+      - run: python -m pytest -q family-server/tests

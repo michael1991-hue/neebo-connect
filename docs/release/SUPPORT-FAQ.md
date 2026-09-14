@@ -1,3 +1,5 @@
+> 0.10.0 update: optional family-sharing code is now included but not deployed/configured. See [family service setup](../../family-server/README.md) and the [family privacy addendum](FAMILY-PRIVACY-DRAFT.md). Earlier local-only statements below apply only with sharing disabled. Do not publish this draft unchanged.
+
 # Nivvi support FAQ — current build
 
 ## Which devices work?
@@ -30,7 +32,7 @@ Sleep tracking is not included. The manual timer, asleep/awake buttons and anima
 
 ## Can family watch remotely?
 
-This build supports manually exported files, not live remote sharing or member accounts. Exports leave your device only through the destination you select.
+When the online service is configured, open Settings → Family sharing. Register and verify each adult’s own account. The host enables sharing and creates a private email-bound invitation; the recipient accepts the code. Remote values update while the Family screen is open, and stale values are hidden. Online setup is still pending in this build.
 
 ## How do I delete information?
 

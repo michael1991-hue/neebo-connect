@@ -60,3 +60,28 @@ def write_relief(path):
 
 write_relief(out_dir / 'NivviRelief.wav')
 print('Bundled alarm siren and soft recovery bell chime')
+
+
+# Gentle sensor advisory: one short, low-volume double chime with a soft envelope.
+# Distinct from both the urgent siren and the three-note recovery bells.
+def write_sensor(path):
+    seconds = 2.8
+    samples = bytearray()
+    peak = 0
+    for i in range(int(rate * seconds)):
+        t = i / rate
+        value = 0.0
+        for onset, hz in [(0.0, 392.0), (0.8, 440.0)]:
+            age = t - onset
+            if age >= 0:
+                envelope = (1 - math.exp(-age / 0.10)) * math.exp(-age / 0.55)
+                value += 0.12 * envelope * math.sin(2 * math.pi * hz * age)
+        value *= min(1.0, max(0.0, (seconds - t) / 0.4))
+        sample = int(value * 32767)
+        peak = max(peak, abs(sample))
+        samples.extend(struct.pack('<h', sample))
+    assert 0 < peak < int(32767 * 0.20)
+    with wave.open(str(path), 'wb') as sound:
+        sound.setnchannels(1); sound.setsampwidth(2); sound.setframerate(rate)
+        sound.writeframes(samples)
+write_sensor(out_dir / 'NivviSensor.wav')

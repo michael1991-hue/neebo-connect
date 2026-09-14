@@ -1,3 +1,5 @@
+> 0.10.0 update: optional family-sharing code is now included but not deployed/configured. See [family service setup](../../family-server/README.md) and the [family privacy addendum](FAMILY-PRIVACY-DRAFT.md). Earlier local-only statements below apply only with sharing disabled. Do not publish this draft unchanged.
+
 # Privacy disclosure audit — 0.9.5
 
 Scope: the three Swift source files and current bundled-resource build. No third-party runtime SDK was found. This is a code audit, not a network trace of the signed release.

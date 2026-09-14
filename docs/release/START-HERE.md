@@ -1,3 +1,5 @@
+> 0.10.0 update: optional family-sharing code is now included but not deployed/configured. See [family service setup](../../family-server/README.md) and the [family privacy addendum](FAMILY-PRIVACY-DRAFT.md). Earlier local-only statements below apply only with sharing disabled. Do not publish this draft unchanged.
+
 # Nivvi Apple release pack
 
 Prepared 14 September 2026 for 0.9.5, build 14. **Preparation complete is not release approval.** The current target is a controlled TestFlight evaluation, not paid monitoring distribution.
