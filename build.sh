@@ -24,8 +24,8 @@ cat > "$app_dir/Info.plist" <<'PLIST'
 <key>CFBundleDisplayName</key><string>Nivvi</string>
 <key>CFBundleExecutable</key><string>Nivvi</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleVersion</key><string>10</string>
-<key>CFBundleShortVersionString</key><string>0.9.1</string>
+<key>CFBundleVersion</key><string>11</string>
+<key>CFBundleShortVersionString</key><string>0.9.2</string>
 <key>MinimumOSVersion</key><string>16.0</string>
 <key>CFBundleSupportedPlatforms</key><array><string>iPhoneOS</string></array>
 <key>UIDeviceFamily</key><array><integer>1</integer></array>

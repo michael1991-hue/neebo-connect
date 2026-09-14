@@ -275,7 +275,9 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     func clearHistory() {
         do {
             try archive.clear(legacy: historyURL)
-            try eventArchive.clear(); events = []; eventDays = []; eventError = nil; sampling.reset()
+            try eventArchive.clear()
+            UserDefaults.standard.removeObject(forKey: "nivvi.sleep.timer")
+            events = []; eventDays = []; eventError = nil; sampling.reset()
             history = []; historyDays = []; historyError = nil; historyLoadFailed = false
             try? FileManager.default.removeItem(at: folder.appendingPathComponent("Nivvi-history.csv"))
             try? FileManager.default.removeItem(at: folder.appendingPathComponent("Nivvi-events.csv"))
@@ -1267,6 +1269,7 @@ struct ContentView: View {
                     .foregroundStyle(Color(red: 0.06, green: 0.16, blue: 0.25)).padding(18).frame(maxWidth: .infinity)
                     .background(lavender).clipShape(RoundedRectangle(cornerRadius: 20))
             }
+            panel { SleepTimerView(monitor: monitor) }
             supportiveCard
             if !monitor.status.isEmpty { Text(monitor.status).font(.caption).foregroundStyle(.white.opacity(0.6)).fixedSize(horizontal: false, vertical: true) }
         }
@@ -1314,12 +1317,19 @@ struct ContentView: View {
                 Text("\(visibleEvents.count) events · recorded as they happen").font(.subheadline)
                 if visibleEvents.isEmpty { panel { Text("No events match this filter for this day.").font(.subheadline) } }
                 ForEach(Array(visibleEvents.reversed())) { event in
-                    panel { VStack(alignment: .leading, spacing: 9) {
-                        timestamp(event.time, tint: event.kind == "alarm" || event.kind == "critical" ? coral : lavender)
-                        Label(event.title, systemImage: event.kind == "alarm" || event.kind == "critical" ? "bell.fill" : event.kind == "note" ? "note.text" : "antenna.radiowaves.left.and.right").font(.headline)
-                        Text(event.detail).font(.subheadline).foregroundStyle(.white.opacity(0.8))
-                        if let bpm = event.heartRate { Text("\(bpm) bpm").font(.title3.bold()).foregroundStyle(coral) }
-                    } }
+                    let recovery = event.title == "Heart rate back to normal"
+                    let eventTint: Color = recovery ? Color(red: 0.45, green: 0.95, blue: 0.65) : (event.kind == "alarm" || event.kind == "critical" ? coral : lavender)
+                    VStack(alignment: .leading, spacing: 9) {
+                        timestamp(event.time, tint: eventTint)
+                        Label(event.title, systemImage: recovery ? "checkmark.circle.fill" : event.kind == "alarm" || event.kind == "critical" ? "bell.fill" : event.kind == "sleep" ? "moon.zzz.fill" : event.kind == "note" ? "note.text" : "antenna.radiowaves.left.and.right")
+                            .font(.headline).foregroundStyle(recovery ? eventTint : .white)
+                        Text(event.detail).font(.subheadline).foregroundStyle(recovery ? eventTint : .white.opacity(0.8))
+                        if let bpm = event.heartRate { Text("\(bpm) bpm").font(.title3.bold()).foregroundStyle(eventTint) }
+                    }
+                    .padding(18).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(recovery ? Color.green.opacity(0.14) : Color.white.opacity(0.09))
+                    .clipShape(RoundedRectangle(cornerRadius: 22))
+                    .overlay(RoundedRectangle(cornerRadius: 22).stroke(recovery ? Color.green.opacity(0.55) : .clear, lineWidth: 1))
                 }
                 if let error = monitor.eventError { Text(error).foregroundStyle(coral) }
             } else {
@@ -1667,5 +1677,105 @@ struct AlarmReadinessView: View {
         monitor.recordEvent(kind: "test", title: "Alarm check: \(titles[step])",
                             detail: "Parent-reported result: \(passed ? "worked" : "did not work"). Manual setup check; not automatic validation or a guarantee of future delivery.")
         saved = true
+    }
+}
+
+
+struct ParentSleepTimer: Codable {
+    var state: String
+    var since: Date
+}
+
+struct SleepTimerView: View {
+    @ObservedObject var monitor: Monitor
+    @AppStorage("nivvi.sleep.timer") private var savedTimer = ""
+    @State private var targetState: String?
+    @State private var changeTime = Date()
+    @State private var showEditor = false
+    @State private var errorText: String?
+    private var timer: ParentSleepTimer? {
+        guard let data = savedTimer.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(ParentSleepTimer.self, from: data),
+              ["Asleep", "Awake"].contains(decoded.state) else { return nil }
+        return decoded
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("Sleep & awake", systemImage: "moon.zzz.fill").font(.headline)
+            Text("Parent-marked · not automatically detected").font(.caption).foregroundStyle(.secondary)
+            if let timer {
+                HStack {
+                    Text(timer.state).font(.title2.bold())
+                    Spacer()
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        Text(context.date >= timer.since ? duration(context.date.timeIntervalSince(timer.since)) : "Check start time")
+                            .font(.title2.monospacedDigit().bold())
+                    }
+                }
+                Text("Since \(timer.since.formatted(date: .abbreviated, time: .shortened))").font(.caption.bold())
+                Text("Keeps counting until you mark a change, including while the phone is locked or Bluetooth is disconnected.").font(.caption)
+            } else {
+                Text("Mark when your child falls asleep or wakes up to start a timer.")
+            }
+            HStack {
+                Button("Asleep") { begin("Asleep") }.disabled(timer?.state == "Asleep")
+                Button("Awake") { begin("Awake") }.disabled(timer?.state == "Awake")
+            }.buttonStyle(.bordered)
+            if timer != nil {
+                Button("Stop tracking") { targetState = nil; changeTime = Date(); showEditor = true }.font(.caption)
+            }
+            if let errorText { Text(errorText).font(.caption).foregroundStyle(.red) }
+            Text("Changes and completed durations appear in History → Events → Sleep. These timers never change heart-rate alarm limits.").font(.caption).foregroundStyle(.secondary)
+        }
+        .sheet(isPresented: $showEditor) {
+            NavigationStack {
+                Form {
+                    Section(targetState.map { "Mark as \($0.lowercased())" } ?? "Stop tracking") {
+                        DatePicker("Time", selection: $changeTime, in: min(timer?.since ?? Date.distantPast, Date())...Date(), displayedComponents: [.date, .hourAndMinute])
+                        Text("Choose the time you observed the change. Nivvi does not infer sleep from heart rate.")
+                    }
+                    if let errorText { Text(errorText).foregroundStyle(.red) }
+                }
+                .navigationTitle("Sleep log")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("Cancel") { showEditor = false } }
+                    ToolbarItem(placement: .confirmationAction) { Button("Save") { saveChange() } }
+                }
+            }
+        }
+    }
+    private func begin(_ state: String) {
+        targetState = state
+        changeTime = Date()
+        errorText = nil
+        showEditor = true
+    }
+    private func duration(_ interval: TimeInterval) -> String {
+        let seconds = max(0, Int(interval))
+        return "\(seconds / 3600)h \((seconds % 3600) / 60)m \(seconds % 60)s"
+    }
+    private func saveChange() {
+        let now = Date()
+        guard changeTime <= now, timer.map({ changeTime >= $0.since }) ?? true else {
+            errorText = "Choose a time after the current timer started and no later than now."
+            return
+        }
+        var detail = "Parent-marked at \(changeTime.formatted(date: .abbreviated, time: .standard)). "
+        if let previous = timer {
+            detail += "\(previous.state) from \(previous.since.formatted(date: .abbreviated, time: .standard)) until \(changeTime.formatted(date: .abbreviated, time: .standard)): \(duration(changeTime.timeIntervalSince(previous.since))). "
+        }
+        detail += "Observed by a caregiver, not detected by the sensor."
+        let newValue: String
+        if let targetState {
+            guard let data = try? JSONEncoder().encode(ParentSleepTimer(state: targetState, since: changeTime)),
+                  let encoded = String(data: data, encoding: .utf8) else {
+                errorText = "Could not save this timer."; return
+            }
+            newValue = encoded
+        } else { newValue = "" }
+        monitor.recordEvent(kind: "sleep", title: targetState.map { "Marked \($0.lowercased())" } ?? "Sleep tracking stopped", detail: detail)
+        guard monitor.eventError == nil else { errorText = monitor.eventError; return }
+        savedTimer = newValue
+        errorText = nil; showEditor = false
     }
 }
