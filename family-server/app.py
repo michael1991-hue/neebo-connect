@@ -7,6 +7,7 @@ import os
 import re
 import secrets
 import smtplib
+import ssl
 import sqlite3
 import time
 from contextlib import contextmanager, asynccontextmanager
@@ -118,7 +119,7 @@ def send_code(address, purpose):
     msg["Subject"] = "Nivvi account verification" if purpose == "verify" else "Nivvi password reset"
     msg.set_content(f"Paste this code in Nivvi to {purpose} your account:\n\n{token}\n\nIt expires in 15 minutes. If you did not request it, ignore this message.")
     with smtplib.SMTP(os.environ["NIVVI_SMTP_HOST"], int(os.environ.get("NIVVI_SMTP_PORT", "587")), timeout=15) as smtp:
-        smtp.starttls()
+        smtp.starttls(context=ssl.create_default_context())
         smtp.login(os.environ["NIVVI_SMTP_USER"], os.environ["NIVVI_SMTP_PASSWORD"])
         smtp.send_message(msg)
 
@@ -362,10 +363,11 @@ def publish(family: str, body: Snapshot, user=Depends(require_user)):
         c.execute("INSERT OR REPLACE INTO latest VALUES(?,?,?)", (family, body.model_dump_json(), now))
         if body.alarm != old.get("alarm", "none"):
             # A missing reading cannot generate a recovery push.
-            recovery = body.alarm == "none" and body.heart_rate is not None
-            if recovery or body.alarm != "none":
+            recovery = body.alarm == "none" and body.heart_rate is not None and old.get("alarm") in ("high", "low")
+            restored = body.alarm == "none" and body.heart_rate is not None and old.get("alarm") == "sensor"
+            if recovery or restored or body.alarm != "none":
                 c.execute("DELETE FROM pushes WHERE family=?", (family,))
-                c.execute("INSERT INTO pushes(id,family,kind,created) VALUES(?,?,?,?)", (secrets.token_hex(16), family, "recovery" if recovery else "sensor" if body.alarm == "sensor" else "attention", now))
+                c.execute("INSERT INTO pushes(id,family,kind,created) VALUES(?,?,?,?)", (secrets.token_hex(16), family, "recovery" if recovery else "sensor-restored" if restored else "sensor" if body.alarm == "sensor" else "attention", now))
     return {"ok": True}
 
 
@@ -433,8 +435,9 @@ async def deliver_pushes():
                 if not allowed:
                     continue
                 recovery = event["kind"] == "recovery"
-                sensor = event["kind"] == "sensor"
-                payload = {"aps": {"alert": {"title": "Nivvi family update", "body": "A shared reading has returned to range. Open Nivvi to check its time." if recovery else "Check the shared sensor data. Open Nivvi for the latest status." if sensor else "A shared monitor needs attention. Open Nivvi for the latest status."}, "sound": "NivviRelief.wav" if recovery else "NivviSensor.wav" if sensor else "NivviSiren.wav"}, "family_id": event["family"]}
+                sensor = event["kind"] in ("sensor", "sensor-restored")
+                message = "A shared reading has returned to range. Open Nivvi to check its time." if recovery else "Changed readings received from the shared sensor. Open Nivvi to check." if event["kind"] == "sensor-restored" else "Check the shared sensor data. Open Nivvi for the latest status." if sensor else "A shared monitor needs attention. Open Nivvi for the latest status."
+                payload = {"aps": {"alert": {"title": "Nivvi family update", "body": message}, "sound": "NivviRelief.wav" if recovery else "NivviSensor.wav" if sensor else "NivviSiren.wav"}, "family_id": event["family"]}
                 result = await client.post(f"https://{host}/3/device/{token}", headers={"authorization": "bearer " + bearer, "apns-topic": os.environ["NIVVI_APNS_TOPIC"], "apns-push-type": "alert", "apns-expiration": str(int(event["created"]+120)), "apns-collapse-id": event["family"]}, json=payload)
                 if result.status_code == 410 or (result.status_code == 400 and result.json().get("reason") == "BadDeviceToken"):
                     with db() as c:

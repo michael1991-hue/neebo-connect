@@ -129,3 +129,19 @@ def test_verification_binds_mailbox_owners_password(client):
     assert client.post("/auth/verify", json={"email": "owner@example.com", "code": code, "password": "owners-new-password"}).status_code == 200
     assert client.post("/auth/login", json={"email": "owner@example.com", "password": "attacker-password"}).status_code == 401
     assert client.post("/auth/login", json={"email": "owner@example.com", "password": "owners-new-password"}).status_code == 200
+
+
+def test_sensor_recovery_is_not_a_heart_rate_recovery(client):
+    owner, _ = account(client, "owner@example.com")
+    family = group(client, owner)
+    path = f"/families/{family}/latest"
+    assert client.put(path, headers=owner, json=snapshot("sensor")).status_code == 200
+    assert client.put(path, headers=owner, json=snapshot("none")).status_code == 200
+    with relay.db() as c:
+        assert c.execute("SELECT kind FROM pushes").fetchone()[0] == "sensor-restored"
+    assert client.put(path, headers=owner, json=snapshot("high")).status_code == 200
+    assert client.put(path, headers=owner, json=snapshot("none", hr=None)).status_code == 200
+    assert client.get(path, headers=owner).json()["snapshot"]["alarm"] == "high"
+    assert client.put(path, headers=owner, json=snapshot("none")).status_code == 200
+    with relay.db() as c:
+        assert c.execute("SELECT kind FROM pushes").fetchone()[0] == "recovery"
