@@ -214,18 +214,43 @@ check(freshness.isExpired(at: now), "backward clock change does not keep future-
 freshness.reset()
 check(freshness.lastValid == nil && freshness.pausedSince == nil, "new session cannot reuse old pulse freshness")
 
-var stale = StaleHeartRateDetector(consecutiveLimit: 20)
+var stale = StaleHeartRateDetector()
 let staleOrigin = Date(timeIntervalSince1970: 1_790_000_000)
-check(!stale.observe(100, at: staleOrigin), "first repeated value is not stale")
-for index in 1..<19 {
-    check(!stale.observe(100, at: staleOrigin.addingTimeInterval(Double(index))), "stale detector waits for twenty readings")
+func repeated(_ seconds: Double, value: Double = 100) -> Bool {
+    stale.observe(value, at: staleOrigin.addingTimeInterval(seconds))
 }
-check(stale.observe(100, at: staleOrigin.addingTimeInterval(19)), "twentieth identical reading raises a stale-data warning")
-check(stale.isStale && stale.consecutiveCount == 20, "stale warning remains latched for the repeated sequence")
-check(!stale.observe(100, at: staleOrigin.addingTimeInterval(20)), "stale warning fires once per repeated sequence")
-check(!stale.observe(101, at: staleOrigin.addingTimeInterval(21)) && !stale.isStale, "a changed value clears stale status")
+for second in 0..<180 {
+    check(!repeated(Double(second)), "rapid packets cannot shorten three-minute duration")
+}
+check(repeated(180) && stale.isStale, "unchanged reading triggers at exactly three minutes")
+check(!repeated(181) && stale.isStale, "ongoing sequence alerts only once")
+check(!repeated(182, value: 101) && !stale.isStale, "changed reading clears repeated-value warning")
 stale.reset()
-check(stale.lastValue == nil && stale.consecutiveCount == 0, "stale detector resets between sessions")
+for second in stride(from: 0, to: 180, by: 30) {
+    check(!repeated(Double(second)), "thirty-second updates wait three minutes")
+}
+check(repeated(180), "seventh thirty-second update reaches three minutes")
+stale.reset()
+_ = repeated(0); _ = repeated(30); _ = repeated(60)
+check(!repeated(150), "long gap restarts duration")
+for second in stride(from: 180, to: 330, by: 30) { check(!repeated(Double(second)), "new duration after gap") }
+check(repeated(330), "three uninterrupted minutes after gap can alert")
+stale.reset()
+_ = repeated(0); _ = repeated(30)
+check(!repeated(20), "backward clock does not trigger")
+check(!repeated(180), "clock discontinuity restarts duration")
+stale.reset()
+_ = repeated(0)
+check(!repeated(180), "two distant samples cannot imply continuous repeating data")
+stale.reset()
+for second in stride(from: 0, to: 180, by: 30) { _ = repeated(Double(second)) }
+_ = repeated(180)
+stale.interrupt()
+check(stale.isStale, "missing or invalid data does not resolve active warning")
+check(!repeated(240) && stale.isStale, "same value after interruption is not a recovery")
+check(!repeated(270, value: 101) && !stale.isStale, "changed value resolves after interruption")
+stale.reset()
+check(stale.lastValue == nil && !stale.isStale, "session reset clears detector")
 
 let oldJSON = Data(#"{"id":"00000000-0000-0000-0000-000000000001","time":0,"heartRate":100,"oxygen":99,"source":"experimental-custom"}"#.utf8)
 let oldEntry = try JSONDecoder().decode(SavedMeasurement.self, from: oldJSON)

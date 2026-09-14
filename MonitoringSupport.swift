@@ -23,43 +23,44 @@ struct HeartRateFreshness {
     mutating func reset() { self = Self() }
 }
 
-// A valid Bluetooth link is not proof that the optical sensor is still producing
-// new physiology. Some optical devices can repeat their last value after contact
-// loss or during a rapid transition. This detector deliberately uses exact values:
-// twenty identical usable readings are an unvalidated heuristic, not proof of
-// sensor failure: rounding, averaging and cached reads can also repeat values.
+// Three minutes of unchanged received values is a heuristic, not proof of
+// sensor failure. Rounding, averaging and cached reads can also repeat values.
 struct StaleHeartRateDetector {
-    let consecutiveLimit: Int
+    static let duration: TimeInterval = 180
+    // Permit 30-second device updates with delivery jitter. Longer gaps restart
+    // the pending duration; absent packets cannot count as repeated readings.
+    static let maximumGap: TimeInterval = 45
     private(set) var lastValue: Double?
-    private(set) var consecutiveCount = 0
     private(set) var lastTime: Date?
+    private(set) var unchangedSince: Date?
+    private(set) var isStale = false
 
-    init(consecutiveLimit: Int = 20) {
-        self.consecutiveLimit = max(2, consecutiveLimit)
-    }
-
-    var isStale: Bool { consecutiveCount >= consecutiveLimit }
-
-    // Returns true only when this observation crosses the stale threshold.
     mutating func observe(_ value: Double, at time: Date) -> Bool {
-        guard value.isFinite, value > 0 else { reset(); return false }
-        if let lastTime, time < lastTime { reset() }
-        let wasStale = isStale
-        if lastValue == value {
-            consecutiveCount = min(consecutiveLimit, consecutiveCount + 1)
-        } else {
-            lastValue = value
-            consecutiveCount = 1
+        guard value.isFinite, value > 0 else { interrupt(); return false }
+        if let lastTime, time <= lastTime {
+            if time < lastTime { interrupt() }
+            return false
         }
+        if lastValue != value {
+            isStale = false
+            unchangedSince = time
+        } else if let previous = lastTime,
+                  time.timeIntervalSince(previous) > Self.maximumGap {
+            unchangedSince = time
+        }
+        if unchangedSince == nil { unchangedSince = time }
+        lastValue = value
         lastTime = time
-        return !wasStale && isStale
+        guard !isStale, let start = unchangedSince,
+              time.timeIntervalSince(start) >= Self.duration else { return false }
+        isStale = true
+        return true
     }
 
-    mutating func reset() {
-        lastValue = nil
-        consecutiveCount = 0
-        lastTime = nil
-    }
+    // Invalid/missing data interrupts the pending duration, never resolves an
+    // already active warning. A changed valid value or session reset clears it.
+    mutating func interrupt() { unchangedSince = nil; lastTime = nil }
+    mutating func reset() { self = Self() }
 }
 
 enum HistoryMetric { case heartRate, oxygen
