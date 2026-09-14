@@ -14,6 +14,9 @@ on:
       - 'prepare-icons.py'
       - 'Assets/**'
       - 'Tests/**'
+      - 'apple/**'
+      - 'scripts/**'
+      - 'project.yml'
       - '.github/workflows/iphone.yml'
 permissions:
   contents: read
@@ -23,6 +26,13 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - name: Select installed Xcode 26
+        run: |
+          xcode_path=$(find /Applications -maxdepth 1 -name 'Xcode_26*.app' | sort | tail -1)
+          test -n "$xcode_path"
+          sudo xcode-select -s "$xcode_path/Contents/Developer"
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
       - name: Bluetooth, alarms and daily history regression checks
         run: bash Tests/run.sh
       - name: Compile iPhone app
@@ -32,5 +42,16 @@ jobs:
         with:
           name: Nivvi-unsigned
           path: build/Nivvi-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 7
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Validate App Store archive structure without signing
+        run: bash scripts/archive.sh
+      - name: Save archive for inspection
+        uses: actions/upload-artifact@v4
+        with:
+          name: Nivvi-unsigned-archive
+          path: build/Nivvi-unsigned.xcarchive
           if-no-files-found: error
           retention-days: 7

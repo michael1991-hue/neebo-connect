@@ -15,35 +15,8 @@ SDKROOT="$sdk_path" xcrun --sdk iphoneos swiftc -swift-version 5 -parse-as-libra
   -module-name Nivvi -framework SwiftUI -framework CoreBluetooth -framework Charts -framework AudioToolbox -framework UserNotifications -framework AVFoundation -framework PhotosUI -framework ImageIO \
   -Xlinker -rpath -Xlinker @executable_path/Frameworks \
   Nivvi.swift MonitoringSupport.swift PulseOximetry.swift -o "$app_dir/Nivvi"
-cat > "$app_dir/Info.plist" <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-<key>CFBundleIdentifier</key><string>com.michael1991.nivvi</string>
-<key>CFBundleName</key><string>Nivvi</string>
-<key>CFBundleDisplayName</key><string>Nivvi</string>
-<key>CFBundleExecutable</key><string>Nivvi</string>
-<key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleVersion</key><string>12</string>
-<key>CFBundleShortVersionString</key><string>0.9.3</string>
-<key>MinimumOSVersion</key><string>16.0</string>
-<key>CFBundleSupportedPlatforms</key><array><string>iPhoneOS</string></array>
-<key>UIDeviceFamily</key><array><integer>1</integer></array>
-<key>LSRequiresIPhoneOS</key><true/>
-<key>NSBluetoothAlwaysUsageDescription</key><string>Connect to a compatible Bluetooth heart-rate device to display readings and save history on this iPhone.</string>
-<key>UIBackgroundModes</key><array><string>bluetooth-central</string></array>
-<key>UIFileSharingEnabled</key><true/>
-<key>LSSupportsOpeningDocumentsInPlace</key><true/>
-<key>UILaunchScreen</key><dict/>
-<key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string></array>
-<key>UIApplicationShortcutItems</key><array><dict>
-<key>UIApplicationShortcutItemType</key><string>com.michael1991.nivvi.live-heart-rate</string>
-<key>UIApplicationShortcutItemTitle</key><string>Live heart rate</string>
-<key>UIApplicationShortcutItemSubtitle</key><string>Open the live reading</string>
-<key>UIApplicationShortcutItemIconType</key><string>UIApplicationShortcutIconTypeCapturePhoto</string>
-</dict></array>
-</dict></plist>
-PLIST
+cp apple/Info.plist "$app_dir/Info.plist"
+cp apple/PrivacyInfo.xcprivacy "$app_dir/PrivacyInfo.xcprivacy"
 python3 prepare-icons.py
 python3 prepare-sound.py
 xcrun actool build/Assets.xcassets --compile "$app_dir" \

@@ -1510,7 +1510,7 @@ struct ContentView: View {
 
         }.padding(.top, 12) } }
         panel { DisclosureGroup("Terms") { VStack(alignment: .leading, spacing: 12) {
-            Text("Nivvi is a record-and-alert companion, not a medical device, diagnosis or emergency service. Bluetooth links, sensors, alarms and notifications can fail or be delayed. Follow your child’s care plan and seek urgent help for serious symptoms; do not wait for this app.").font(.caption)
+            Text("Nivvi displays device readings and records events. It does not provide a diagnosis or emergency response. Bluetooth links, sensors, alarms and notifications can fail or be delayed. Follow your child’s care plan and seek urgent help for serious symptoms; do not wait for this app.").font(.caption)
             Text("Before public release, the operator name, monitored support address, final privacy notice and jurisdiction-specific terms must be completed in the support documentation.").font(.caption).foregroundStyle(.white.opacity(0.7))
 
         }.padding(.top, 12) } }
@@ -1525,7 +1525,7 @@ struct ContentView: View {
 
         }.padding(.top, 12) } }
         panel { DisclosureGroup("About Nivvi") { VStack(alignment: .leading, spacing: 12) {
-            Text("Nivvi 0.8 · Build 8").font(.headline)
+            Text("Nivvi \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—") · Build \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")").font(.headline)
             Text("Bluetooth: \(monitor.connection.label) · Profile: \(monitor.profile.rawValue) · Battery: \(monitor.battery)").font(.caption)
             Text("Readings, events and notes are retained locally for 30 calendar days. The iPhone controls Bluetooth and notifications; Nivvi cannot activate cellular service or update proprietary device firmware.").font(.caption).foregroundStyle(.white.opacity(0.7))
 

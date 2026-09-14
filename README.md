@@ -1,3 +1,7 @@
+# Release preparation: 0.9.4 (13)
+
+See [Apple release pack](docs/release/START-HERE.md) for the current audit, Xcode archive route, legal drafts and unresolved release gates. Not yet submitted to Apple. Older release sections below describe previous work.
+
 # Nivvi — Bluetooth heart-rate app
 
 Version 0.8 / Build 8. Native SwiftUI iPhone app for compatible Bluetooth Low Energy heart-rate and pulse-oximeter devices, with local profiles, daily history, event notes and configurable test alerts. Manufacturer names are not used to identify compatible devices. This repository contains no Android app or Android build pipeline.
