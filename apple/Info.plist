@@ -26,6 +26,8 @@
 	<true/>
 	<key>MinimumOSVersion</key>
 	<string>16.0</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Connect to a compatible Bluetooth device to receive readings, save history and check enabled alerts, including while you use another app or lock your iPhone.</string>
 	<key>NivviFamilyPrivacyURL</key>
