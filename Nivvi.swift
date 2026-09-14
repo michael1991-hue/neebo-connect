@@ -1701,22 +1701,25 @@ struct SleepTimerView: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("Sleep & awake", systemImage: "moon.zzz.fill").font(.headline)
-            Text("Parent-marked · not automatically detected").font(.caption).foregroundStyle(.secondary)
-            if let timer {
-                HStack {
-                    Text(timer.state).font(.title2.bold())
-                    Spacer()
-                    TimelineView(.periodic(from: .now, by: 1)) { context in
-                        Text(context.date >= timer.since ? duration(context.date.timeIntervalSince(timer.since)) : "Check start time")
-                            .font(.title2.monospacedDigit().bold())
+            HStack(alignment: .center, spacing: 18) {
+                SleepActivityIcon(state: timer?.state)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Sleep & activity").font(.subheadline)
+                    Text(timer.map { $0.state == "Asleep" ? "Asleep" : "Awake" } ?? "Not marked")
+                        .font(.title2.bold())
+                    if let timer {
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            Text(context.date >= timer.since ? duration(context.date.timeIntervalSince(timer.since)) : "Check start time")
+                                .font(.headline.monospacedDigit())
+                                .foregroundStyle(timer.state == "Asleep" ? Color(red: 0.85, green: 0.82, blue: 1) : Color(red: 0.56, green: 0.89, blue: 0.82))
+                        }
+                        Text("Since \(timer.since.formatted(date: .abbreviated, time: .shortened))").font(.caption)
                     }
                 }
-                Text("Since \(timer.since.formatted(date: .abbreviated, time: .shortened))").font(.caption.bold())
-                Text("Keeps counting until you mark a change, including while the phone is locked or Bluetooth is disconnected.").font(.caption)
-            } else {
-                Text("Mark when your child falls asleep or wakes up to start a timer.")
+                Spacer(minLength: 0)
             }
+            Text("Parent-marked · animation illustrates your selection").font(.caption2).foregroundStyle(.white.opacity(0.65))
+            if timer == nil { Text("Mark asleep or awake to start the timer.").font(.caption) }
             HStack {
                 Button("Asleep") { begin("Asleep") }.disabled(timer?.state == "Asleep")
                 Button("Awake") { begin("Awake") }.disabled(timer?.state == "Awake")
@@ -1725,7 +1728,7 @@ struct SleepTimerView: View {
                 Button("Stop tracking") { targetState = nil; changeTime = Date(); showEditor = true }.font(.caption)
             }
             if let errorText { Text(errorText).font(.caption).foregroundStyle(.red) }
-            Text("Changes and completed durations appear in History → Events → Sleep. These timers never change heart-rate alarm limits.").font(.caption).foregroundStyle(.secondary)
+            Text("Timer continues until you change it. Sessions are saved in History → Events → Sleep. Alarm limits stay unchanged.").font(.caption2).foregroundStyle(.white.opacity(0.65))
         }
         .sheet(isPresented: $showEditor) {
             NavigationStack {
@@ -1777,5 +1780,54 @@ struct SleepTimerView: View {
         guard monitor.eventError == nil else { errorText = monitor.eventError; return }
         savedTimer = newValue
         errorText = nil; showEditor = false
+    }
+}
+
+
+/// Decorative state animation; it does not claim to measure movement or breathing.
+struct SleepActivityIcon: View {
+    let state: String?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
+    private var tint: Color {
+        state == "Asleep" ? Color(red: 0.85, green: 0.82, blue: 1) : Color(red: 0.56, green: 0.89, blue: 0.82)
+    }
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 24, paused: reduceMotion || scenePhase != .active || state == nil)) { context in
+            let time = reduceMotion || scenePhase != .active ? 0.0 : context.date.timeIntervalSinceReferenceDate
+            ZStack {
+                RoundedRectangle(cornerRadius: 22).fill(tint.opacity(0.12))
+                if state == "Asleep" {
+                    ForEach(0..<3) { index in
+                        let wave = reduceMotion ? 0.0 : sin(time * 1.8 - Double(index) * 0.8)
+                        Text("Z").font(.system(size: CGFloat(20 + index * 7), weight: .bold, design: .rounded))
+                            .foregroundStyle(tint)
+                            .offset(x: CGFloat(index * 20 - 20), y: CGFloat(18 - index * 18) - CGFloat(wave * 4))
+                            .opacity(reduceMotion ? 1 : 0.8 + wave * 0.2)
+                    }
+                } else if state == "Awake" {
+                    Canvas { context, size in
+                        let spread = reduceMotion ? CGFloat(0.6) : CGFloat((1 - cos(time * .pi * 1.4)) / 2)
+                        let center = size.width / 2
+                        let bounce = -3 * spread
+                        let shoulder = CGPoint(x: center, y: 34 + bounce)
+                        let hip = CGPoint(x: center, y: 57 + bounce)
+                        var body = Path()
+                        body.move(to: shoulder); body.addLine(to: hip)
+                        body.move(to: CGPoint(x: center - 12 - 17 * spread, y: 53 - 32 * spread + bounce))
+                        body.addLine(to: shoulder)
+                        body.addLine(to: CGPoint(x: center + 12 + 17 * spread, y: 53 - 32 * spread + bounce))
+                        body.move(to: CGPoint(x: center - 6 - 19 * spread, y: 81 + bounce))
+                        body.addLine(to: hip)
+                        body.addLine(to: CGPoint(x: center + 6 + 19 * spread, y: 81 + bounce))
+                        context.stroke(body, with: .color(tint), style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
+                        let head = Path(ellipseIn: CGRect(x: center - 7, y: 15 + bounce, width: 14, height: 14))
+                        context.stroke(head, with: .color(tint), lineWidth: 4)
+                    }
+                } else {
+                    Image(systemName: "moon.zzz").font(.system(size: 38)).foregroundStyle(tint)
+                }
+            }
+        }.frame(width: 96, height: 96).accessibilityHidden(true)
     }
 }
