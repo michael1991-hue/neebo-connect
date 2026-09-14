@@ -22,7 +22,7 @@ check(BluetoothPolicy.standardHeartRate(Data([16, 95, 0])) == nil, "torn RR inte
 check(BluetoothPolicy.standardHeartRate(Data([24, 95, 0, 0, 0, 4])) == 95, "complete optional energy and RR fields")
 check(BluetoothPolicy.standardHeartRate(Data([0, 95, 99])) == nil, "unexpected data rejected")
 check(BluetoothPolicy.standardHeartRate(Data([0, 0])) == nil, "zero pulse unavailable")
-check(BluetoothPolicy.standardHeartRate(Data([1, 44, 1])) == nil, "out-of-range value rejected")
+check(BluetoothPolicy.standardHeartRate(Data([1, 44, 1])) == 300, "standard wide pulse is not discarded at an arbitrary physiological cutoff")
 let savedLimits = try JSONDecoder().decode(AlarmSettings.self, from: Data(#"{"highEnabled":true,"highThreshold":180,"durationSeconds":10}"#.utf8))
 check(savedLimits.highThreshold == 180 && savedLimits.highEnabled && !savedLimits.experimentalCustomEnabled, "missing optional setting preserves existing limits")
 check(BluetoothPolicy.shouldObserve(service: "FFE0", characteristic: BluetoothPolicy.customMeasurementUUID), "enable measurement stream")
@@ -67,7 +67,8 @@ check(sample(80, 0) == nil && sample(79, 5) == nil && sample(78, 10) == nil, "lo
 check(sample(78, 19.9) == nil && sample(78, 20) == .low && engine.active == .low, "low alarm fires strictly below configured limit")
 check(sample(79, 20) == nil, "one notification per excursion")
 engine.silence()
-check(engine.active == nil && sample(78, 25) == nil && sample(77, 30) == nil, "silence suppresses same low excursion")
+check(engine.active == .low && sample(78, 25) == nil && sample(77, 30) == nil, "acknowledgement silences but keeps the low excursion active")
+check(sample(80, 35) == nil && engine.active == nil, "fresh in-range reading clears an acknowledged excursion")
 check(sample(100, 35) == nil, "return in range re-arms")
 check(sample(180, 40) == nil && sample(181, 45) == nil && sample(182, 50) == nil && sample(183, 60) == .high, "high alarm fires strictly above configured limit")
 check(sample(nil, 60) == nil && engine.active == .high, "unknown data does not imply alarm resolved")
@@ -213,6 +214,44 @@ check(freshness.isExpired(at: now), "backward clock change does not keep future-
 freshness.reset()
 check(freshness.lastValid == nil && freshness.pausedSince == nil, "new session cannot reuse old pulse freshness")
 
+var stale = StaleHeartRateDetector()
+let staleOrigin = Date(timeIntervalSince1970: 1_790_000_000)
+func repeated(_ seconds: Double, value: Double = 100) -> Bool {
+    stale.observe(value, at: staleOrigin.addingTimeInterval(seconds))
+}
+for second in 0..<180 {
+    check(!repeated(Double(second)), "rapid packets cannot shorten three-minute duration")
+}
+check(repeated(180) && stale.isStale, "unchanged reading triggers at exactly three minutes")
+check(!repeated(181) && stale.isStale, "ongoing sequence alerts only once")
+check(!repeated(182, value: 101) && !stale.isStale, "changed reading clears repeated-value warning")
+stale.reset()
+for second in stride(from: 0, to: 180, by: 30) {
+    check(!repeated(Double(second)), "thirty-second updates wait three minutes")
+}
+check(repeated(180), "seventh thirty-second update reaches three minutes")
+stale.reset()
+_ = repeated(0); _ = repeated(30); _ = repeated(60)
+check(!repeated(150), "long gap restarts duration")
+for second in stride(from: 180, to: 330, by: 30) { check(!repeated(Double(second)), "new duration after gap") }
+check(repeated(330), "three uninterrupted minutes after gap can alert")
+stale.reset()
+_ = repeated(0); _ = repeated(30)
+check(!repeated(20), "backward clock does not trigger")
+check(!repeated(180), "clock discontinuity restarts duration")
+stale.reset()
+_ = repeated(0)
+check(!repeated(180), "two distant samples cannot imply continuous repeating data")
+stale.reset()
+for second in stride(from: 0, to: 180, by: 30) { _ = repeated(Double(second)) }
+_ = repeated(180)
+stale.interrupt()
+check(stale.isStale, "missing or invalid data does not resolve active warning")
+check(!repeated(240) && stale.isStale, "same value after interruption is not a recovery")
+check(!repeated(270, value: 101) && !stale.isStale, "changed value resolves after interruption")
+stale.reset()
+check(stale.lastValue == nil && !stale.isStale, "session reset clears detector")
+
 let oldJSON = Data(#"{"id":"00000000-0000-0000-0000-000000000001","time":0,"heartRate":100,"oxygen":99,"source":"experimental-custom"}"#.utf8)
 let oldEntry = try JSONDecoder().decode(SavedMeasurement.self, from: oldJSON)
 check(oldEntry.continuityID == nil && oldEntry.heartRate == 100, "existing history loads without a continuity identifier")
@@ -251,4 +290,90 @@ daylightCalendar.timeZone = TimeZone(identifier: "Europe/London")!
 let springDay = daylightCalendar.date(from: DateComponents(year: 2026, month: 3, day: 29))!
 let daylightWindow = HistoryChartPolicy.window(day: springDay, hours: 0, endingAt: springDay, calendar: daylightCalendar)
 check(daylightWindow.upperBound.timeIntervalSince(daylightWindow.lowerBound) == 23 * 3600, "calendar day honors daylight-saving time")
+check(BluetoothPolicy.isCandidate(names: [], services: ["1822"]), "discover standard pulse oximeters")
+check(BluetoothPolicy.isCandidate(names: [], services: ["00001822-0000-1000-8000-00805F9B34FB"]), "discover full pulse-oximeter UUID")
+check(!BluetoothPolicy.isCandidate(names: ["Oura Ring", "Apple Watch", "BabySensor"], services: ["180F"]), "brand names cannot establish protocol compatibility")
+check(BluetoothPolicy.shouldObserve(service: "1822", characteristic: "2A5F") && BluetoothPolicy.shouldObserve(service: "1822", characteristic: "2A5E"), "subscribe to continuous and spot-check oximetry")
+check(!BluetoothPolicy.shouldObserve(service: "1822", characteristic: "2A52"), "do not start record-transfer or deletion procedures")
+check(PulseOximetry.sfloat(0xF3CF) == 97.5, "SFLOAT negative exponent retains oxygen precision")
+check(PulseOximetry.sfloat(0x1064) == 1000, "SFLOAT positive exponent")
+check(PulseOximetry.sfloat(0x0FF6) == -10, "SFLOAT negative mantissa")
+for special: UInt16 in [0x07FE, 0x07FF, 0x0800, 0x0801, 0x0802] {
+    check(PulseOximetry.sfloat(special) == nil, "SFLOAT unavailable and special values remain missing")
+}
+let simplePLX = Data([0, 98, 0, 95, 0])
+let decodedPLX = PulseOximetry.decode(simplePLX, characteristic: "2A5F")!
+check(decodedPLX.pulse == 95 && decodedPLX.oxygen == 98 && decodedPLX.liveEligible, "decode continuous oxygen and pulse")
+check(PulseOximetry.decode(simplePLX, characteristic: "FFA1") == nil, "never treat arbitrary proprietary bytes as standard oximetry")
+check(PulseOximetry.decode(Data([0x20, 98, 0, 95, 0]), characteristic: "2A5F") == nil, "reject reserved flags")
+check(PulseOximetry.decode(simplePLX + Data([0]), characteristic: "2A5F") == nil, "reject unexplained extra bytes")
+let fractionalPLX = PulseOximetry.decode(Data([0, 0xCF, 0xF3, 0x51, 0xF4]), characteristic: "2A5F")!
+check(fractionalPLX.oxygen == 97.5 && fractionalPLX.pulse == 110.5, "fractional pulse and oxygen are not rounded before alarms or storage")
+let missingPLX = PulseOximetry.decode(Data([0, 0xFF, 0x07, 95, 0]), characteristic: "2A5F")!
+check(missingPLX.pulse == 95 && missingPLX.oxygen == nil, "missing oxygen does not invent or suppress pulse")
+let oxygenOnlyPLX = PulseOximetry.decode(Data([0, 98, 0, 0xFF, 0x07]), characteristic: "2A5F")!
+check(oxygenOnlyPLX.oxygen == 98 && oxygenOnlyPLX.pulse == nil, "oxygen-only measurement is not evidence of pulse")
+check(PulseOximetry.decode(Data([0, 101, 0, 0, 0]), characteristic: "2A5F")!.oxygen == nil, "oxygen percentage outside numerical bounds remains missing")
+check(PulseOximetry.decode(Data([0, 98, 0, 0, 0]), characteristic: "2A5F")!.pulse == nil, "zero is not a usable pulse rate")
+// Exercise every combination and every truncated length of the optional layout.
+for flags in UInt8(0)...UInt8(31) {
+    var frame: [UInt8] = [flags, 98, 0, 95, 0]
+    if flags & 1 != 0 { frame += [90, 0, 80, 0] }
+    if flags & 2 != 0 { frame += [99, 0, 70, 0] }
+    if flags & 4 != 0 { frame += [0x80, 0] }
+    if flags & 8 != 0 { frame += [0, 0, 0] }
+    if flags & 16 != 0 { frame += [1, 0] }
+    let result = PulseOximetry.decode(Data(frame), characteristic: "2A5F")
+    check(result?.pulse == 95 && result?.oxygen == 98 && result?.liveEligible == true, "all continuous optional fields preserve the primary pair")
+    for length in 0..<frame.count {
+        check(PulseOximetry.decode(Data(frame.prefix(length)), characteristic: "2A5F") == nil, "truncated optional field is rejected without reading past packet")
+    }
+}
+for bit: UInt16 in [0x0001, 0x0020, 0x0040, 0x0200, 0x0400, 0x0800, 0x1000, 0x2000, 0x4000, 0x8000] {
+    let value = PulseOximetry.decode(Data([4, 98, 0, 95, 0, UInt8(bit & 255), UInt8(bit >> 8)]), characteristic: "2A5F")!
+    check(!value.liveEligible, "unqualified, stored, demo/test or invalid status cannot enter live alarms")
+}
+for index in 0..<24 {
+    let bit: UInt32 = 1 << index
+    let value = PulseOximetry.decode(Data([8, 98, 0, 95, 0, UInt8(bit & 255), UInt8((bit >> 8) & 255), UInt8((bit >> 16) & 255)]), characteristic: "2A5F")!
+    check(!value.liveEligible, "sensor conditions or reserved status cannot enter live alarms")
+}
+let spot = PulseOximetry.decode(simplePLX, characteristic: "2A5E")!
+check(spot.pulse == 95 && spot.oxygen == 98 && !spot.liveEligible, "spot-check is decoded but never treated as continuous")
+let datedSpot = PulseOximetry.decode(Data([1, 98, 0, 95, 0, 0xEA, 0x07, 9, 14, 7, 32, 0]), characteristic: "2A5E")!
+check(datedSpot.deviceTime == "2026-09-14 07:32:00 (device clock)" && !datedSpot.liveEligible, "retain device-local timestamp without claiming live freshness")
+let unsetSpot = PulseOximetry.decode(Data([16, 98, 0, 95, 0]), characteristic: "2A5E")!
+check(unsetSpot.clockUnset && !unsetSpot.liveEligible, "unset device clock is explicit and never live")
+for flags in UInt8(0)...UInt8(31) {
+    var frame: [UInt8] = [flags, 98, 0, 95, 0]
+    if flags & 1 != 0 { frame += [0xEA, 0x07, 9, 14, 7, 32, 0] }
+    if flags & 2 != 0 { frame += [0x80, 0] }
+    if flags & 4 != 0 { frame += [0, 0, 0] }
+    if flags & 8 != 0 { frame += [1, 0] }
+    check(PulseOximetry.decode(Data(frame), characteristic: "2A5E")?.pulse == 95, "all spot-check optional fields are decoded")
+    for length in 0..<frame.count {
+        check(PulseOximetry.decode(Data(frame.prefix(length)), characteristic: "2A5E") == nil, "truncated spot-check is rejected")
+    }
+}
+var exactAlarm = RateAlarmEngine()
+let exactSettings = AlarmSettings(lowEnabled: true, lowThreshold: 96, durationSeconds: 5)
+check(exactAlarm.ingestExact(bpm: 95.9, source: "standard-PLX-continuous", at: now, settings: exactSettings) == nil, "fractional low starts a dwell period")
+check(exactAlarm.ingestExact(bpm: 95.9, source: "standard-PLX-continuous", at: now.addingTimeInterval(5), settings: exactSettings) == .low, "fractional pulse below threshold triggers without rounding to equality")
+check(exactAlarm.ingestExact(bpm: nil, source: "standard-PLX-continuous", at: now.addingTimeInterval(6), settings: exactSettings) == nil && exactAlarm.active == .low, "missing pulse does not resolve a live alarm")
+check(exactAlarm.ingestExact(bpm: 96, source: "standard-PLX-continuous", at: now.addingTimeInterval(7), settings: exactSettings) == nil && exactAlarm.active == nil, "fresh exact threshold equality clears the low alert")
+_ = exactAlarm.ingestExact(bpm: 95, source: "standard-PLX-spot", at: now, settings: exactSettings)
+check(exactAlarm.ingestExact(bpm: 95, source: "standard-PLX-spot", at: now.addingTimeInterval(5), settings: exactSettings) == nil, "spot-check sources cannot enter alarm engine")
+let exactEntry = SavedMeasurement(time: now, heartRate: nil, oxygen: nil, source: "standard-PLX-continuous", exactHeartRate: 95.9, exactOxygen: 97.5)
+let exactRoundTrip = try JSONDecoder().decode(SavedMeasurement.self, from: JSONEncoder().encode(exactEntry))
+check(exactRoundTrip.heartRateValue == 95.9 && exactRoundTrip.oxygenValue == 97.5, "save/reload preserves decimal measurements")
+check(HistoryChartPolicy.points([exactEntry], metric: .heartRate).first?.value == 95.9, "chart plots the exact pulse")
+let exactStore = DailyHistoryStore(folder: temp.appendingPathComponent("exact"), calendar: calendar)
+try FileManager.default.createDirectory(at: temp.appendingPathComponent("exact"), withIntermediateDirectories: true)
+try exactStore.prepare(legacy: temp.appendingPathComponent("absent-legacy.json"), now: now)
+try exactStore.append(exactEntry, now: now)
+let exactCSVURL = temp.appendingPathComponent("exact.csv")
+try exactStore.export(to: exactCSVURL)
+let exactCSV = try String(contentsOf: exactCSVURL, encoding: .utf8)
+check(exactCSV.contains(",95.9,97.5,"), "CSV preserves decimal pulse and oxygen")
+check(oldEntry.heartRateValue == 100 && oldEntry.oxygenValue == 99, "existing integer histories remain readable")
 print("Passed \(checks) regression checks")

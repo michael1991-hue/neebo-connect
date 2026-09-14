@@ -23,13 +23,53 @@ struct HeartRateFreshness {
     mutating func reset() { self = Self() }
 }
 
+// Three minutes of unchanged received values is a heuristic, not proof of
+// sensor failure. Rounding, averaging and cached reads can also repeat values.
+struct StaleHeartRateDetector {
+    static let duration: TimeInterval = 180
+    // Permit 30-second device updates with delivery jitter. Longer gaps restart
+    // the pending duration; absent packets cannot count as repeated readings.
+    static let maximumGap: TimeInterval = 45
+    private(set) var lastValue: Double?
+    private(set) var lastTime: Date?
+    private(set) var unchangedSince: Date?
+    private(set) var isStale = false
+
+    mutating func observe(_ value: Double, at time: Date) -> Bool {
+        guard value.isFinite, value > 0 else { interrupt(); return false }
+        if let lastTime, time <= lastTime {
+            if time < lastTime { interrupt() }
+            return false
+        }
+        if lastValue != value {
+            isStale = false
+            unchangedSince = time
+        } else if let previous = lastTime,
+                  time.timeIntervalSince(previous) > Self.maximumGap {
+            unchangedSince = time
+        }
+        if unchangedSince == nil { unchangedSince = time }
+        lastValue = value
+        lastTime = time
+        guard !isStale, let start = unchangedSince,
+              time.timeIntervalSince(start) >= Self.duration else { return false }
+        isStale = true
+        return true
+    }
+
+    // Invalid/missing data interrupts the pending duration, never resolves an
+    // already active warning. A changed valid value or session reset clears it.
+    mutating func interrupt() { unchangedSince = nil; lastTime = nil }
+    mutating func reset() { self = Self() }
+}
+
 enum HistoryMetric { case heartRate, oxygen
-    func value(_ entry: SavedMeasurement) -> Int? { self == .heartRate ? entry.heartRate : entry.oxygen }
+    func value(_ entry: SavedMeasurement) -> Double? { self == .heartRate ? entry.heartRateValue : entry.oxygenValue }
 }
 struct HistoryChartPoint: Identifiable {
     var id: UUID { entry.id }
     let entry: SavedMeasurement
-    let value: Int
+    let value: Double
     let series: String
 }
 enum HistoryChartPolicy {
@@ -117,15 +157,21 @@ struct RateAlarmEngine {
     // Unknown or stale data interrupts the dwell period; it cannot declare an alarm resolved.
     mutating func interrupt() { pending = nil; since = nil; previous = nil }
     mutating func reset() { self = Self() }
-    mutating func silence() { muted = active; active = nil }
+    // Acknowledgement silences the current alarm without declaring the reading
+    // safe. The active excursion remains visible until a fresh in-range sample
+    // causes ingestExact() to reset it.
+    mutating func silence() { if let active { muted = active } }
     mutating func ingest(bpm: Int?, source: String, at now: Date, settings: AlarmSettings, allowExperimentalCustom: Bool = false) -> RateAlarm? {
+        ingestExact(bpm: bpm.map(Double.init), source: source, at: now, settings: settings, allowExperimentalCustom: allowExperimentalCustom)
+    }
+    mutating func ingestExact(bpm: Double?, source: String, at now: Date, settings: AlarmSettings, allowExperimentalCustom: Bool = false) -> RateAlarm? {
         guard settings.validationMessage == nil, settings.highEnabled || settings.lowEnabled else { reset(); return nil }
-        guard (source == "standard-2A37" || (allowExperimentalCustom && source == "experimental-custom")), let bpm = bpm, (1...299).contains(bpm) else { interrupt(); return nil }
+        guard (source == "standard-2A37" || source == "standard-PLX-continuous" || (allowExperimentalCustom && source == "experimental-custom")), let bpm = bpm, bpm.isFinite, bpm > 0, bpm <= 65535 else { interrupt(); return nil }
         if let last = previous, now.timeIntervalSince(last) > 10 || now < last { interrupt() }
         previous = now
         let direction: RateAlarm?
-        if settings.lowEnabled, let limit = settings.lowThreshold, bpm < limit { direction = .low }
-        else if settings.highEnabled, let limit = settings.highThreshold, bpm > limit { direction = .high }
+        if settings.lowEnabled, let limit = settings.lowThreshold, bpm < Double(limit) { direction = .low }
+        else if settings.highEnabled, let limit = settings.highThreshold, bpm > Double(limit) { direction = .high }
         else { direction = nil }
         guard let direction = direction else { reset(); return nil }
         if muted != direction { muted = nil }
@@ -234,7 +280,9 @@ final class DailyHistoryStore {
             for day in try days().reversed() {
                 for entry in try load(day: day) {
                     let escaped = entry.source.replacingOccurrences(of: "\"", with: "\"\"")
-                    let row = "\(iso.string(from: entry.time)),\(entry.heartRate.map(String.init) ?? ""),\(entry.oxygen.map(String.init) ?? ""),\"\(escaped)\"\n"
+                    let heartRate = entry.exactHeartRate.map(MetricText.number) ?? entry.heartRate.map(String.init) ?? ""
+                    let oxygen = entry.exactOxygen.map(MetricText.number) ?? entry.oxygen.map(String.init) ?? ""
+                    let row = "\(iso.string(from: entry.time)),\(heartRate),\(oxygen),\"\(escaped)\"\n"
                     try handle.write(contentsOf: Data(row.utf8))
                 }
             }
@@ -250,8 +298,8 @@ final class DailyHistoryStore {
         var result: [SavedMeasurement] = []
         for offset in stride(from: 0, to: entries.count, by: bucketSize) {
             let bucket = Array(entries[offset..<min(offset + bucketSize, entries.count)])
-            let hr = bucket.filter { $0.heartRate != nil }, oxygen = bucket.filter { $0.oxygen != nil }
-            let chosen = [hr.min { $0.heartRate! < $1.heartRate! }, hr.max { $0.heartRate! < $1.heartRate! }, oxygen.min { $0.oxygen! < $1.oxygen! }, oxygen.max { $0.oxygen! < $1.oxygen! }].compactMap { $0 }
+            let hr = bucket.filter { $0.heartRateValue != nil }, oxygen = bucket.filter { $0.oxygenValue != nil }
+            let chosen = [hr.min { $0.heartRateValue! < $1.heartRateValue! }, hr.max { $0.heartRateValue! < $1.heartRateValue! }, oxygen.min { $0.oxygenValue! < $1.oxygenValue! }, oxygen.max { $0.oxygenValue! < $1.oxygenValue! }].compactMap { $0 }
             var seen = Set<UUID>()
             result.append(contentsOf: chosen.sorted { $0.time < $1.time }.filter { seen.insert($0.id).inserted })
         }
@@ -267,6 +315,7 @@ struct MeasurementSamplingPolicy {
     }
     mutating func didStore(source: String, at time: Date) { lastStored[source] = time }
     mutating func reset() { lastStored = [:] }
+    mutating func reset(source: String) { lastStored[source] = nil }
 }
 
 struct SavedEvent: Codable, Identifiable {

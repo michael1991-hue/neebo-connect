@@ -6,6 +6,7 @@ import UserNotifications
 import Charts
 import PhotosUI
 import ImageIO
+import Security
 
 struct Reading: Identifiable {
     let id: String
@@ -14,10 +15,14 @@ struct Reading: Identifiable {
 }
 
 enum DeviceProfile: String {
-    case custom = "Experimental custom format"
+    case custom = "Mapped Bluetooth device"
     case heartRate = "Standard heart-rate device"
+    case pulseOximeter = "Standard pulse oximeter"
+    case combined = "Standard heart rate and pulse oximeter"
     case generic = "Bluetooth device"
     case unknown = "Profile not identified"
+    var hasStandardHeartRate: Bool { self == .heartRate || self == .combined }
+    var hasPulseOximeter: Bool { self == .pulseOximeter || self == .combined }
 }
 
 struct SavedMeasurement: Codable, Identifiable {
@@ -27,6 +32,10 @@ struct SavedMeasurement: Codable, Identifiable {
     let oxygen: Int?
     let source: String
     var continuityID: UUID? = nil
+    var exactHeartRate: Double? = nil
+    var exactOxygen: Double? = nil
+    var heartRateValue: Double? { exactHeartRate ?? heartRate.map(Double.init) }
+    var oxygenValue: Double? { exactOxygen ?? oxygen.map(Double.init) }
 }
 
 struct TrendSample: Identifiable {
@@ -59,6 +68,7 @@ enum ConnectionPhase: String {
 enum BluetoothPolicy {
     // The optional adapter UUID is kept internal; it is never shown as a product identifier.
     static let customMeasurementUUID = ["FF", "E7"].joined()
+    static let measurementServices = ["180D", "1822", "FFE0"]
     static func normalized(_ value: String) -> String {
         let result = value.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         if result.hasPrefix("0000"), result.hasSuffix("-0000-1000-8000-00805F9B34FB") {
@@ -68,7 +78,7 @@ enum BluetoothPolicy {
     }
     static func isCandidate(names: [String], services: [String]) -> Bool {
         // Advertised names are not evidence of measurement compatibility.
-        services.map(normalized).contains { ["180D", "FFE0"].contains($0) }
+        services.map(normalized).contains { measurementServices.contains($0) }
     }
     static func standardHeartRate(_ data: Data) -> Int? {
         let bytes = Array(data)
@@ -86,7 +96,7 @@ enum BluetoothPolicy {
         if flags & 0x10 != 0 {
             guard bytes.count > end, (bytes.count - end) % 2 == 0 else { return nil }
         } else if bytes.count != end { return nil }
-        return (1...299).contains(bpm) ? bpm : nil
+        return (1...65535).contains(bpm) ? bpm : nil
     }
     static func shouldObserve(service: String, characteristic: String) -> Bool {
         let service = normalized(service), characteristic = normalized(characteristic)
@@ -94,6 +104,7 @@ enum BluetoothPolicy {
         case "FFE0": return [customMeasurementUUID, "FFEA", "FFE4"].contains(characteristic)
         case "180F": return characteristic == "2A19"
         case "180D": return characteristic == "2A37"
+        case "1822": return ["2A5E", "2A5F", "2A60"].contains(characteristic)
         default: return false
         }
     }
@@ -118,8 +129,9 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     @Published var connection: ConnectionPhase = .idle
     var active: Bool { connection.isBusy }
     var isScanning: Bool { connection == .scanning }
-    @Published var showAllDevices = false
+    @Published var showAllDevices = true
     @Published var deviceNames: [UUID: String] = [:]
+    @Published var deviceServices: [UUID: [String]] = [:]
     @Published var diagnostics: [String] = []
     @Published var measurementStatus = "No measurement packets received yet."
     private var scanDeadline: Timer?
@@ -153,20 +165,35 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     @Published var recording: URL?
     @Published var files: [URL] = []
     @Published var lastSample: Date?
+    @Published private(set) var lastHeartRateUpdate: Date?
+    @Published private(set) var lastOxygenUpdate: Date?
+    @Published private(set) var bluetoothReady = false
+    @Published private(set) var notificationSoundAllowed = false
     @Published var profile: DeviceProfile = .unknown
     // Standard-format decoding is not clinical validation of the sensor.
     @Published var verifiedHeartRate: Int?
     @Published var verifiedOxygen: Int?
+    @Published var pulseOximeterRate: Double?
+    @Published var pulseOximeterOxygen: Double?
+    @Published var pulseOximeterStatus = "Waiting for pulse-oximeter data."
+    @Published var spotCheckText: String?
+    @Published var spotCheckReceived: Date?
+    private var oxygenTime: Date?
+    private var plxContinuityID = UUID()
     @Published var customHeartRateCandidate: Int?
     @Published var customOxygenCandidate: Int?
     @Published var alarmSettings = AlarmSettings() {
         didSet {
             if let data = try? JSONEncoder().encode(alarmSettings) { UserDefaults.standard.set(data, forKey: "nivvi.alarms") }
-            alarmEngine.reset(); alarmKind = nil; stopSiren()
+            alarmEngine.reset(); alarmKind = nil
+            if !staleHeartRateDetected { alarmAcknowledged = false; clearAlarmNotifications(); stopSiren() }
         }
     }
     @Published private(set) var alarmKind: RateAlarm?
     var alarmActive: Bool { alarmKind != nil }
+    @Published private(set) var staleHeartRateDetected = false
+    var criticalAlertActive: Bool { alarmActive || staleHeartRateDetected }
+    @Published private(set) var alarmAcknowledged = false
     @Published var notificationStatus = "Notification permission has not been checked."
     @Published var soundStatus = "Use Test siren to check the iPhone’s current volume."
     @Published var experimentalCustomAlarms = false { didSet { alarmSettings.experimentalCustomEnabled = experimentalCustomAlarms } }
@@ -183,9 +210,19 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     @Published var eventDays: [Date] = []
     @Published var eventError: String?
     private var sampling = MeasurementSamplingPolicy()
+    private var staleHeartRate = StaleHeartRateDetector()
     private lazy var eventArchive = EventHistoryStore(folder: folder)
     var recordedDays: [Date] { Array(Set(historyDays + eventDays)).sorted(by: >) }
     var totalEventsToday: Int { events.count }
+    private var attentionTitle: String {
+        let name = UserDefaults.standard.string(forKey: "nivvi.profile.name")?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return name.isEmpty ? "Your child needs your attention" : "\(name) needs your attention"
+    }
+    private var alarmDetail: String {
+        guard let kind = alarmKind else { return "A critical heart-rate alert is active." }
+        return kind == .low ? "Low heart-rate limit crossed." : "High heart-rate limit crossed."
+    }
     func recordEvent(kind: String, title: String, detail: String, heartRate: Int? = nil) {
         let event = SavedEvent(time: Date(), kind: kind, title: title, detail: detail, heartRate: heartRate)
         do {
@@ -214,9 +251,21 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     private var freshnessTimer: Timer?
     private lazy var archive = DailyHistoryStore(folder: folder)
     private var historyURL: URL { folder.appendingPathComponent("measurements.json") }
-    private func saveMeasurement(heartRate: Int?, oxygen: Int?, source: String) {
-        let entry = SavedMeasurement(time: Date(), heartRate: heartRate, oxygen: oxygen, source: source, continuityID: continuityID)
-        measurementTime = entry.time
+    private func publishFamilySnapshot() {
+        let now = Date()
+        let hrTime = lastHeartRateUpdate
+        let oxTime = lastOxygenUpdate
+        let hr = hrTime.map { now.timeIntervalSince($0) <= 30 } == true ? (pulseOximeterRate ?? verifiedHeartRate.map(Double.init) ?? customHeartRateCandidate.map(Double.init)) : nil
+        let ox = oxTime.map { now.timeIntervalSince($0) <= 30 } == true ? (pulseOximeterOxygen ?? verifiedOxygen.map(Double.init) ?? customOxygenCandidate.map(Double.init)) : nil
+        let times = [(hr == nil ? nil : hrTime), (ox == nil ? nil : oxTime)].compactMap { $0 }
+        let snapshot = FamilySnapshot(captured: (times.min() ?? now).timeIntervalSince1970, heart_rate: hr, oxygen: ox, source: profile.rawValue, alarm: alarmKind.map { $0 == .high ? "high" : "low" } ?? (staleHeartRateDetected ? "sensor" : "none"), connection: connection.label)
+        Task { @MainActor in FamilyRelay.shared.capture(snapshot) }
+    }
+    private func saveMeasurement(heartRate: Int?, oxygen: Int?, source: String, exactHeartRate: Double? = nil, exactOxygen: Double? = nil, segment: UUID? = nil) {
+        let entry = SavedMeasurement(time: Date(), heartRate: heartRate, oxygen: oxygen, source: source, continuityID: segment ?? continuityID, exactHeartRate: exactHeartRate, exactOxygen: exactOxygen)
+        // Oxygen-only packets must not refresh the live-heart-rate freshness timer.
+        // A pulse-oximeter can legally report oxygen without a usable pulse.
+        if heartRate != nil || exactHeartRate != nil { measurementTime = entry.time }
         guard !historyLoadFailed, sampling.shouldStore(source: source, at: entry.time) else { return }
         do {
             try archive.append(entry)
@@ -237,7 +286,9 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     func clearHistory() {
         do {
             try archive.clear(legacy: historyURL)
-            try eventArchive.clear(); events = []; eventDays = []; eventError = nil; sampling.reset()
+            try eventArchive.clear()
+            UserDefaults.standard.removeObject(forKey: "nivvi.sleep.timer")
+            events = []; eventDays = []; eventError = nil; sampling.reset()
             history = []; historyDays = []; historyError = nil; historyLoadFailed = false
             try? FileManager.default.removeItem(at: folder.appendingPathComponent("Nivvi-history.csv"))
             try? FileManager.default.removeItem(at: folder.appendingPathComponent("Nivvi-events.csv"))
@@ -250,22 +301,28 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     }
     private func clearLiveValues(resetFreshness: Bool = true) {
         verifiedHeartRate = nil; verifiedOxygen = nil
+        pulseOximeterRate = nil; pulseOximeterOxygen = nil; oxygenTime = nil
+        if resetFreshness { spotCheckText = nil; spotCheckReceived = nil; pulseOximeterStatus = "Waiting for pulse-oximeter data." }
         customHeartRateCandidate = nil; customOxygenCandidate = nil
         measurementTime = nil; lastCustomMeasurement = nil
-        if resetFreshness { heartRateFreshness.reset(); continuityID = UUID() }
+        if resetFreshness { lastHeartRateUpdate = nil; lastOxygenUpdate = nil }
+        if resetFreshness { heartRateFreshness.reset(); staleHeartRate.reset(); staleHeartRateDetected = false; continuityID = UUID(); plxContinuityID = UUID() }
         alarmEngine.interrupt()
     }
     private func pauseHeartRate(_ reason: String) {
         if heartRateFreshness.pause() {
             continuityID = UUID(); sampling.reset()
             recordEvent(kind: "measurement", title: "Heart-rate readings paused", detail: reason)
+            if !alarmActive { notify(title: "Check sensor data", body: "No fresh reading received. Check the wearable and connection.", identifier: "nivvi-sensor-paused", soundName: "NivviSensor.wav") }
         }
         verifiedHeartRate = nil; customHeartRateCandidate = nil; alarmEngine.interrupt()
+        pulseOximeterRate = nil
         if connection.isConnected { connection = .waiting }
         status = "No fresh heart-rate reading. Bluetooth may still be connected."
         measurementStatus = reason
     }
     private func receiveHeartRate(at time: Date) {
+        lastHeartRateUpdate = time
         if let interval = heartRateFreshness.receive(at: time) {
             sampling.reset()
             recordEvent(kind: "measurement", title: "Heart-rate readings resumed", detail: "Usable heart-rate data received again. \(Int(interval)) seconds between usable readings; this does not identify the cause of the gap.")
@@ -274,6 +331,12 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         status = "Receiving fresh heart-rate readings."
     }
     private func expireMeasurements() {
+        defer { publishFamilySnapshot() }
+        if let time = oxygenTime, Date().timeIntervalSince(time) > 30 || Date() < time {
+            pulseOximeterOxygen = nil; oxygenTime = nil
+            plxContinuityID = UUID(); sampling.reset(source: "standard-PLX-oxygen")
+            pulseOximeterStatus = "No fresh oxygen reading received for over 30 seconds."
+        }
         if heartRateFreshness.isExpired(at: Date()) {
             pauseHeartRate("No usable heart-rate reading received for over 30 seconds. Check the wearable and connection; the cause is unknown.")
         }
@@ -309,34 +372,78 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     func refreshNotificationStatus() {
         UNUserNotificationCenter.current().getNotificationSettings { [weak self] settings in
             DispatchQueue.main.async {
+                self?.notificationSoundAllowed = settings.authorizationStatus == .authorized && settings.soundSetting == .enabled
                 self?.notificationStatus = settings.authorizationStatus == .authorized && settings.soundSetting == .enabled ? "Notifications and sounds allowed. Silent mode, Focus and volume settings still apply." : "Notification sound is not fully enabled. Check iPhone Settings → Notifications → Nivvi."
             }
         }
     }
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         // The foreground alarm already loops its own sound. Tests play the notification sound.
-        completionHandler(notification.request.identifier == "nivvi-rate-alarm" && foreground ? [.banner] : [.banner, .sound])
+        let alarmNotification = ["nivvi-rate-alarm", "nivvi-rate-alarm-reminder"].contains(notification.request.identifier)
+        completionHandler(alarmNotification && foreground ? [.banner] : [.banner, .sound])
     }
-    private func notify(title: String, body: String, identifier: String, delay: TimeInterval? = nil, sirenSound: Bool = true) {
+    private func notify(title: String, body: String, identifier: String, delay: TimeInterval? = nil, sirenSound: Bool = true, soundName: String? = nil, repeatInterval: TimeInterval? = nil) {
         let content = UNMutableNotificationContent()
         content.title = title; content.body = body
-        content.sound = sirenSound ? UNNotificationSound(named: UNNotificationSoundName(rawValue: "NivviSiren.wav")) : .default
-        content.interruptionLevel = .timeSensitive
-        let trigger = delay.map { UNTimeIntervalNotificationTrigger(timeInterval: $0, repeats: false) }
+        if let soundName {
+            content.sound = UNNotificationSound(named: UNNotificationSoundName(rawValue: soundName))
+        } else {
+            content.sound = sirenSound ? UNNotificationSound(named: UNNotificationSoundName(rawValue: "NivviSiren.wav")) : .default
+        }
+        content.interruptionLevel = soundName == "NivviSensor.wav" ? .active : .timeSensitive
+        let trigger: UNNotificationTrigger?
+        if let repeatInterval {
+            trigger = UNTimeIntervalNotificationTrigger(timeInterval: max(60, repeatInterval), repeats: true)
+        } else {
+            trigger = delay.map { UNTimeIntervalNotificationTrigger(timeInterval: $0, repeats: false) }
+        }
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)) { [weak self] error in
             if let error = error { DispatchQueue.main.async { self?.notificationStatus = "Notification failed: \(error.localizedDescription)" } }
         }
     }
-    private func startSiren(loop: Bool) {
+    private func scheduleAlarmNotifications(title: String? = nil, body: String? = nil) {
+        let sensorOnly = staleHeartRateDetected && !alarmActive
+        let selectedSound = sensorOnly ? "NivviSensor.wav" : "NivviSiren.wav"
+        let selectedTitle = sensorOnly ? "Check sensor data" : (title ?? attentionTitle)
+        let alertBody = body ?? "\(alarmDetail) Check \(displayNameForAlert) and follow the care plan."
+        notify(title: selectedTitle, body: alertBody, identifier: "nivvi-rate-alarm", soundName: selectedSound)
+        // iOS does not permit an app to hold an audio session open indefinitely
+        // after backgrounding. Repeating time-sensitive reminders keep notifying
+        // the caregiver until acknowledgement or a fresh in-range reading.
+        if !sensorOnly { notify(title: selectedTitle, body: "This heart-rate alert is still active. Open Nivvi to acknowledge it.", identifier: "nivvi-rate-alarm-reminder", soundName: selectedSound, repeatInterval: 60) }
+    }
+    private func clearAlarmNotifications() {
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["nivvi-rate-alarm", "nivvi-rate-alarm-reminder"])
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["nivvi-rate-alarm", "nivvi-rate-alarm-reminder"])
+    }
+    private var displayNameForAlert: String {
+        let name = UserDefaults.standard.string(forKey: "nivvi.profile.name")?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return name.isEmpty ? "your child" : name
+    }
+    private func playReliefSound() {
         guard foreground else { return }
         do {
-            guard let url = Bundle.main.url(forResource: "NivviSiren", withExtension: "wav") else { throw CocoaError(.fileNoSuchFile) }
+            guard let url = Bundle.main.url(forResource: "NivviRelief", withExtension: "wav") else { throw CocoaError(.fileNoSuchFile) }
             let audio = AVAudioSession.sharedInstance()
             try audio.setCategory(.playback, mode: .default, options: [.duckOthers])
             try audio.setActive(true)
-            siren = try AVAudioPlayer(contentsOf: url); siren?.numberOfLoops = loop ? -1 : 0; siren?.volume = 1
+            siren = try AVAudioPlayer(contentsOf: url); siren?.numberOfLoops = 0; siren?.volume = 0.5
+            _ = siren?.play()
+            soundStatus = "Playing the gentle recovery chime."
+        } catch { soundStatus = "Relief sound could not play: \(error.localizedDescription)" }
+    }
+    private func startSiren(loop: Bool) {
+        guard foreground else { return }
+        do {
+            let sensorOnly = staleHeartRateDetected && !alarmActive && !testingSiren
+            guard let url = Bundle.main.url(forResource: sensorOnly ? "NivviSensor" : "NivviSiren", withExtension: "wav") else { throw CocoaError(.fileNoSuchFile) }
+            let audio = AVAudioSession.sharedInstance()
+            try audio.setCategory(.playback, mode: .default, options: [.duckOthers])
+            try audio.setActive(true)
+            siren = try AVAudioPlayer(contentsOf: url); siren?.numberOfLoops = sensorOnly ? 0 : (loop ? -1 : 0); siren?.volume = sensorOnly ? 0.4 : 1
             guard siren?.play() == true else { throw CocoaError(.fileReadUnknown) }
-            soundStatus = "Siren playing at the iPhone’s current media volume."
+            soundStatus = sensorOnly ? "Gentle sensor-check chime." : "Siren playing at the iPhone’s current media volume."
         } catch { soundStatus = "Siren could not play: \(error.localizedDescription)" }
     }
     private func stopSiren() {
@@ -344,8 +451,13 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         siren?.stop(); siren = nil
         try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
     }
+    func testRecoverySound() {
+        guard !criticalAlertActive else { return }
+        stopSiren()
+        playReliefSound()
+    }
     func testSiren() {
-        guard !alarmActive else { return }
+        guard !criticalAlertActive else { return }
         if testingSiren { stopSiren(); return }
         testingSiren = true; startSiren(loop: true)
         soundTestTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: false) { [weak self] _ in self?.stopSiren() }
@@ -363,12 +475,12 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         foreground = isActive
         if isActive {
             expireMeasurements(); refreshNotificationStatus()
-            if alarmActive { startSiren(loop: true) }
+            if criticalAlertActive && !alarmAcknowledged { startSiren(loop: true) }
             if let c = measurementCharacteristic { enqueueRead(c) }
             if !active && session.enabled && manager.state == .poweredOn { resumeSession() }
         } else {
-            if let kind = alarmKind, siren != nil {
-                notify(title: kind.title, body: "An alarm is still active. Open Nivvi to review or silence it.", identifier: "nivvi-rate-alarm")
+            if criticalAlertActive, !alarmAcknowledged {
+                if alarmActive { notify(title: attentionTitle, body: "A heart-rate alarm is still active. Open Nivvi to acknowledge it.", identifier: "nivvi-rate-alarm") }
             }
             stopSiren()
             // Notification delivery is owned by iOS; do not fake background audio to stay awake.
@@ -389,7 +501,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         if peripheral == nil { peripheral = manager.retrievePeripherals(withIdentifiers: [id]).first }
         guard let p = peripheral else {
             connection = .reconnecting; status = "Looking for your saved wearable…"
-            manager.scanForPeripherals(withServices: [CBUUID(string: "180D"), CBUUID(string: "FFE0")])
+            manager.scanForPeripherals(withServices: BluetoothPolicy.measurementServices.map { CBUUID(string: $0) })
             return
         }
         p.delegate = self
@@ -433,11 +545,11 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         }
         manager.stopScan(); scanDeadline?.invalidate()
         scanToken = UUID(); let token = scanToken
-        devices = []; deviceNames = [:]; diagnostics = []
+        devices = []; deviceNames = [:]; deviceServices = [:]; diagnostics = []
         connection = .scanning
         status = "Scanning for nearby wearables for 15 seconds…"
         // A BLE device held by another app on this iPhone may not advertise again.
-        let connected = manager.retrieveConnectedPeripherals(withServices: [CBUUID(string: "180D"), CBUUID(string: "FFE0")])
+        let connected = manager.retrieveConnectedPeripherals(withServices: BluetoothPolicy.measurementServices.map { CBUUID(string: $0) })
         for p in connected {
             addDevice(p, name: p.name ?? "Bluetooth device already connected to iPhone")
         }
@@ -449,6 +561,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         }
     }
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        bluetoothReady = central.state == .poweredOn
         switch central.state {
         case .poweredOn:
             if session.enabled { resumeSession() }
@@ -469,6 +582,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         guard connection == .scanning else { return }
         let advertisedName = advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? ""
         let services = (advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID] ?? []).map { $0.uuidString }
+        deviceServices[p.identifier] = services
         if showAllDevices || BluetoothPolicy.isCandidate(names: [advertisedName, p.name ?? ""], services: services) {
             addDevice(p, name: advertisedName.isEmpty ? (p.name ?? "") : advertisedName)
         }
@@ -538,13 +652,15 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         if let error = error { note("Service discovery failed: \(error.localizedDescription)"); status = "Service discovery failed. Stop and reconnect."; return }
         let services = Set((p.services ?? []).map { BluetoothPolicy.normalized($0.uuid.uuidString) })
         note("Services: \(services.sorted().joined(separator: ", "))")
-        if services.contains("180D") { profile = .heartRate }
+        if services.contains("180D") && services.contains("1822") { profile = .combined }
+        else if services.contains("180D") { profile = .heartRate }
+        else if services.contains("1822") { profile = .pulseOximeter }
         else if services.contains("FFE0") { profile = .custom }
         else { profile = .generic }
         if services.isEmpty { status = "Connected, but no services were returned. Stop and reconnect."; return }
         for service in p.services ?? [] { p.discoverCharacteristics(nil, for: service) }
         connection = .waiting
-        status = "Connected. Waiting for measurement data…"
+        status = profile == .generic ? "Connected, but no supported heart-rate or oxygen service was found. This device may require a separate integration." : "Connected. Waiting for measurement data…"
     }
     func peripheral(_ p: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
         guard owns(p) else { return }
@@ -553,7 +669,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             let sid = BluetoothPolicy.normalized(service.uuid.uuidString), cid = BluetoothPolicy.normalized(c.uuid.uuidString)
             log(["event": "characteristic", "service": sid, "uuid": cid, "properties": String(c.properties.rawValue)])
             guard BluetoothPolicy.shouldObserve(service: sid, characteristic: cid) else { continue }
-            if profile == .heartRate && sid == "FFE0" { continue }
+            if (profile.hasStandardHeartRate || profile.hasPulseOximeter) && sid == "FFE0" { continue }
             note("Found \(sid)/\(cid): read=\(c.properties.contains(.read)), notify=\(c.properties.contains(.notify))")
             if sid == "FFE0" && cid == BluetoothPolicy.customMeasurementUUID {
                 measurementCharacteristic = c
@@ -574,6 +690,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         if c === measurementCharacteristic && error != nil { measurementStatus = "custom measurement notifications failed; trying readable values instead." }
     }
     func peripheral(_ p: CBPeripheral, didUpdateValueFor c: CBCharacteristic, error: Error?) {
+        defer { publishFamilySnapshot() }
         guard owns(p) else { return }
         // Check before accepting this packet: iOS may have suspended the timer.
         expireMeasurements()
@@ -605,64 +722,171 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             let candidate = BluetoothPolicy.customFrame(data)
             customHeartRateCandidate = candidate.heartRate
             customOxygenCandidate = candidate.oxygen
+            if candidate.oxygen != nil { lastOxygenUpdate = Date() }
             if candidate.heartRate != nil { receiveHeartRate(at: Date()) }
-            else { pauseHeartRate("No usable heart rate in the custom-format packet. Oxygen or other values do not confirm a fresh heart rate.") }
-            measurementStatus = candidate.heartRate == nil && candidate.oxygen == nil ? "Custom measurement received (\(data.count) bytes), but the values or frame format are not recognised." : "Experimental custom values received; compare against reference device."
+            else { pauseHeartRate("No usable heart rate in the mapped Bluetooth packet. Oxygen or other values do not confirm a fresh heart rate.") }
+            measurementStatus = candidate.heartRate == nil && candidate.oxygen == nil ? "Bluetooth measurement received (\(data.count) bytes), but the values or frame format are not recognised." : "Mapped Bluetooth values received. Verify readings with your care plan."
             if candidate.heartRate != nil || candidate.oxygen != nil {
                 saveMeasurement(heartRate: candidate.heartRate, oxygen: candidate.oxygen, source: "experimental-custom")
                 if let candidateRate = candidate.heartRate { evaluateExperimentalRateAlarm(candidateRate) }
                 else { alarmEngine.interrupt() }
             } else { measurementTime = nil; alarmEngine.interrupt() }
         }
-        // 2A5E/2A5F are standard pulse-ox measurements. Values stay hidden until
-        // a complete standards-compliant parser is added; never infer from raw bytes.
+        if serviceID == "1822", uuid == "2A5E" || uuid == "2A5F" { receivePulseOximetry(data, characteristic: uuid) }
         if let i = readings.firstIndex(where: { $0.id == key }) {
             readings[i].count += 1; readings[i].hex = hex
         } else { readings.append(Reading(id:key, count:1, hex:hex)) }
         if uuid == "2A19", serviceID == "180F", data.count == 1, data[0] <= 100 { battery = "\(data[0])%" }
         if uuid == "FFEA", serviceID == "FFE0", data.count == 2 { counter = "\(Int(data[0]) | (Int(data[1]) << 8)) — possible minutes" }
     }
+    private func receivePulseOximetry(_ data: Data, characteristic: String) {
+        guard profile.hasPulseOximeter else { return }
+        let continuous = characteristic == "2A5F"
+        guard let sample = PulseOximetry.decode(data, characteristic: characteristic) else {
+            pulseOximeterStatus = "Pulse-oximeter packet has an unsupported or incomplete format."
+            if continuous { invalidatePulseOximetry() }
+            return
+        }
+        if !continuous {
+            let quality = sample.usable ? "" : "Device flags this sample as stored, unqualified or unsuitable for live use. "
+            let clock = sample.clockUnset ? "Device clock was not set." : (sample.deviceTime ?? "Device timestamp not supplied.")
+            spotCheckText = quality + sample.description + ". " + clock
+            spotCheckReceived = Date()
+            recordEvent(kind: "spot-check", title: "Pulse-oximeter spot-check received", detail: (spotCheckText ?? "") + " Recorded at iPhone receipt time; not a continuous reading and not used for live alarms.")
+            return
+        }
+        guard sample.liveEligible else {
+            pulseOximeterStatus = "Pulse oximeter reports unqualified data or a device/sensor condition. Live values withheld."
+            invalidatePulseOximetry(); return
+        }
+        pulseOximeterOxygen = sample.oxygen
+        oxygenTime = sample.oxygen == nil ? nil : Date()
+        if sample.oxygen != nil { lastOxygenUpdate = oxygenTime }
+        pulseOximeterStatus = "Standard continuous pulse-oximeter packet received."
+        if profile.hasStandardHeartRate {
+            // HR Service remains the sole pulse/alert source on a dual-service device.
+            if let oxygen = sample.oxygen {
+                saveMeasurement(heartRate: nil, oxygen: nil, source: "standard-PLX-oxygen", exactOxygen: oxygen, segment: plxContinuityID)
+            } else { plxContinuityID = UUID(); sampling.reset(source: "standard-PLX-oxygen") }
+            return
+        }
+        pulseOximeterRate = sample.pulse
+        if let pulse = sample.pulse {
+            receiveHeartRate(at: Date())
+            evaluatePulseOximeterAlarm(pulse)
+        } else { pauseHeartRate("Pulse oximeter has no usable pulse rate. Oxygen alone does not confirm fresh heart rate.") }
+        if sample.pulse != nil || sample.oxygen != nil {
+            saveMeasurement(heartRate: nil, oxygen: nil, source: "standard-PLX-continuous", exactHeartRate: sample.pulse, exactOxygen: sample.oxygen)
+        }
+    }
+    private func invalidatePulseOximetry() {
+        pulseOximeterOxygen = nil; oxygenTime = nil; plxContinuityID = UUID()
+        sampling.reset(source: "standard-PLX-oxygen")
+        if !profile.hasStandardHeartRate { pauseHeartRate(pulseOximeterStatus) }
+    }
+    private func observeStaleHeartRate(_ bpm: Double, source: String) {
+        let wasStale = staleHeartRateDetected
+        let crossed = staleHeartRate.observe(bpm, at: Date())
+        if crossed {
+            staleHeartRateDetected = true
+            alarmAcknowledged = false
+            let value = MetricText.number(bpm)
+            recordEvent(kind: "measurement", title: "Check sensor data", detail: "The wearable repeated \(value) bpm for three minutes of \(source) readings. Check sensor contact, fit and the child; this may be stale device data.", heartRate: Int(bpm.rounded()))
+            startSiren(loop: true)
+            if !alarmActive {
+                clearAlarmNotifications()
+                scheduleAlarmNotifications(title: attentionTitle, body: "The wearable repeated \(value) bpm for three minutes. Check \(displayNameForAlert), the sensor fit and the care plan.")
+            }
+        } else if wasStale && !staleHeartRate.isStale {
+            staleHeartRateDetected = false
+            if !alarmActive {
+                alarmAcknowledged = false
+                recordEvent(kind: "measurement", title: "Fresh heart-rate reading restored", detail: "A changed \(source) value replaced the repeated reading. This does not establish sensor accuracy or a medical all-clear.", heartRate: Int(bpm.rounded()))
+                clearAlarmNotifications()
+                if !testingSiren { stopSiren() }
+                playReliefSound()
+            }
+        }
+    }
+    private func evaluatePulseOximeterAlarm(_ pulse: Double) {
+        observeStaleHeartRate(pulse, source: "pulse-oximeter")
+        let previous = alarmKind
+        let event = alarmEngine.ingestExact(bpm: pulse, source: "standard-PLX-continuous", at: Date(), settings: alarmSettings)
+        alarmKind = alarmEngine.active
+        if let event = event {
+            alarmAcknowledged = false
+            recordEvent(kind: "critical", title: attentionTitle, detail: "\(event.title). Pulse oximeter reading \(MetricText.number(pulse)) bpm crossed the configured limit for \(alarmSettings.durationSeconds) seconds. Acknowledgement is required; the alarm remains active until a fresh in-range reading.")
+            startSiren(loop: true)
+            scheduleAlarmNotifications()
+        } else if previous != nil && !alarmActive {
+            alarmAcknowledged = false
+            recordEvent(kind: "critical", title: "Heart rate back to normal", detail: "Fresh pulse-oximeter reading \(MetricText.number(pulse)) bpm returned within the configured limits. The alarm self-cleared.")
+            clearAlarmNotifications()
+            if !testingSiren { stopSiren() }
+            playReliefSound()
+        }
+    }
     private func evaluateExperimentalRateAlarm(_ bpm: Int) {
+        observeStaleHeartRate(Double(bpm), source: "mapped Bluetooth")
         let previousAlarm = alarmKind
         let event = alarmEngine.ingest(bpm: bpm, source: "experimental-custom", at: Date(), settings: alarmSettings, allowExperimentalCustom: experimentalCustomAlarms)
         alarmKind = alarmEngine.active
         if let event = event {
-            recordEvent(kind: "alarm", title: event.title, detail: "Experimental custom value crossed the configured limit for \(alarmSettings.durationSeconds) seconds. Verify against reference device or your care plan.", heartRate: bpm)
+            alarmAcknowledged = false
+            recordEvent(kind: "critical", title: attentionTitle, detail: "\(event.title). Mapped Bluetooth value \(bpm) bpm crossed the configured limit for \(alarmSettings.durationSeconds) seconds. Verify the reading and follow the care plan.", heartRate: bpm)
             startSiren(loop: true)
-            notify(title: event.title, body: "Experimental custom value \(bpm) crossed your configured limit. Verify the reading and follow your care plan.", identifier: "nivvi-rate-alarm")
-            status = event.title + " — verify the custom-format reading and follow your care plan."
-        } else if !alarmActive && previousAlarm != nil && !testingSiren {
-            recordEvent(kind: "alarm", title: "Reading back within limits", detail: "Experimental custom value returned within the configured limits.", heartRate: bpm)
-            stopSiren()
+            scheduleAlarmNotifications()
+            status = attentionTitle + " — " + event.title + ". Acknowledge the alert and follow the care plan."
+        } else if !alarmActive && previousAlarm != nil {
+            alarmAcknowledged = false
+            recordEvent(kind: "critical", title: "Heart rate back to normal", detail: "Fresh mapped Bluetooth value \(bpm) bpm returned within the configured limits. The alarm self-cleared.", heartRate: bpm)
+            clearAlarmNotifications()
+            if !testingSiren { stopSiren() }
+            playReliefSound()
         }
     }
 
     private func evaluateRateAlarm(_ bpm: Int) {
+        observeStaleHeartRate(Double(bpm), source: "standard Bluetooth")
         let previousAlarm = alarmKind
         let event = alarmEngine.ingest(bpm: bpm, source: "standard-2A37", at: Date(), settings: alarmSettings, allowExperimentalCustom: experimentalCustomAlarms)
         alarmKind = alarmEngine.active
         if let event = event {
-            recordEvent(kind: "alarm", title: event.title, detail: "Configured limit persisted for \(alarmSettings.durationSeconds) seconds. Standard Bluetooth heart-rate input.", heartRate: bpm)
+            alarmAcknowledged = false
+            recordEvent(kind: "critical", title: attentionTitle, detail: "\(event.title). Standard Bluetooth reading \(bpm) bpm crossed the configured limit for \(alarmSettings.durationSeconds) seconds. Acknowledgement is required; the alarm remains active until a fresh in-range reading.", heartRate: bpm)
             startSiren(loop: true)
-            notify(title: event.title, body: "\(bpm) bpm crossed your configured limit. Check your child and follow their care plan.", identifier: "nivvi-rate-alarm")
-            status = event.title + " — check your child and follow their care plan."
-        } else if !alarmActive {
-            if previousAlarm != nil { recordEvent(kind: "alarm", title: "Reading back within limits", detail: "A fresh standard-format reading ended the alert. This is not a medical all-clear.", heartRate: bpm) }
+            scheduleAlarmNotifications()
+            status = attentionTitle + " — " + event.title + ". Acknowledge the alert and follow the care plan."
+        } else if !criticalAlertActive {
+            if previousAlarm != nil {
+                alarmAcknowledged = false
+                recordEvent(kind: "critical", title: "Heart rate back to normal", detail: "Fresh standard Bluetooth reading \(bpm) bpm returned within the configured limits. The alarm self-cleared; this is not a medical all-clear.", heartRate: bpm)
+                clearAlarmNotifications()
+            }
             if !testingSiren { stopSiren() }
+            if previousAlarm != nil { playReliefSound() }
         }
     }
     func silenceAlarm() {
-        if let kind = alarmKind { recordEvent(kind: "alarm", title: "Alarm silenced", detail: kind.title + " acknowledged by the caregiver.") }
-        alarmEngine.silence(); alarmKind = nil; stopSiren()
-        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["nivvi-rate-alarm"])
-        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["nivvi-rate-alarm"])
-        soundStatus = "Silenced. The same excursion stays muted until a new in-range reading or a different limit is reached."
+        guard criticalAlertActive, !alarmAcknowledged else { return }
+        let detail: String
+        if let kind = alarmKind {
+            detail = "\(attentionTitle) alert acknowledged by the caregiver. \(kind.title) remains active until a fresh in-range reading."
+            alarmEngine.silence()
+        } else {
+            detail = "\(attentionTitle) stale-data warning acknowledged by the caregiver. Check the sensor and child; it remains visible until fresh data replaces the repeated value."
+        }
+        recordEvent(kind: alarmActive ? "critical" : "measurement", title: alarmActive ? "Alarm acknowledged" : "Sensor warning acknowledged", detail: detail)
+        alarmAcknowledged = true
+        stopSiren()
+        clearAlarmNotifications()
+        soundStatus = "Acknowledged. The alarm stays active until a fresh in-range reading."
     }
     func stop() {
         if session.enabled { recordEvent(kind: "connection", title: "Session disconnected", detail: "Disconnected by the user. Automatic reconnection is off.") }
         session.stop(); saveSession()
         scanToken = UUID(); scanDeadline?.invalidate(); manager.stopScan()
-        resetTransport(); closeCaptureLog(); alarmEngine.reset(); alarmKind = nil; stopSiren()
+        resetTransport(); closeCaptureLog(); alarmEngine.reset(); alarmKind = nil; staleHeartRate.reset(); staleHeartRateDetected = false; alarmAcknowledged = false; clearAlarmNotifications(); stopSiren()
         if let p = peripheral, p.state != .disconnected && manager.state == .poweredOn {
             connection = .stopping; status = "Disconnecting…"; manager.cancelPeripheralConnection(p)
         } else { finish("Disconnected. Automatic reconnection is off.") }
@@ -812,12 +1036,12 @@ struct HistoryChartsView: View {
             Text("\(domain.lowerBound.formatted(date: .omitted, time: .shortened)) – \(domain.upperBound.formatted(date: .omitted, time: .shortened))\(hours == 0 ? " · full calendar day" : "")").font(.caption).monospacedDigit()
             Text("Blank intervals have no plotted readings. Tap or drag near a point to inspect its saved value.").font(.caption).foregroundStyle(.white.opacity(0.7))
             if let entry = selected {
-                Text("Selected: \(entry.time.formatted(date: .abbreviated, time: .standard)) · HR \(entry.heartRate.map(String.init) ?? "—") bpm · O₂ \(entry.oxygen.map(String.init) ?? "—")%")
+                Text("Selected: \(entry.time.formatted(date: .abbreviated, time: .standard)) · HR \(entry.heartRateValue.map(MetricText.number) ?? "—") bpm · O₂ \(entry.oxygenValue.map(MetricText.number) ?? "—")%")
                     .font(.caption.bold()).foregroundStyle(lavender).monospacedDigit()
             }
             Label("Heart rate", systemImage: "heart.fill").foregroundStyle(coral).font(.headline)
             metricChart(.heartRate, tint: coral).frame(height: 180)
-            if entries.contains(where: { $0.oxygen != nil }) {
+            if entries.contains(where: { $0.oxygenValue != nil }) {
                 Label("Oxygen", systemImage: "lungs.fill").foregroundStyle(teal).font(.headline)
                 metricChart(.oxygen, tint: teal).frame(height: 130)
             }
@@ -865,7 +1089,9 @@ struct ContentView: View {
     @AppStorage("nivvi.profile.birthDate") private var childBirthDate = 0.0
     @AppStorage("nivvi.profile.gender") private var childGender = "Prefer not to say"
     @AppStorage("nivvi.favorite.device.ids") private var favoriteDeviceIDs = ""
+    @State private var showFamily = false
     @State private var showProfile = false
+    @State private var showReadinessTest = false
     @State private var captureRequest: CaptureRequest?
     @State private var tab = 0
     @State private var historyExport: URL?
@@ -907,11 +1133,24 @@ struct ContentView: View {
         }
     }
     private var eventKinds: [String] { Array(Set(monitor.events.map(\.kind))).sorted() }
-    private var heartRateDisplay: String { (monitor.verifiedHeartRate ?? monitor.customHeartRateCandidate).map { "\($0) bpm" } ?? "Not decoded" }
-    private var oxygenDisplay: String { (monitor.verifiedOxygen ?? monitor.customOxygenCandidate).map { "\($0)%" } ?? "Not decoded" }
+    private var eventFilterKinds: [String] {
+        ["critical"] + eventKinds.filter { $0 != "critical" }
+    }
+    private func eventLabel(_ kind: String) -> String {
+        kind == "critical" ? "Critical" : kind.capitalized
+    }
+    private var heartRateDisplay: String {
+        let value = monitor.verifiedHeartRate.map(Double.init) ?? monitor.pulseOximeterRate ?? monitor.customHeartRateCandidate.map(Double.init)
+        return value.map { "\(MetricText.number($0)) bpm" } ?? "No reading"
+    }
+    private var oxygenDisplay: String {
+        let value = monitor.pulseOximeterOxygen ?? monitor.customOxygenCandidate.map(Double.init)
+        return value.map { "\(MetricText.number($0))%" } ?? "No reading"
+    }
     private var liveMeasurementNote: String {
-        if monitor.verifiedHeartRate != nil || monitor.verifiedOxygen != nil { return "Standard Bluetooth value" }
-        if monitor.customHeartRateCandidate != nil || monitor.customOxygenCandidate != nil { return "Experimental adapter candidate · verify independently" }
+        if monitor.staleHeartRateDetected { return "Repeated value · check sensor" }
+        if monitor.verifiedHeartRate != nil || monitor.pulseOximeterRate != nil || monitor.pulseOximeterOxygen != nil { return "Standard Bluetooth value" }
+        if monitor.customHeartRateCandidate != nil || monitor.customOxygenCandidate != nil { return "Bluetooth value received" }
         return monitor.profile == .heartRate ? "Waiting for heart-rate data" : "Waiting for device data"
     }
     private var displayName: String { childName.isEmpty ? "Your child" : childName }
@@ -928,7 +1167,7 @@ struct ContentView: View {
             mode.background.ignoresSafeArea()
             VStack(spacing: 0) {
                 header
-                if monitor.alarmActive { alarmBanner.padding(.horizontal, 20) }
+                if monitor.criticalAlertActive { alarmBanner.padding(.horizontal, 20) }
                 ScrollView(showsIndicators: false) {
                     Group {
                         if tab == 0 { home } else if tab == 1 { history } else if tab == 2 { device } else { settings }
@@ -941,7 +1180,7 @@ struct ContentView: View {
         .sheet(item: $captureRequest) { request in
             VStack(alignment: .leading, spacing: 24) {
                 Text("Connect to \(request.peripheral.name ?? "wearable")").font(.title2.bold())
-                Text("Nivvi will stay connected and try to reconnect after signal loss until you tap Disconnect. Connecting may interrupt another app using the same device. Standard heart-rate devices are supported. Custom-format readings remain experimental; their alarms require explicit opt-in in Settings.")
+                Text("Nivvi will stay connected and try to reconnect after signal loss until you tap Disconnect. Connecting may interrupt another app using the same device. Standard heart-rate and pulse-oximeter formats are supported. A device may expose only spot-checks or require a separate integration. Mapped readings should be checked against your care plan before using them for alarms.")
                 Button("Connect wearable") {
                     monitor.connect(request.peripheral)
                     captureRequest = nil
@@ -1016,19 +1255,33 @@ struct ContentView: View {
     private var alarmBanner: some View {
                 HStack(spacing: 12) {
                     Image(systemName: "bell.and.waves.fill").foregroundStyle(.white)
-                    VStack(alignment: .leading, spacing: 3) { Text(monitor.alarmKind?.title ?? "Heart-rate alert").font(.headline); Text("Check your child and follow their care plan.").font(.caption) }
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(monitor.alarmActive ? "\(displayName) needs your attention" : "Check sensor data").font(.headline)
+                        Text(monitor.staleHeartRateDetected ? (monitor.alarmAcknowledged ? "Acknowledged · repeated reading still needs checking." : "Repeated heart-rate value detected. Check sensor contact and your child.") : (monitor.alarmAcknowledged ? "Acknowledged · waiting for a fresh in-range reading." : "Check your child and follow their care plan.")).font(.caption)
+                    }
                     Spacer()
-                    Button("Silence") { monitor.silenceAlarm() }.buttonStyle(.bordered).tint(.white)
-                }.padding(16).background(coral).clipShape(RoundedRectangle(cornerRadius: 20))
+                    if !monitor.alarmAcknowledged {
+                        Button("Acknowledge") { monitor.silenceAlarm() }.buttonStyle(.bordered).tint(.white)
+                    }
+                }.padding(16).background(monitor.alarmActive ? coral : Color.orange.opacity(0.75)).clipShape(RoundedRectangle(cornerRadius: 20))
     }
 
     private var home: some View {
         VStack(alignment: .leading, spacing: 18) {
+            readinessPanel
             Text("CURRENT STATUS").font(.caption.weight(.bold)).tracking(1.2).foregroundStyle(.white.opacity(0.55))
             HStack(alignment: .firstTextBaseline) { Text(monitor.connection == .receiving ? "Fresh heart-rate data" : (connected ? "Waiting for heart rate" : "Ready to connect")).font(.title2.bold()); Spacer(); Image(systemName: mode.symbol).foregroundStyle(mode == .night ? lavender : .yellow) }
             HStack(spacing: 14) {
-                readingCard("Heart rate", heartRateDisplay, liveMeasurementNote, "heart.fill", coral)
-                if monitor.profile == .custom { readingCard("Oxygen", oxygenDisplay, liveMeasurementNote, "lungs.fill", teal) }
+                readingCard("Heart rate", heartRateDisplay, heartRateDisplay == "No reading" ? "Waiting for usable heart rate" : liveMeasurementNote, "heart.fill", coral, receivedAt: monitor.lastHeartRateUpdate, animate: !monitor.staleHeartRateDetected)
+                if monitor.profile == .custom || monitor.profile.hasPulseOximeter { readingCard("Oxygen", oxygenDisplay, oxygenDisplay == "No reading" ? "Waiting for usable oxygen data" : liveMeasurementNote, "lungs.fill", teal, receivedAt: monitor.lastOxygenUpdate) }
+            }
+            if let spot = monitor.spotCheckText, let time = monitor.spotCheckReceived {
+                panel { VStack(alignment: .leading, spacing: 8) {
+                    Label("Last spot-check", systemImage: "checkmark.circle").font(.headline)
+                    Text("Received \(time.formatted(date: .abbreviated, time: .standard))").font(.caption.bold()).foregroundStyle(lavender)
+                    Text(spot).font(.subheadline)
+                    Text("One-off result · not live monitoring · no live alarms").font(.caption).foregroundStyle(.white.opacity(0.7))
+                } }
             }
 
             Button { monitor.selectHistoryDay(Date()); tab = 1 } label: {
@@ -1043,9 +1296,9 @@ struct ContentView: View {
 
     private var supportiveCard: some View {
         panel { VStack(alignment: .leading, spacing: 10) {
-            Label(monitor.alarmActive ? "One step at a time" : "Here for your little one", systemImage: "heart.text.clipboard").font(.headline)
-            Text(monitor.alarmActive ? "Take a breath and stay close to your little one. Check how they are and follow the plan from their care team." : "You can add a note about how your little one is doing. Small observations can help you explain what happened to their care team.").font(.subheadline)
-            if monitor.alarmActive {
+            Label(monitor.criticalAlertActive ? "One step at a time" : "Here for your little one", systemImage: "heart.text.clipboard").font(.headline)
+            Text(monitor.criticalAlertActive ? "Take a breath and stay close to your little one. Check how they are and follow the plan from their care team." : "You can add a note about how your little one is doing. Small observations can help you explain what happened to their care team.").font(.subheadline)
+            if monitor.criticalAlertActive {
                 Text("If your care team has taught you to check their heart rate with a stethoscope, use their instructions. Do not delay urgent help to take a reading.").font(.caption)
                 Text("If your child is seriously unwell, seek emergency help immediately.").font(.caption.bold())
             }
@@ -1071,8 +1324,11 @@ struct ContentView: View {
                     } }
                 }
                 Picker("Show", selection: $historySection) { Text("Events").tag(0); Text("Readings").tag(1) }.pickerStyle(.segmented)
-                if historySection == 0 && !eventKinds.isEmpty {
-                    Picker("Event type", selection: $eventFilter) { Text("All").tag("All"); ForEach(eventKinds, id: \.self) { Text($0.capitalized).tag($0) } }.pickerStyle(.menu)
+                if historySection == 0 {
+                    Picker("Event type", selection: $eventFilter) {
+                        Text("All").tag("All")
+                        ForEach(eventFilterKinds, id: \.self) { Text(eventLabel($0)).tag($0) }
+                    }.pickerStyle(.menu)
                 }
             } }
             if historySection == 0 {
@@ -1080,12 +1336,19 @@ struct ContentView: View {
                 Text("\(visibleEvents.count) events · recorded as they happen").font(.subheadline)
                 if visibleEvents.isEmpty { panel { Text("No events match this filter for this day.").font(.subheadline) } }
                 ForEach(Array(visibleEvents.reversed())) { event in
-                    panel { VStack(alignment: .leading, spacing: 9) {
-                        timestamp(event.time, tint: event.kind == "alarm" ? coral : lavender)
-                        Label(event.title, systemImage: event.kind == "alarm" ? "bell.fill" : event.kind == "note" ? "note.text" : "antenna.radiowaves.left.and.right").font(.headline)
-                        Text(event.detail).font(.subheadline).foregroundStyle(.white.opacity(0.8))
-                        if let bpm = event.heartRate { Text("\(bpm) bpm").font(.title3.bold()).foregroundStyle(coral) }
-                    } }
+                    let recovery = event.title == "Heart rate back to normal"
+                    let eventTint: Color = recovery ? Color(red: 0.45, green: 0.95, blue: 0.65) : (event.kind == "alarm" || event.kind == "critical" ? coral : lavender)
+                    VStack(alignment: .leading, spacing: 9) {
+                        timestamp(event.time, tint: eventTint)
+                        Label(event.title, systemImage: recovery ? "checkmark.circle.fill" : event.kind == "alarm" || event.kind == "critical" ? "bell.fill" : event.kind == "sleep" ? "moon.zzz.fill" : event.kind == "note" ? "note.text" : "antenna.radiowaves.left.and.right")
+                            .font(.headline).foregroundStyle(recovery ? eventTint : .white)
+                        Text(event.detail).font(.subheadline).foregroundStyle(recovery ? eventTint : .white.opacity(0.8))
+                        if let bpm = event.heartRate { Text("\(bpm) bpm").font(.title3.bold()).foregroundStyle(eventTint) }
+                    }
+                    .padding(18).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(recovery ? Color.green.opacity(0.14) : Color.white.opacity(0.09))
+                    .clipShape(RoundedRectangle(cornerRadius: 22))
+                    .overlay(RoundedRectangle(cornerRadius: 22).stroke(recovery ? Color.green.opacity(0.55) : .clear, lineWidth: 1))
                 }
                 if let error = monitor.eventError { Text(error).foregroundStyle(coral) }
             } else {
@@ -1100,8 +1363,8 @@ struct ContentView: View {
                     ForEach(Array(monitor.history.suffix(50).reversed())) { sample in
                         panel { VStack(alignment: .leading, spacing: 9) {
                             timestamp(sample.time, tint: lavender)
-                            HStack { Text(sample.heartRate.map { "\($0) bpm" } ?? "HR —").foregroundStyle(coral); Spacer(); Text(sample.oxygen.map { "O₂ \($0)%" } ?? "O₂ —").foregroundStyle(teal) }.font(.title3.bold())
-                            Text(sample.source == "experimental-custom" ? "Experimental adapter reading · verify independently" : "Standard Bluetooth reading").font(.caption).foregroundStyle(.white.opacity(0.7))
+                            HStack { Text(sample.heartRateValue.map { "\(MetricText.number($0)) bpm" } ?? "HR —").foregroundStyle(coral); Spacer(); Text(sample.oxygenValue.map { "O₂ \(MetricText.number($0))%" } ?? "O₂ —").foregroundStyle(teal) }.font(.title3.bold())
+                            Text(sample.source == "experimental-custom" ? "Mapped Bluetooth reading" : "Standard Bluetooth reading").font(.caption).foregroundStyle(.white.opacity(0.7))
                         } }
                     }
                 }
@@ -1141,12 +1404,12 @@ struct ContentView: View {
             ForEach(sortedDevices, id: \.identifier) { p in
                 HStack(spacing: 10) {
                     Button { captureRequest = CaptureRequest(peripheral: p) } label: {
-                        HStack { VStack(alignment: .leading) { Text(monitor.deviceNames[p.identifier] ?? p.name ?? "Unnamed Bluetooth device").font(.headline); Text("Tap to start a continuous session").font(.caption) }; Spacer(); Image(systemName: "chevron.right") }.frame(maxWidth: .infinity, alignment: .leading).padding(14)
+                        HStack { VStack(alignment: .leading) { Text(monitor.deviceNames[p.identifier] ?? p.name ?? "Unnamed Bluetooth device").font(.headline); Text(BluetoothPolicy.isCandidate(names: [], services: monitor.deviceServices[p.identifier] ?? []) ? "Measurement service advertised · tap to inspect" : "Compatibility checked after connection").font(.caption) }; Spacer(); Image(systemName: "chevron.right") }.frame(maxWidth: .infinity, alignment: .leading).padding(14)
                     }.buttonStyle(.bordered).disabled(monitor.active)
                     Button { toggleFavourite(p) } label: { Image(systemName: isFavourite(p) ? "star.fill" : "star").foregroundStyle(isFavourite(p) ? .yellow : .white.opacity(0.7)).padding(12) }.accessibilityLabel(isFavourite(p) ? "Remove favourite device" : "Favourite device")
                 }
             }
-            Text("Choose your Bluetooth heart-rate device. Star a device to keep it at the top of the list. Standard Heart Rate Service devices are supported; custom formats are experimental. If a device does not advertise its services, enable Show other nearby devices and scan again. Close other Bluetooth apps before connecting.").font(.caption).foregroundStyle(.white.opacity(0.7))
+            Text("Choose your Bluetooth heart-rate device. Star a device to keep it at the top of the list. Supported formats: standard Heart Rate Service and Pulse Oximeter Service. Seeing a Bluetooth device does not mean its measurements are accessible. Mapped formats should be checked independently. Close other Bluetooth apps before connecting.").font(.caption).foregroundStyle(.white.opacity(0.7))
             Toggle("Show other nearby Bluetooth devices", isOn: $monitor.showAllDevices)
                 .disabled(monitor.active || monitor.isScanning)
             panel { VStack(alignment: .leading, spacing: 10) {
@@ -1154,8 +1417,17 @@ struct ContentView: View {
                 Text(monitor.status).fixedSize(horizontal: false, vertical: true)
                 Text("\(monitor.readings.reduce(0) { $0 + $1.count }) packets received").font(.headline)
                 Text(monitor.measurementStatus).font(.caption)
+                if monitor.profile.hasPulseOximeter { Text(monitor.pulseOximeterStatus).font(.caption) }
                 if let time = monitor.lastSample { Text("Last packet: \(time.formatted(date: .omitted, time: .standard))").font(.caption) }
             } }
+            DisclosureGroup("Which devices work?") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Devices must expose the standard Bluetooth Heart Rate or Pulse Oximeter service, or a mapped format supported by Nivvi. Heart-rate support alone does not provide oxygen readings.")
+                    Text("Apple Watch needs a Watch/HealthKit integration. Oura needs an Oura integration. These are not connected in this build, and seeing their Bluetooth names does not make their measurements available.")
+                    Text("Base-station and proprietary monitors may require manufacturer documentation or an API. Unrecognised formats remain undecoded.")
+                    Text("Pulse-oximeter continuous readings can use the configured rate alarms. Spot-checks are saved as events and never start live alarms. Oxygen is displayed and recorded; oxygen alarms are not implemented.")
+                }.font(.caption).foregroundStyle(.white.opacity(0.8))
+            }
             DisclosureGroup("Connection details") {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(Array(monitor.diagnostics.enumerated()), id: \.offset) { _, line in Text(line).font(.caption.monospaced()).textSelection(.enabled) }
@@ -1170,30 +1442,37 @@ struct ContentView: View {
         }
     }
 
-    private var settings: some View { VStack(alignment: .leading, spacing: 18) {
+    private var configuredRangeLabel: String {
+        let limits = monitor.alarmSettings
+        guard limits.validationMessage == nil else { return "Check limits" }
+        if limits.lowEnabled, limits.highEnabled, let low = limits.lowThreshold, let high = limits.highThreshold {
+            return "\(low)–\(high) bpm"
+        }
+        if limits.lowEnabled, let low = limits.lowThreshold { return "\(low) bpm or above" }
+        if limits.highEnabled, let high = limits.highThreshold { return "\(high) bpm or below" }
+        return "Not configured"
+    }
+
+    private var settings: some View { VStack(alignment: .leading, spacing: 16) {
         Text("Settings").font(.largeTitle.bold())
-        Text("Nivvi 0.6 · Build 6").font(.caption).foregroundStyle(.secondary)
         panel { VStack(alignment: .leading, spacing: 10) {
             HStack { Label("Child profile", systemImage: "person.crop.circle"); Spacer(); Button("Edit") { showProfile = true }.buttonStyle(.bordered) }
             Text("\(displayName)\(ageText.isEmpty ? "" : " · \(ageText)")").font(.headline)
             Text("Stored on this iPhone by default.").font(.caption).foregroundStyle(.white.opacity(0.6))
         } }
-        panel { VStack(alignment: .leading, spacing: 10) {
-            Label("Family circle", systemImage: "person.3.fill")
-            Text("Share saved readings and event logs using the CSV exports in History.").font(.caption)
-            Text("Live remote sharing is not enabled in this build. Readings remain on this iPhone; use the History exports to share saved records.").font(.caption).foregroundStyle(.white.opacity(0.7))
-        } }
         panel { VStack(alignment: .leading, spacing: 12) {
-            Text("Heart-rate alarm ranges").font(.headline)
-            HStack(spacing: 8) {
-                Text("LOW").foregroundStyle(coral).frame(maxWidth: .infinity)
-                Text("WITHIN LIMITS").foregroundStyle(teal).frame(maxWidth: .infinity)
-                Text("HIGH").foregroundStyle(coral).frame(maxWidth: .infinity)
-            }.font(.caption.bold()).padding(.vertical, 8).background(.white.opacity(0.08)).clipShape(Capsule())
-            Text("Within limits means between your configured low and high limits; it is not a health assessment. Limits come from your child’s care plan; Nivvi does not set them for you.").font(.caption)
-            Text("Custom-format values are experimental. Enable the test switch only to trial the mapped value against your care plan; verify readings independently.").font(.caption)
-            Toggle("Experimental custom alarm test", isOn: $monitor.experimentalCustomAlarms).tint(lavender)
-                .onChange(of: monitor.experimentalCustomAlarms) { _ in monitor.silenceAlarm() }
+            Text("Heart-rate alerts").font(.headline)
+            HStack { Label("Low", systemImage: "arrow.down.heart"); Spacer(); Text(monitor.alarmSettings.lowEnabled ? monitor.alarmSettings.lowThreshold.map { "Below \($0) bpm" } ?? "Set a limit" : "Off") }.foregroundStyle(coral)
+            Divider()
+            HStack { Text("Within limits"); Spacer(); Text(configuredRangeLabel) }.foregroundStyle(teal)
+            Divider()
+            HStack { Label("High", systemImage: "arrow.up.heart"); Spacer(); Text(monitor.alarmSettings.highEnabled ? monitor.alarmSettings.highThreshold.map { "Above \($0) bpm" } ?? "Set a limit" : "Off") }.foregroundStyle(coral)
+            Text("Use the limits from your care plan.").font(.caption)
+            DisclosureGroup("Adjust limits") { VStack(alignment: .leading, spacing: 12) {
+            if monitor.profile == .custom {
+                Text("Mapped readings require independent checking before enabling alarms.").font(.caption)
+                Toggle("Enable alarms for mapped readings", isOn: $monitor.experimentalCustomAlarms).tint(lavender)
+            }
             Toggle("High limit alarm", isOn: $monitor.alarmSettings.highEnabled).tint(coral)
                 .onChange(of: monitor.alarmSettings.highEnabled) { enabled in if enabled { monitor.requestNotificationPermission() } }
             HStack {
@@ -1211,27 +1490,115 @@ struct ContentView: View {
             if editingLimit { Button("Done entering limits") { editingLimit = false } }
             Stepper("Duration: \(monitor.alarmSettings.durationSeconds) seconds", value: $monitor.alarmSettings.durationSeconds, in: 5...120, step: 5)
             if let message = monitor.alarmSettings.validationMessage { Text(message).font(.caption).foregroundStyle(coral) }
-            Text("Enter limits from your child’s care plan. Each enabled limit must be crossed for the selected duration with continuous valid samples. Gaps restart the timer. Settings stay saved on this phone.").font(.caption)
+            Text("A limit must stay crossed for this duration. Gaps restart the timer.").font(.caption)
+                Text("Changes save automatically.").font(.caption).foregroundStyle(.secondary)
+            }.padding(.top, 12) }
+        } }
+        panel { DisclosureGroup("Sounds and notifications") { VStack(alignment: .leading, spacing: 12) {
             Button(monitor.testingSiren ? "Stop test siren" : "Test siren for 5 seconds") { monitor.testSiren() }
-                .buttonStyle(.borderedProminent).tint(coral).disabled(monitor.alarmActive)
+                .buttonStyle(.borderedProminent).tint(coral).disabled(monitor.criticalAlertActive)
+            Button("Preview recovery chime") { monitor.testRecoverySound() }
+                .buttonStyle(.bordered).disabled(monitor.criticalAlertActive)
             Button("Test notification in 10 seconds") { monitor.testNotification() }.buttonStyle(.bordered)
             Text(monitor.soundStatus).font(.caption)
             Text(monitor.notificationStatus).font(.caption)
             Text("Low alarms fire strictly below the low limit; high alarms fire strictly above the high limit. The alarm self-clears after a fresh in-range reading. Lock-screen sounds depend on iPhone volume, Silent mode, Focus and notification permissions; Critical Alerts approval is not included.").font(.caption).foregroundStyle(.white.opacity(0.7))
-        } }
-        panel { VStack(alignment: .leading, spacing: 10) {
-            Label("Continuous Bluetooth session", systemImage: "antenna.radiowaves.left.and.right")
+        }.padding(.top, 12) } }
+        Group {
+        panel { DisclosureGroup("FAQ") { VStack(alignment: .leading, spacing: 12) {
+            DisclosureGroup("Why does it say connected but waiting?") {
+                Text("Connected means the iPhone has a Bluetooth link. A measurement appears only after Nivvi receives a valid Heart Rate Service (180D/2A37), Pulse Oximeter Service (1822), or explicitly mapped packet. A base station or proprietary monitor may need its documented API or a wearable contact signal.").font(.caption).padding(.top, 6)
+            }
+            DisclosureGroup("Which devices are compatible?") {
+                Text("Any device that exposes the standard Bluetooth Heart Rate Service or Pulse Oximeter Service may work. Apple Watch, Oura and branded baby monitors need separate authorised integrations; their names alone do not expose readings to a third-party Bluetooth app.").font(.caption).padding(.top, 6)
+            }
+            DisclosureGroup("What does the repeated-reading warning mean?") {
+                Text("The same received heart-rate value for three minutes triggers a possible repeated-data warning. A gap over 45 seconds restarts the pending duration; missing data is handled separately. Rounded, averaged or cached readings may legitimately repeat: this heuristic is not proof of sensor failure or an SVT detector. Check the sensor and your child and follow the care plan. A changed value clears this warning but does not prove accuracy. Device-specific validation is required.").font(.caption).padding(.top, 6)
+            }
+            DisclosureGroup("How do alarms work?") {
+                Text("Low alarms fire strictly below your configured low limit; high alarms fire strictly above the high limit after the selected dwell time. Acknowledgement silences the siren, while a fresh in-range value self-clears the alert and writes a relief event. Configure limits only from your care plan.").font(.caption).padding(.top, 6)
+            }
+            DisclosureGroup("How much history is kept?") {
+                Text("Readings are sampled into history every 30 seconds while usable data arrives. Alarm checks still use each valid incoming reading. The app keeps 30 calendar days locally and can export CSV files; deletion removes saved readings, events and notes from this app’s storage.").font(.caption).padding(.top, 6)
+            }
+
+        }.padding(.top, 12) } }
+        panel { DisclosureGroup("Privacy") { VStack(alignment: .leading, spacing: 12) {
+            Text("Local monitoring needs no account. Optional family sharing uses verified email accounts and uploads the latest readings and status only after you enable it. Photos, birth dates, notes and historical readings stay on this phone. No analytics or AI service is used.").font(.caption)
+            Text("Family sharing has its own privacy notice and Stop sharing control. You can remove members and delete the online account. File exports, recipients and iOS backups can retain separate copies.").font(.caption).foregroundStyle(.white.opacity(0.7))
+
+        }.padding(.top, 12) } }
+        panel { DisclosureGroup("Terms") { VStack(alignment: .leading, spacing: 12) {
+            Text("Nivvi displays device readings and records events. It does not provide a diagnosis or emergency response. Bluetooth links, sensors, alarms and notifications can fail or be delayed. Follow your child’s care plan and seek urgent help for serious symptoms; do not wait for this app.").font(.caption)
+            Text("Before public release, the operator name, monitored support address, final privacy notice and jurisdiction-specific terms must be completed in the support documentation.").font(.caption).foregroundStyle(.white.opacity(0.7))
+
+        }.padding(.top, 12) } }
+        panel {
+            Button { showFamily = true } label: { Label("Family sharing", systemImage: "person.2.fill") }
+            Text("Invite family members to view shared readings securely.").font(.caption)
+        }.sheet(isPresented: $showFamily) { NavigationStack { FamilySharingView().toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showFamily = false } } } } }
+        panel { DisclosureGroup("Connection and support") { VStack(alignment: .leading, spacing: 12) {
             Text("Keeps the Bluetooth session active and attempts reconnection after signal loss. Tap Disconnect to end the session.").font(.caption)
             Text("Background readings require device notifications. Keep Nivvi open if the wearable only responds to reads. Force-quitting the app, Bluetooth being off, an empty battery or iOS restrictions can interrupt monitoring.").font(.caption).foregroundStyle(.white.opacity(0.7))
-        } }
-        panel { Label("Day/night mode", systemImage: "sun.and.horizon.fill"); Text("Automatic mode follows local time. This setting does not detect sleep.").font(.caption).foregroundStyle(.white.opacity(0.6)) }
-        panel { Label("Privacy", systemImage: "lock.fill"); Text("No account required. Readings and notes are saved on this iPhone. Exports are shared only when you choose.").font(.caption).foregroundStyle(.white.opacity(0.6)) }
+
+        }.padding(.top, 12) } }
+        panel { DisclosureGroup("About Nivvi") { VStack(alignment: .leading, spacing: 12) {
+            Text("Nivvi \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—") · Build \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")").font(.headline)
+            Text("Bluetooth: \(monitor.connection.label) · Profile: \(monitor.profile.rawValue) · Battery: \(monitor.battery)").font(.caption)
+            Text("Readings, events and notes are retained locally for 30 calendar days. The iPhone controls Bluetooth and notifications; Nivvi cannot activate cellular service or update proprietary device firmware.").font(.caption).foregroundStyle(.white.opacity(0.7))
+
+        }.padding(.top, 12) } }
+        }
+        Text("Nivvi " + (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")).font(.caption).foregroundStyle(.secondary)
     } }
 
     private var bottomBar: some View { HStack { nav("house.fill", "Home", 0); nav("chart.xyaxis.line", "History", 1); nav("wave.3.right", "Device", 2); nav("gearshape.fill", "Settings", 3) }.padding(8).background(.white.opacity(0.1)).clipShape(Capsule()).padding(.horizontal, 18).padding(.bottom, 10) }
     private func nav(_ icon: String, _ title: String, _ index: Int) -> some View { Button { withAnimation(.easeInOut(duration: 0.2)) { tab = index } } label: { VStack(spacing: 4) { Image(systemName: icon); Text(title).font(.caption2) }.foregroundStyle(tab == index ? lavender : .white.opacity(0.65)).frame(maxWidth: .infinity).padding(.vertical, 8).background(tab == index ? .white.opacity(0.12) : .clear).clipShape(Capsule()) } }
     private func panel<Content: View>(@ViewBuilder _ content: () -> Content) -> some View { content().padding(18).frame(maxWidth: .infinity, alignment: .leading).background(.white.opacity(0.09)).clipShape(RoundedRectangle(cornerRadius: 22)) }
-    private func readingCard(_ title: String, _ value: String, _ note: String, _ icon: String, _ tint: Color) -> some View { VStack(alignment: .leading, spacing: 10) { Image(systemName: icon).foregroundStyle(tint); Text(title).font(.subheadline); Text(value).font(.headline); Text(note).font(.caption2).foregroundStyle(.white.opacity(0.55)) }.padding(16).frame(maxWidth: .infinity, minHeight: 150, alignment: .leading).background(.white.opacity(0.09)).clipShape(RoundedRectangle(cornerRadius: 22)) }
+    private func readingCard(_ title: String, _ value: String, _ note: String, _ icon: String, _ tint: Color, receivedAt: Date?, animate: Bool = true) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ReadingUpdateIcon(symbol: icon, tint: tint, receivedAt: receivedAt, enabled: connected && value != "No reading" && animate)
+            Text(title).font(.subheadline)
+            Text(value).font(.headline)
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                Text(readingAge(receivedAt, now: context.date)).font(.caption.bold())
+                    .foregroundStyle(tint)
+            }
+            Text(note).font(.caption2).foregroundStyle(.white.opacity(0.65))
+        }.padding(16).frame(maxWidth: .infinity, minHeight: 170, alignment: .leading)
+            .background(.white.opacity(0.09)).clipShape(RoundedRectangle(cornerRadius: 22))
+    }
+    private func readingAge(_ date: Date?, now: Date) -> String {
+        guard let date else { return "No reading received" }
+        let seconds = Int(now.timeIntervalSince(date))
+        guard connected, seconds >= 0, seconds <= 30 else { return "No fresh reading" }
+        return "Updated \(seconds)s ago"
+    }
+    private var readinessPanel: some View {
+        panel { DisclosureGroup("Monitoring readiness") {
+            VStack(alignment: .leading, spacing: 10) {
+                readinessRow("Bluetooth", monitor.bluetoothReady ? "On" : "Unavailable", monitor.bluetoothReady)
+                readinessRow("Device", connected ? "Connected" : "Not connected", connected)
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    let fresh = connected && heartRateDisplay != "No reading" && !monitor.staleHeartRateDetected &&
+                        monitor.lastHeartRateUpdate.map { (0...30).contains(context.date.timeIntervalSince($0)) } == true
+                    readinessRow("Heart rate", fresh ? "Fresh data arriving" : "Check readings", fresh)
+                }
+                readinessRow("Notifications", monitor.notificationSoundAllowed ? "Sound permitted" : "Check permission", monitor.notificationSoundAllowed)
+                let alarmsEnabled = (monitor.alarmSettings.highEnabled || monitor.alarmSettings.lowEnabled) &&
+                    (monitor.profile.hasStandardHeartRate || monitor.profile.hasPulseOximeter || (monitor.profile == .custom && monitor.experimentalCustomAlarms))
+                readinessRow("Rate alerts", alarmsEnabled ? "Configured" : "Off or unavailable", alarmsEnabled)
+                Text("Silent mode and Focus can silence alerts. Critical Alerts are not available in this build. Test your actual phone settings before use.").font(.caption)
+                Button("Guided alarm check") { showReadinessTest = true }.buttonStyle(.bordered)
+                Text("History saves every 30 seconds while data arrives. Alarms check incoming usable readings.").font(.caption)
+            }.padding(.top, 8)
+        } }
+        .sheet(isPresented: $showReadinessTest) { AlarmReadinessView(monitor: monitor) }
+    }
+    private func readinessRow(_ title: String, _ detail: String, _ ready: Bool) -> some View {
+        HStack { Image(systemName: ready ? "checkmark.circle.fill" : "exclamationmark.circle").foregroundStyle(ready ? teal : coral)
+            Text(title); Spacer(); Text(detail).font(.caption).multilineTextAlignment(.trailing) }
+    }
     private func smallCard(_ title: String, _ value: String, _ icon: String, _ tint: Color) -> some View { HStack { Image(systemName: icon).foregroundStyle(tint); VStack(alignment: .leading) { Text(title).font(.subheadline); Text(value).font(.caption).foregroundStyle(.white.opacity(0.6)) } }.padding(16).frame(maxWidth: .infinity, alignment: .leading).background(.white.opacity(0.09)).clipShape(RoundedRectangle(cornerRadius: 18)) }
     private func metric(_ title: String, _ value: String) -> some View { VStack(alignment: .leading) { Text(title).font(.caption).foregroundStyle(.white.opacity(0.55)); Text(value).font(.headline) }.padding(16).frame(maxWidth: .infinity, alignment: .leading).background(.white.opacity(0.09)).clipShape(RoundedRectangle(cornerRadius: 18)) }
 }
@@ -1242,6 +1609,13 @@ extension Notification.Name {
 
 final class NivviAppDelegate: NSObject, UIApplicationDelegate {
     let monitor = Monitor()
+    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        let token = deviceToken.map { String(format: "%02x", $0) }.joined()
+        Task { @MainActor in await FamilyRelay.shared.registerDevice(token) }
+    }
+    func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        Task { @MainActor in FamilyRelay.shared.message = "Remote notifications unavailable: " + error.localizedDescription }
+    }
     func application(_ application: UIApplication, performActionFor shortcutItem: UIApplicationShortcutItem, completionHandler: @escaping (Bool) -> Void) {
         if shortcutItem.type == "com.michael1991.nivvi.live-heart-rate" {
             NotificationCenter.default.post(name: .nivviShowLiveHeartRate, object: nil)
@@ -1253,4 +1627,80 @@ final class NivviAppDelegate: NSObject, UIApplicationDelegate {
 struct NivviApp: App {
     @UIApplicationDelegateAdaptor(NivviAppDelegate.self) private var delegate
     var body: some Scene { WindowGroup { ContentView(monitor: delegate.monitor) } }
+}
+
+
+/// One visual response per fresh packet, not a simulated pulse or respiration trace.
+struct ReadingUpdateIcon: View {
+    let symbol: String
+    let tint: Color
+    let receivedAt: Date?
+    let enabled: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 20, paused: !enabled || reduceMotion)) { context in
+            let age = receivedAt.map { context.date.timeIntervalSince($0) } ?? 100
+            let pulse = enabled && !reduceMotion && age >= 0 && age < 0.8 ? sin(age / 0.8 * .pi) : 0
+            Image(systemName: symbol).font(.system(size: 44, weight: .medium)).foregroundStyle(tint)
+                .scaleEffect(1 + 0.12 * pulse)
+                .accessibilityHidden(true)
+        }.frame(height: 60)
+    }
+}
+
+struct AlarmReadinessView: View {
+    @ObservedObject var monitor: Monitor
+    @Environment(\.dismiss) private var dismiss
+    @State private var step = 0
+    @State private var testStarted: Date?
+    @State private var saved = false
+    private let titles = ["Foreground sound", "Locked phone", "Silent mode / Focus", "Connection recovery"]
+    private let instructions = [
+        "Keep Nivvi open. Start the five-second test and check that you can hear it at your current volume.",
+        "Start the notification test, then lock your iPhone. Wait at least ten seconds and check whether you hear it.",
+        "Enable the Silent mode or Focus you normally use. Start the test, lock your phone and check whether you hear it. This app does not have Critical Alerts approval.",
+        "Only test when monitoring is not being relied upon. Move the wearable out of range, then return it. Check that Nivvi reports the interruption, reconnects and receives fresh readings."
+    ]
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    Text("Check your setup").font(.title.bold())
+                    Text("These are manual checks, not a guarantee of future alarms. Use a separate means of supervision during testing.").font(.subheadline)
+                    Text("Step \(step + 1) of 4 · \(titles[step])").font(.headline)
+                    Text(instructions[step])
+                    if step < 3 {
+                        Button(step == 0 ? "Start sound test" : "Schedule test in 10 seconds") {
+                            testStarted = Date(); saved = false
+                            if step == 0 { monitor.testSiren() } else { monitor.testNotification() }
+                        }.buttonStyle(.borderedProminent).disabled(monitor.criticalAlertActive)
+                        Text(monitor.soundStatus).font(.caption)
+                    } else {
+                        Button("Begin manual connection check") { testStarted = Date(); saved = false }
+                            .buttonStyle(.bordered).disabled(monitor.criticalAlertActive)
+                        Text(monitor.status).font(.caption)
+                    }
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        let waited = testStarted.map { context.date.timeIntervalSince($0) >= (step == 0 ? 5 : 10) } ?? false
+                        HStack {
+                            Button("Worked") { record(true) }
+                            Button("Did not work") { record(false) }
+                        }.buttonStyle(.bordered).disabled(!waited || saved || monitor.criticalAlertActive)
+                    }
+                    if saved { Label("Your result was saved to History → Events.", systemImage: "checkmark.circle") }
+                    Button(step == 3 ? "Finish" : "Next check") {
+                        if step == 3 { dismiss() } else { step += 1; testStarted = nil; saved = false }
+                    }.buttonStyle(.bordered)
+                    Text("You can skip any check. Skipped checks are not recorded as passed. These tests do not validate sensor accuracy or the heart-rate threshold alarm.").font(.caption)
+                }.padding()
+            }
+            .navigationTitle("Alarm check")
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+        }
+    }
+    private func record(_ passed: Bool) {
+        monitor.recordEvent(kind: "test", title: "Alarm check: \(titles[step])",
+                            detail: "Parent-reported result: \(passed ? "worked" : "did not work"). Manual setup check; not automatic validation or a guarantee of future delivery.")
+        saved = true
+    }
 }
