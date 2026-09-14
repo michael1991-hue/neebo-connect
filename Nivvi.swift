@@ -164,6 +164,10 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     @Published var recording: URL?
     @Published var files: [URL] = []
     @Published var lastSample: Date?
+    @Published private(set) var lastHeartRateUpdate: Date?
+    @Published private(set) var lastOxygenUpdate: Date?
+    @Published private(set) var bluetoothReady = false
+    @Published private(set) var notificationSoundAllowed = false
     @Published var profile: DeviceProfile = .unknown
     // Standard-format decoding is not clinical validation of the sensor.
     @Published var verifiedHeartRate: Int?
@@ -288,6 +292,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         if resetFreshness { spotCheckText = nil; spotCheckReceived = nil; pulseOximeterStatus = "Waiting for pulse-oximeter data." }
         customHeartRateCandidate = nil; customOxygenCandidate = nil
         measurementTime = nil; lastCustomMeasurement = nil
+        if resetFreshness { lastHeartRateUpdate = nil; lastOxygenUpdate = nil }
         if resetFreshness { heartRateFreshness.reset(); staleHeartRate.reset(); staleHeartRateDetected = false; continuityID = UUID(); plxContinuityID = UUID() }
         alarmEngine.interrupt()
     }
@@ -303,6 +308,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         measurementStatus = reason
     }
     private func receiveHeartRate(at time: Date) {
+        lastHeartRateUpdate = time
         if let interval = heartRateFreshness.receive(at: time) {
             sampling.reset()
             recordEvent(kind: "measurement", title: "Heart-rate readings resumed", detail: "Usable heart-rate data received again. \(Int(interval)) seconds between usable readings; this does not identify the cause of the gap.")
@@ -351,6 +357,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     func refreshNotificationStatus() {
         UNUserNotificationCenter.current().getNotificationSettings { [weak self] settings in
             DispatchQueue.main.async {
+                self?.notificationSoundAllowed = settings.authorizationStatus == .authorized && settings.soundSetting == .enabled
                 self?.notificationStatus = settings.authorizationStatus == .authorized && settings.soundSetting == .enabled ? "Notifications and sounds allowed. Silent mode, Focus and volume settings still apply." : "Notification sound is not fully enabled. Check iPhone Settings → Notifications → Nivvi."
             }
         }
@@ -535,6 +542,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         }
     }
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        bluetoothReady = central.state == .poweredOn
         switch central.state {
         case .poweredOn:
             if session.enabled { resumeSession() }
@@ -694,6 +702,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             let candidate = BluetoothPolicy.customFrame(data)
             customHeartRateCandidate = candidate.heartRate
             customOxygenCandidate = candidate.oxygen
+            if candidate.oxygen != nil { lastOxygenUpdate = Date() }
             if candidate.heartRate != nil { receiveHeartRate(at: Date()) }
             else { pauseHeartRate("No usable heart rate in the mapped Bluetooth packet. Oxygen or other values do not confirm a fresh heart rate.") }
             measurementStatus = candidate.heartRate == nil && candidate.oxygen == nil ? "Bluetooth measurement received (\(data.count) bytes), but the values or frame format are not recognised." : "Mapped Bluetooth values received. Verify readings with your care plan."
@@ -732,6 +741,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         }
         pulseOximeterOxygen = sample.oxygen
         oxygenTime = sample.oxygen == nil ? nil : Date()
+        if sample.oxygen != nil { lastOxygenUpdate = oxygenTime }
         pulseOximeterStatus = "Standard continuous pulse-oximeter packet received."
         if profile.hasStandardHeartRate {
             // HR Service remains the sole pulse/alert source on a dual-service device.
@@ -1059,6 +1069,7 @@ struct ContentView: View {
     @AppStorage("nivvi.profile.gender") private var childGender = "Prefer not to say"
     @AppStorage("nivvi.favorite.device.ids") private var favoriteDeviceIDs = ""
     @State private var showProfile = false
+    @State private var showReadinessTest = false
     @State private var captureRequest: CaptureRequest?
     @State private var tab = 0
     @State private var historyExport: URL?
@@ -1235,11 +1246,12 @@ struct ContentView: View {
 
     private var home: some View {
         VStack(alignment: .leading, spacing: 18) {
+            readinessPanel
             Text("CURRENT STATUS").font(.caption.weight(.bold)).tracking(1.2).foregroundStyle(.white.opacity(0.55))
             HStack(alignment: .firstTextBaseline) { Text(monitor.connection == .receiving ? "Fresh heart-rate data" : (connected ? "Waiting for heart rate" : "Ready to connect")).font(.title2.bold()); Spacer(); Image(systemName: mode.symbol).foregroundStyle(mode == .night ? lavender : .yellow) }
             HStack(spacing: 14) {
-                readingCard("Heart rate", heartRateDisplay, heartRateDisplay == "No reading" ? "Waiting for usable heart rate" : liveMeasurementNote, "heart.fill", coral)
-                if monitor.profile == .custom || monitor.profile.hasPulseOximeter { readingCard("Oxygen", oxygenDisplay, oxygenDisplay == "No reading" ? "Waiting for usable oxygen data" : liveMeasurementNote, "lungs.fill", teal) }
+                readingCard("Heart rate", heartRateDisplay, heartRateDisplay == "No reading" ? "Waiting for usable heart rate" : liveMeasurementNote, "heart.fill", coral, receivedAt: monitor.lastHeartRateUpdate, animate: !monitor.staleHeartRateDetected)
+                if monitor.profile == .custom || monitor.profile.hasPulseOximeter { readingCard("Oxygen", oxygenDisplay, oxygenDisplay == "No reading" ? "Waiting for usable oxygen data" : liveMeasurementNote, "lungs.fill", teal, receivedAt: monitor.lastOxygenUpdate) }
             }
             if let spot = monitor.spotCheckText, let time = monitor.spotCheckReceived {
                 panel { VStack(alignment: .leading, spacing: 8) {
@@ -1515,7 +1527,50 @@ struct ContentView: View {
     private var bottomBar: some View { HStack { nav("house.fill", "Home", 0); nav("chart.xyaxis.line", "History", 1); nav("wave.3.right", "Device", 2); nav("gearshape.fill", "Settings", 3) }.padding(8).background(.white.opacity(0.1)).clipShape(Capsule()).padding(.horizontal, 18).padding(.bottom, 10) }
     private func nav(_ icon: String, _ title: String, _ index: Int) -> some View { Button { withAnimation(.easeInOut(duration: 0.2)) { tab = index } } label: { VStack(spacing: 4) { Image(systemName: icon); Text(title).font(.caption2) }.foregroundStyle(tab == index ? lavender : .white.opacity(0.65)).frame(maxWidth: .infinity).padding(.vertical, 8).background(tab == index ? .white.opacity(0.12) : .clear).clipShape(Capsule()) } }
     private func panel<Content: View>(@ViewBuilder _ content: () -> Content) -> some View { content().padding(18).frame(maxWidth: .infinity, alignment: .leading).background(.white.opacity(0.09)).clipShape(RoundedRectangle(cornerRadius: 22)) }
-    private func readingCard(_ title: String, _ value: String, _ note: String, _ icon: String, _ tint: Color) -> some View { VStack(alignment: .leading, spacing: 10) { Image(systemName: icon).foregroundStyle(tint); Text(title).font(.subheadline); Text(value).font(.headline); Text(note).font(.caption2).foregroundStyle(.white.opacity(0.55)) }.padding(16).frame(maxWidth: .infinity, minHeight: 150, alignment: .leading).background(.white.opacity(0.09)).clipShape(RoundedRectangle(cornerRadius: 22)) }
+    private func readingCard(_ title: String, _ value: String, _ note: String, _ icon: String, _ tint: Color, receivedAt: Date?, animate: Bool = true) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ReadingUpdateIcon(symbol: icon, tint: tint, receivedAt: receivedAt, enabled: connected && value != "No reading" && animate)
+            Text(title).font(.subheadline)
+            Text(value).font(.headline)
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                Text(readingAge(receivedAt, now: context.date)).font(.caption.bold())
+                    .foregroundStyle(tint)
+            }
+            Text(note).font(.caption2).foregroundStyle(.white.opacity(0.65))
+        }.padding(16).frame(maxWidth: .infinity, minHeight: 170, alignment: .leading)
+            .background(.white.opacity(0.09)).clipShape(RoundedRectangle(cornerRadius: 22))
+    }
+    private func readingAge(_ date: Date?, now: Date) -> String {
+        guard let date else { return "No reading received" }
+        let seconds = Int(now.timeIntervalSince(date))
+        guard connected, seconds >= 0, seconds <= 30 else { return "No fresh reading" }
+        return "Updated \(seconds)s ago"
+    }
+    private var readinessPanel: some View {
+        panel { DisclosureGroup("Monitoring readiness") {
+            VStack(alignment: .leading, spacing: 10) {
+                readinessRow("Bluetooth", monitor.bluetoothReady ? "On" : "Unavailable", monitor.bluetoothReady)
+                readinessRow("Device", connected ? "Connected" : "Not connected", connected)
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    let fresh = connected && heartRateDisplay != "No reading" && !monitor.staleHeartRateDetected &&
+                        monitor.lastHeartRateUpdate.map { (0...30).contains(context.date.timeIntervalSince($0)) } == true
+                    readinessRow("Heart rate", fresh ? "Fresh data arriving" : "Check readings", fresh)
+                }
+                readinessRow("Notifications", monitor.notificationSoundAllowed ? "Sound permitted" : "Check permission", monitor.notificationSoundAllowed)
+                let alarmsEnabled = (monitor.alarmSettings.highEnabled || monitor.alarmSettings.lowEnabled) &&
+                    (monitor.profile.hasStandardHeartRate || monitor.profile.hasPulseOximeter || (monitor.profile == .custom && monitor.experimentalCustomAlarms))
+                readinessRow("Rate alerts", alarmsEnabled ? "Configured" : "Off or unavailable", alarmsEnabled)
+                Text("Permission does not confirm audibility. Volume, Silent mode, Focus and iOS restrictions still apply.").font(.caption)
+                Button("Guided alarm check") { showReadinessTest = true }.buttonStyle(.bordered)
+                Text("History saves every 30 seconds while data arrives. Alarms check incoming usable readings.").font(.caption)
+            }.padding(.top, 8)
+        } }
+        .sheet(isPresented: $showReadinessTest) { AlarmReadinessView(monitor: monitor) }
+    }
+    private func readinessRow(_ title: String, _ detail: String, _ ready: Bool) -> some View {
+        HStack { Image(systemName: ready ? "checkmark.circle.fill" : "exclamationmark.circle").foregroundStyle(ready ? teal : coral)
+            Text(title); Spacer(); Text(detail).font(.caption).multilineTextAlignment(.trailing) }
+    }
     private func smallCard(_ title: String, _ value: String, _ icon: String, _ tint: Color) -> some View { HStack { Image(systemName: icon).foregroundStyle(tint); VStack(alignment: .leading) { Text(title).font(.subheadline); Text(value).font(.caption).foregroundStyle(.white.opacity(0.6)) } }.padding(16).frame(maxWidth: .infinity, alignment: .leading).background(.white.opacity(0.09)).clipShape(RoundedRectangle(cornerRadius: 18)) }
     private func metric(_ title: String, _ value: String) -> some View { VStack(alignment: .leading) { Text(title).font(.caption).foregroundStyle(.white.opacity(0.55)); Text(value).font(.headline) }.padding(16).frame(maxWidth: .infinity, alignment: .leading).background(.white.opacity(0.09)).clipShape(RoundedRectangle(cornerRadius: 18)) }
 }
@@ -1537,4 +1592,80 @@ final class NivviAppDelegate: NSObject, UIApplicationDelegate {
 struct NivviApp: App {
     @UIApplicationDelegateAdaptor(NivviAppDelegate.self) private var delegate
     var body: some Scene { WindowGroup { ContentView(monitor: delegate.monitor) } }
+}
+
+
+/// One visual response per fresh packet, not a simulated pulse or respiration trace.
+struct ReadingUpdateIcon: View {
+    let symbol: String
+    let tint: Color
+    let receivedAt: Date?
+    let enabled: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 20, paused: !enabled || reduceMotion)) { context in
+            let age = receivedAt.map { context.date.timeIntervalSince($0) } ?? 100
+            let pulse = enabled && !reduceMotion && age >= 0 && age < 0.8 ? sin(age / 0.8 * .pi) : 0
+            Image(systemName: symbol).foregroundStyle(tint)
+                .scaleEffect(1 + 0.12 * pulse)
+                .accessibilityHidden(true)
+        }.frame(height: 28)
+    }
+}
+
+struct AlarmReadinessView: View {
+    @ObservedObject var monitor: Monitor
+    @Environment(\.dismiss) private var dismiss
+    @State private var step = 0
+    @State private var testStarted: Date?
+    @State private var saved = false
+    private let titles = ["Foreground sound", "Locked phone", "Silent mode / Focus", "Connection recovery"]
+    private let instructions = [
+        "Keep Nivvi open. Start the five-second test and check that you can hear it at your current volume.",
+        "Start the notification test, then lock your iPhone. Wait at least ten seconds and check whether you hear it.",
+        "Enable the Silent mode or Focus you normally use. Start the test, lock your phone and check whether you hear it. This app does not have Critical Alerts approval.",
+        "Only test when monitoring is not being relied upon. Move the wearable out of range, then return it. Check that Nivvi reports the interruption, reconnects and receives fresh readings."
+    ]
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    Text("Check your setup").font(.title.bold())
+                    Text("These are manual checks, not a guarantee of future alarms. Use a separate means of supervision during testing.").font(.subheadline)
+                    Text("Step \(step + 1) of 4 · \(titles[step])").font(.headline)
+                    Text(instructions[step])
+                    if step < 3 {
+                        Button(step == 0 ? "Start sound test" : "Schedule test in 10 seconds") {
+                            testStarted = Date(); saved = false
+                            if step == 0 { monitor.testSiren() } else { monitor.testNotification() }
+                        }.buttonStyle(.borderedProminent).disabled(monitor.criticalAlertActive)
+                        Text(monitor.soundStatus).font(.caption)
+                    } else {
+                        Button("Begin manual connection check") { testStarted = Date(); saved = false }
+                            .buttonStyle(.bordered).disabled(monitor.criticalAlertActive)
+                        Text(monitor.status).font(.caption)
+                    }
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        let waited = testStarted.map { context.date.timeIntervalSince($0) >= (step == 0 ? 5 : 10) } ?? false
+                        HStack {
+                            Button("Worked") { record(true) }
+                            Button("Did not work") { record(false) }
+                        }.buttonStyle(.bordered).disabled(!waited || saved || monitor.criticalAlertActive)
+                    }
+                    if saved { Label("Your result was saved to History → Events.", systemImage: "checkmark.circle") }
+                    Button(step == 3 ? "Finish" : "Next check") {
+                        if step == 3 { dismiss() } else { step += 1; testStarted = nil; saved = false }
+                    }.buttonStyle(.bordered)
+                    Text("You can skip any check. Skipped checks are not recorded as passed. These tests do not validate sensor accuracy or the heart-rate threshold alarm.").font(.caption)
+                }.padding()
+            }
+            .navigationTitle("Alarm check")
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+        }
+    }
+    private func record(_ passed: Bool) {
+        monitor.recordEvent(kind: "test", title: "Alarm check: \(titles[step])",
+                            detail: "Parent-reported result: \(passed ? "worked" : "did not work"). Manual setup check; not automatic validation or a guarantee of future delivery.")
+        saved = true
+    }
 }
