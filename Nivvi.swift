@@ -1468,9 +1468,10 @@ struct ContentView: View {
         return (hour >= 20 || hour < 8) ? .night : .day
     }
     private var mode: NivviMode { manualMode ?? automaticMode }
-    private var ink: Color { mode == .night ? .white : Color(red: 0.07, green: 0.18, blue: 0.32) }
-    private var muted: Color { mode == .night ? Color.white.opacity(0.62) : Color(red: 0.28, green: 0.40, blue: 0.50) }
-    private var cardFill: Color { mode == .night ? Color.white.opacity(0.10) : Color.white.opacity(0.84) }
+    private var ink: Color { mode == .night ? .white : Color(red: 0.20, green: 0.28, blue: 0.34) }
+    private var muted: Color { mode == .night ? Color.white.opacity(0.72) : Color(red: 0.36, green: 0.44, blue: 0.48) }
+    private var cardFill: Color { mode == .night ? Color.white.opacity(0.12) : Color(red: 0.97, green: 0.96, blue: 0.93).opacity(0.92) }
+    private var accentMint: Color { mode == .night ? teal : Color(red: 0.08, green: 0.46, blue: 0.44) }
     private var connected: Bool { monitor.connection.isConnected }
     private var favouriteIDs: Set<String> { Set(favoriteDeviceIDs.split(separator: ",").map(String.init)) }
     private func isFavourite(_ peripheral: CBPeripheral) -> Bool { favouriteIDs.contains(peripheral.identifier.uuidString) }
@@ -1710,7 +1711,7 @@ struct ContentView: View {
                     .background(cardFill).clipShape(Capsule())
             }
             if !ageText.isEmpty { Text(childGender == "Prefer not to say" ? ageText : "\(ageText) · \(childGender)").font(.caption).foregroundStyle(muted) }
-        }.padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 18)
+        }.padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 8)
     }
 
     private var alarmBanner: some View {
@@ -1756,8 +1757,7 @@ struct ContentView: View {
                 } }
             }
             readinessPanel
-            supportiveCard
-            if !monitor.status.isEmpty { Text(monitor.status).font(.caption).foregroundStyle(.white.opacity(0.6)).fixedSize(horizontal: false, vertical: true) }
+            if !monitor.status.isEmpty { Text(monitor.status).font(.caption).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true) }
         }
     }
 
@@ -1771,78 +1771,91 @@ struct ContentView: View {
         }
     }
     private var fiveMinuteChart: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let points = HistoryChartPolicy.points(fiveMinuteReadings, metric: .heartRate)
+        let values = points.map(\.value)
+        let start = max(Date().addingTimeInterval(-300), (fiveMinuteReadings.map(\.time).min() ?? Date()).addingTimeInterval(-15))
+        let low = max(40, (values.min() ?? 80) - 8)
+        let high = (values.max() ?? 120) + 8
+        return VStack(alignment: .leading, spacing: 4) {
             Text("Last five minutes").font(.caption.weight(.bold)).foregroundStyle(muted)
-            if fiveMinuteReadings.count < 2 {
-                Text("Not enough saved readings yet. Gaps stay blank — missing values are never drawn as zero.")
+            if points.count < 2 {
+                Text("Waiting for a few saved readings. Gaps stay blank.")
                     .font(.caption).foregroundStyle(muted)
             } else {
                 Chart {
-                    ForEach(HistoryChartPolicy.points(fiveMinuteReadings, metric: .heartRate)) { point in
+                    ForEach(points) { point in
                         LineMark(x: .value("Time", point.entry.time), y: .value("bpm", point.value), series: .value("Continuous segment", point.series))
                             .foregroundStyle(coral)
                         PointMark(x: .value("Time", point.entry.time), y: .value("bpm", point.value))
-                            .symbolSize(6).foregroundStyle(coral)
+                            .symbolSize(8).foregroundStyle(coral)
                     }
                 }
-                .chartXScale(domain: Date().addingTimeInterval(-300)...Date())
-                .frame(height: 120)
+                .chartXScale(domain: start...Date())
+                .chartYScale(domain: low...high)
+                .chartXAxis {
+                    AxisMarks(values: .automatic(desiredCount: 3)) { _ in
+                        AxisGridLine().foregroundStyle(muted.opacity(0.25))
+                        AxisValueLabel().foregroundStyle(muted)
+                    }
+                }
+                .chartYAxis {
+                    AxisMarks(values: .automatic(desiredCount: 3)) { _ in
+                        AxisGridLine().foregroundStyle(muted.opacity(0.25))
+                        AxisValueLabel().foregroundStyle(muted)
+                    }
+                }
+                .frame(height: 78)
                 .accessibilityLabel("Heart-rate chart for the last five minutes")
             }
         }
     }
     private var liveHero: some View {
         panel {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(spacing: 8) {
-                    Circle().fill(monitor.connection == .receiving ? teal : (connected ? Color.orange : .gray)).frame(width: 10, height: 10)
-                    Text(monitor.connection == .receiving ? "Live" : (wifi.remoteFresh ? "Wi‑Fi" : monitor.connection.label))
-                        .font(.subheadline.weight(.semibold))
-                    Spacer()
-                    if monitor.connection.isConnected {
-                        Text(BluetoothSignal.label(monitor.signalRSSI))
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(BluetoothSignal.isWeak(monitor.signalRSSI) ? coral : .white.opacity(0.7))
-                    }
-                }
+            VStack(alignment: .leading, spacing: 8) {
                 Text("Heart rate").font(.caption.weight(.bold)).tracking(1.1).foregroundStyle(muted)
-                HStack(alignment: .lastTextBaseline, spacing: 8) {
+                HStack(alignment: .center, spacing: 12) {
+                    PulsingHeart(
+                        beatsPerMinute: monitor.staleHeartRateDetected ? nil : (monitor.verifiedHeartRate.map(Double.init) ?? monitor.pulseOximeterRate ?? monitor.customHeartRateCandidate.map(Double.init)),
+                        tint: monitor.staleHeartRateDetected ? coral : Color(red: 0.93, green: 0.38, blue: 0.42)
+                    )
                     Text(heroHeartRate)
-                        .font(.system(size: 72, weight: .bold, design: .rounded))
+                        .font(.system(size: 58, weight: .bold, design: .rounded))
                         .monospacedDigit()
                         .foregroundStyle(monitor.staleHeartRateDetected ? coral : ink)
                         .minimumScaleFactor(0.5)
                         .lineLimit(1)
                     if heartRateDisplay != "No reading" {
-                        Text("bpm").font(.title2.weight(.semibold)).foregroundStyle(muted).padding(.bottom, 10)
+                        Text("bpm").font(.title3.weight(.semibold)).foregroundStyle(muted).padding(.top, 14)
                     }
+                    Spacer(minLength: 0)
                 }
+                .accessibilityElement(children: .combine)
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     Text(readingAge(monitor.lastHeartRateUpdate, now: context.date))
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(monitor.staleHeartRateDetected ? coral : teal)
+                        .foregroundStyle(monitor.staleHeartRateDetected ? coral : accentMint)
                 }
                 if wifi.remoteFresh {
-                    Text("From the nursery iPhone on this Wi‑Fi").font(.caption).foregroundStyle(teal)
+                    Text("From the nursery iPhone on this Wi‑Fi").font(.caption).foregroundStyle(accentMint)
                 }
                 Text(liveMeasurementNote).font(.caption).foregroundStyle(muted)
                 fiveMinuteChart
                 if let note = latestNote {
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: 2) {
                         Text("Latest note").font(.caption.weight(.bold)).foregroundStyle(muted)
                         Text(note.detail).font(.subheadline).foregroundStyle(ink)
                         Text(note.time.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(muted)
                     }
                 }
                 if monitor.profile == .custom || monitor.profile.hasPulseOximeter {
-                    Divider().overlay(.white.opacity(0.12))
+                    Divider().overlay(muted.opacity(0.25))
                     HStack {
-                        Label("Oxygen", systemImage: "lungs.fill").foregroundStyle(teal)
+                        Label("Oxygen", systemImage: "lungs.fill").foregroundStyle(accentMint)
                         Spacer()
-                        Text(oxygenDisplay).font(.title3.bold()).foregroundStyle(teal)
+                        Text(oxygenDisplay).font(.title3.bold()).foregroundStyle(accentMint)
                     }
                     TimelineView(.periodic(from: .now, by: 1)) { context in
-                        Text(readingAge(monitor.lastOxygenUpdate, now: context.date)).font(.caption).foregroundStyle(.white.opacity(0.6))
+                        Text(readingAge(monitor.lastOxygenUpdate, now: context.date)).font(.caption).foregroundStyle(muted)
                     }
                 }
             }
@@ -2227,7 +2240,7 @@ struct ContentView: View {
 
     private var bottomBar: some View { HStack { nav("heart.fill", "Live", 0); nav("chart.xyaxis.line", "History", 1); nav("bell.fill", "Alerts", 2); nav("wave.3.right", "Device", 3) }.padding(8).background(cardFill).clipShape(Capsule()).padding(.horizontal, 18).padding(.bottom, 10) }
     private func nav(_ icon: String, _ title: String, _ index: Int) -> some View { Button { withAnimation(.easeInOut(duration: 0.2)) { tab = index } } label: { VStack(spacing: 4) { Image(systemName: icon); Text(title).font(.caption2) }.foregroundStyle(tab == index ? Color(red: 0.35, green: 0.48, blue: 0.78) : muted).frame(maxWidth: .infinity).padding(.vertical, 8).background(tab == index ? cardFill : .clear).clipShape(Capsule()) } }
-    private func panel<Content: View>(@ViewBuilder _ content: () -> Content) -> some View { content().padding(18).frame(maxWidth: .infinity, alignment: .leading).background(cardFill).clipShape(RoundedRectangle(cornerRadius: 22)) }
+    private func panel<Content: View>(@ViewBuilder _ content: () -> Content) -> some View { content().padding(14).frame(maxWidth: .infinity, alignment: .leading).background(cardFill).clipShape(RoundedRectangle(cornerRadius: 22)) }
     private func readingCard(_ title: String, _ value: String, _ note: String, _ icon: String, _ tint: Color, receivedAt: Date?, animate: Bool = true) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             ReadingUpdateIcon(symbol: icon, tint: tint, receivedAt: receivedAt, enabled: connected && value != "No reading" && animate)
@@ -2308,6 +2321,32 @@ struct NivviApp: App {
     var body: some Scene { WindowGroup { ContentView(monitor: delegate.monitor) } }
 }
 
+
+/// Decorative beat timed to the displayed heart rate. Not an ECG or packet flash.
+struct PulsingHeart: View {
+    let beatsPerMinute: Double?
+    let tint: Color
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var beat = false
+    var body: some View {
+        Image(systemName: "heart.fill")
+            .font(.system(size: 34, weight: .semibold))
+            .foregroundStyle(tint)
+            .scaleEffect(beat && !reduceMotion ? 1.16 : 1)
+            .opacity(beat && !reduceMotion ? 1 : 0.85)
+            .accessibilityHidden(true)
+            .onAppear { run() }
+            .onChange(of: beatsPerMinute ?? 0) { _ in run() }
+            .onChange(of: scenePhase) { _ in run() }
+    }
+    private func run() {
+        beat = false
+        guard scenePhase == .active, !reduceMotion, let bpm = beatsPerMinute, bpm >= 40, bpm <= 220 else { return }
+        let period = 60 / bpm
+        withAnimation(.easeInOut(duration: period / 2).repeatForever(autoreverses: true)) { beat = true }
+    }
+}
 
 /// One visual response per fresh packet, not a simulated pulse or respiration trace.
 struct ReadingUpdateIcon: View {
