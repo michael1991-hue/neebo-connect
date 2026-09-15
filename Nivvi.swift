@@ -1356,6 +1356,7 @@ struct HistoryChartsView: View {
 
 struct ContentView: View {
     @ObservedObject var monitor: Monitor
+    @StateObject private var wifi = WiFiRelay.shared
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("nivvi.profile.name") private var childName = ""
     @AppStorage("nivvi.profile.birthDate") private var childBirthDate = 0.0
@@ -1414,10 +1415,12 @@ struct ContentView: View {
         kind == "critical" ? "Critical" : kind.capitalized
     }
     private var heartRateDisplay: String {
+        if wifi.remoteFresh, let remote = wifi.latest { return remote.heartRate }
         let value = monitor.verifiedHeartRate.map(Double.init) ?? monitor.pulseOximeterRate ?? monitor.customHeartRateCandidate.map(Double.init)
         return value.map { "\(MetricText.number($0)) bpm" } ?? "No reading"
     }
     private var oxygenDisplay: String {
+        if wifi.remoteFresh, let remote = wifi.latest { return remote.oxygen }
         let value = monitor.pulseOximeterOxygen ?? monitor.customOxygenCandidate.map(Double.init)
         return value.map { "\(MetricText.number($0))%" } ?? "No reading"
     }
@@ -1442,7 +1445,17 @@ struct ContentView: View {
             connection: monitor.connection.label,
             signal: BluetoothSignal.label(monitor.signalRSSI),
             nurseryHint: live ? nurseryHint : "",
-            monitoring: live
+            monitoring: live || wifi.remoteFresh
+        )
+    }
+    private func publishWiFiShare() {
+        guard wifi.hosting else { return }
+        let localHR = monitor.verifiedHeartRate.map(Double.init) ?? monitor.pulseOximeterRate ?? monitor.customHeartRateCandidate.map(Double.init)
+        let localO2 = monitor.pulseOximeterOxygen ?? monitor.customOxygenCandidate.map(Double.init)
+        wifi.publish(
+            heartRate: localHR.map { "\(MetricText.number($0)) bpm" } ?? "No reading",
+            oxygen: localO2.map { "\(MetricText.number($0))%" } ?? "No reading",
+            connection: monitor.connection.label
         )
     }
     private var avatarTint: Color {
@@ -1497,7 +1510,6 @@ struct ContentView: View {
             let photoURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("child-profile.jpg")
             try? FileManager.default.removeItem(at: photoURL)
             if childName.isEmpty { showProfile = true }
-            else if !nurseryAcknowledged { showNursery = true }
             syncLiveActivity()
         }
         .sheet(isPresented: $showProfile) {
@@ -1514,12 +1526,18 @@ struct ContentView: View {
         .sheet(isPresented: $showNursery) {
             NurserySetupView { nurseryAcknowledged = true }
         }
-        .onChange(of: monitor.connection) { _ in syncLiveActivity() }
-        .onChange(of: monitor.verifiedHeartRate) { _ in syncLiveActivity() }
-        .onChange(of: monitor.pulseOximeterOxygen) { _ in syncLiveActivity() }
-        .onChange(of: monitor.customHeartRateCandidate) { _ in syncLiveActivity() }
-        .onChange(of: monitor.customOxygenCandidate) { _ in syncLiveActivity() }
+        .onChange(of: monitor.connection) { _ in publishWiFiShare(); syncLiveActivity() }
+        .onChange(of: monitor.verifiedHeartRate) { _ in publishWiFiShare(); syncLiveActivity() }
+        .onChange(of: monitor.pulseOximeterOxygen) { _ in publishWiFiShare(); syncLiveActivity() }
+        .onChange(of: monitor.customHeartRateCandidate) { _ in publishWiFiShare(); syncLiveActivity() }
+        .onChange(of: monitor.customOxygenCandidate) { _ in publishWiFiShare(); syncLiveActivity() }
         .onChange(of: monitor.signalRSSI) { _ in syncLiveActivity() }
+        .onChange(of: wifi.latest) { _ in
+            publishWiFiShare()
+            syncLiveActivity()
+        }
+        .onChange(of: wifi.hosting) { _ in publishWiFiShare() }
+        .onChange(of: wifi.pin) { value in UserDefaults.standard.set(value, forKey: "nivvi.wifi.pin") }
         .sheet(isPresented: $showParentNote) {
             NavigationStack {
                 Form {
@@ -1631,7 +1649,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(spacing: 8) {
                     Circle().fill(monitor.connection == .receiving ? teal : (connected ? Color.orange : .gray)).frame(width: 10, height: 10)
-                    Text(monitor.connection == .receiving ? "Live" : monitor.connection.label)
+                    Text(monitor.connection == .receiving ? "Live" : (wifi.remoteFresh ? "Wi‑Fi" : monitor.connection.label))
                         .font(.subheadline.weight(.semibold))
                     Spacer()
                     if monitor.connection.isConnected {
@@ -1656,6 +1674,9 @@ struct ContentView: View {
                     Text(readingAge(monitor.lastHeartRateUpdate, now: context.date))
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(monitor.staleHeartRateDetected ? coral : teal)
+                }
+                if wifi.remoteFresh {
+                    Text("From the nursery iPhone on this Wi‑Fi").font(.caption).foregroundStyle(teal)
                 }
                 Text(liveMeasurementNote).font(.caption).foregroundStyle(.white.opacity(0.65))
                 if monitor.profile == .custom || monitor.profile.hasPulseOximeter {
@@ -1780,15 +1801,6 @@ struct ContentView: View {
     private var device: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Device").font(.largeTitle.bold())
-            panel {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("NURSERY").font(.caption.bold()).foregroundStyle(.white.opacity(0.55))
-                    Text(nurseryHint).font(.headline)
-                    Text("This iPhone is the monitor. Take it downstairs and the wearable disconnects.")
-                        .font(.caption).foregroundStyle(.white.opacity(0.7))
-                    Button(nurseryAcknowledged ? "Review nursery setup" : "Nursery setup") { showNursery = true }
-                }
-            }
             panel { HStack(spacing: 14) { Image(systemName: "wave.3.right.circle.fill").font(.largeTitle).foregroundStyle(teal); VStack(alignment: .leading) { Text("Bluetooth heart-rate device").font(.headline); Text(monitor.connection.label).foregroundStyle(connected ? teal : .white.opacity(0.6)); if monitor.connection.isConnected { Text("Signal: \(BluetoothSignal.label(monitor.signalRSSI))").font(.caption).foregroundStyle(.white.opacity(0.7)) } }; Spacer() } }
             panel { VStack(alignment: .leading, spacing: 6) { Text("PROFILE").font(.caption.bold()).foregroundStyle(.white.opacity(0.55)); Text(monitor.profile.rawValue).font(.headline); Text("Nivvi only displays measurements when the Bluetooth format is recognised.").font(.caption).foregroundStyle(.white.opacity(0.6)) } }
             HStack(spacing: 14) { metric("Battery", monitor.battery == "—" ? "—" : monitor.battery); metric("Mode", mode.rawValue) }
@@ -1851,6 +1863,27 @@ struct ContentView: View {
             HStack { Label("Child profile", systemImage: "person.crop.circle"); Spacer(); Button("Edit") { showProfile = true }.buttonStyle(.bordered) }
             Text("\(displayName)\(ageText.isEmpty ? "" : " · \(ageText)")").font(.headline)
             Text("Stored on this iPhone by default.").font(.caption).foregroundStyle(.white.opacity(0.6))
+        } }
+        panel { VStack(alignment: .leading, spacing: 12) {
+            Text("Second iPhone on this Wi‑Fi").font(.headline)
+            Text("Bluetooth cannot serve two phones. Leave the nursery iPhone connected to the wearable, then share over Wi‑Fi to the downstairs phone.").font(.caption).foregroundStyle(.white.opacity(0.7))
+            Toggle("Share from this iPhone", isOn: Binding(get: { wifi.hosting }, set: { wifi.setHosting($0) })).tint(teal)
+            if wifi.hosting {
+                Text("Share code \(wifi.pin)").font(.title2.bold().monospacedDigit())
+                Text("Enter the same code on the other iPhone.").font(.caption)
+            }
+            Toggle("Follow the nursery iPhone", isOn: Binding(get: { wifi.following }, set: { wifi.setFollowing($0) })).tint(lavender)
+            if wifi.following {
+                HStack {
+                    Text("Code")
+                    TextField("1234", text: $wifi.pin)
+                        .keyboardType(.numberPad)
+                        .textInputAutocapitalization(.never)
+                        .frame(width: 80)
+                }
+                Text("Both phones must be on the same Wi‑Fi. Allow local network access if iOS asks.").font(.caption)
+            }
+            Text(wifi.status).font(.caption).foregroundStyle(.white.opacity(0.7))
         } }
         panel { VStack(alignment: .leading, spacing: 12) {
             Text("Heart-rate alerts").font(.headline)
