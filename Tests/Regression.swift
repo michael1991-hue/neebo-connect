@@ -216,39 +216,40 @@ check(freshness.lastValid == nil && freshness.pausedSince == nil, "new session c
 
 var stale = StaleHeartRateDetector()
 let staleOrigin = Date(timeIntervalSince1970: 1_790_000_000)
+let staleHold = StaleHeartRateDetector.duration
 func repeated(_ seconds: Double, value: Double = 100) -> Bool {
     stale.observe(value, at: staleOrigin.addingTimeInterval(seconds))
 }
-for second in 0..<180 {
-    check(!repeated(Double(second)), "rapid packets cannot shorten three-minute duration")
+for second in 0..<Int(staleHold) {
+    check(!repeated(Double(second)), "rapid packets cannot shorten five-minute duration")
 }
-check(repeated(180) && stale.isStale, "unchanged reading triggers at exactly three minutes")
-check(!repeated(181) && stale.isStale, "ongoing sequence alerts only once")
-check(!repeated(182, value: 101) && !stale.isStale, "changed reading clears repeated-value warning")
+check(repeated(staleHold) && stale.isStale, "unchanged reading triggers at exactly five minutes")
+check(!repeated(staleHold + 1) && stale.isStale, "ongoing sequence alerts only once")
+check(!repeated(staleHold + 2, value: 101) && !stale.isStale, "changed reading clears repeated-value warning")
 stale.reset()
-for second in stride(from: 0, to: 180, by: 30) {
-    check(!repeated(Double(second)), "thirty-second updates wait three minutes")
+for second in stride(from: 0, to: staleHold, by: 30) {
+    check(!repeated(Double(second)), "thirty-second updates wait five minutes")
 }
-check(repeated(180), "seventh thirty-second update reaches three minutes")
+check(repeated(staleHold), "thirty-second updates reach five minutes")
 stale.reset()
 _ = repeated(0); _ = repeated(30); _ = repeated(60)
 check(!repeated(150), "long gap restarts duration")
-for second in stride(from: 180, to: 330, by: 30) { check(!repeated(Double(second)), "new duration after gap") }
-check(repeated(330), "three uninterrupted minutes after gap can alert")
+for second in stride(from: 180, to: 150 + staleHold, by: 30) { check(!repeated(Double(second)), "new duration after gap") }
+check(repeated(150 + staleHold), "five uninterrupted minutes after gap can alert")
 stale.reset()
 _ = repeated(0); _ = repeated(30)
 check(!repeated(20), "backward clock does not trigger")
-check(!repeated(180), "clock discontinuity restarts duration")
+check(!repeated(staleHold), "clock discontinuity restarts duration")
 stale.reset()
 _ = repeated(0)
-check(!repeated(180), "two distant samples cannot imply continuous repeating data")
+check(!repeated(staleHold), "two distant samples cannot imply continuous repeating data")
 stale.reset()
-for second in stride(from: 0, to: 180, by: 30) { _ = repeated(Double(second)) }
-_ = repeated(180)
+for second in stride(from: 0, to: staleHold, by: 30) { _ = repeated(Double(second)) }
+_ = repeated(staleHold)
 stale.interrupt()
 check(stale.isStale, "missing or invalid data does not resolve active warning")
-check(!repeated(240) && stale.isStale, "same value after interruption is not a recovery")
-check(!repeated(270, value: 101) && !stale.isStale, "changed value resolves after interruption")
+check(!repeated(staleHold + 60) && stale.isStale, "same value after interruption is not a recovery")
+check(!repeated(staleHold + 90, value: 101) && !stale.isStale, "changed value resolves after interruption")
 stale.reset()
 check(stale.lastValue == nil && !stale.isStale, "session reset clears detector")
 

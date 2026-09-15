@@ -943,11 +943,11 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             staleHeartRateDetected = true
             alarmAcknowledged = false
             let value = MetricText.number(bpm)
-            recordEvent(kind: "measurement", title: "Check sensor data", detail: "The wearable repeated \(value) bpm for three minutes of \(source) readings. Check sensor contact, fit and the child; this may be stale device data.", heartRate: Int(bpm.rounded()))
+            recordEvent(kind: "measurement", title: "Check sensor data", detail: "The wearable repeated \(value) bpm for five minutes of \(source) readings. Check sensor contact, fit and the child; this may be stale device data.", heartRate: Int(bpm.rounded()))
             startSiren(loop: true)
             if !alarmActive {
                 clearAlarmNotifications()
-                scheduleAlarmNotifications(title: attentionTitle, body: "The wearable repeated \(value) bpm for three minutes. Check \(displayNameForAlert), the sensor fit and the care plan.")
+                scheduleAlarmNotifications(title: attentionTitle, body: "The wearable repeated \(value) bpm for five minutes. Check \(displayNameForAlert), the sensor fit and the care plan.")
             }
         } else if wasStale && !staleHeartRate.isStale {
             staleHeartRateDetected = false
@@ -1664,7 +1664,7 @@ struct ContentView: View {
                 Text("Any device that exposes the standard Bluetooth Heart Rate Service or Pulse Oximeter Service may work. Apple Watch, Oura and branded baby monitors need separate authorised integrations; their names alone do not expose readings to a third-party Bluetooth app.").font(.caption).padding(.top, 6)
             }
             DisclosureGroup("What does the repeated-reading warning mean?") {
-                Text("The same received heart-rate value for three minutes triggers a possible repeated-data warning. A gap over 45 seconds restarts the pending duration; missing data is handled separately. Rounded, averaged or cached readings may legitimately repeat: this heuristic is not proof of sensor failure or an SVT detector. Check the sensor and your child and follow the care plan. A changed value clears this warning but does not prove accuracy. Device-specific validation is required.").font(.caption).padding(.top, 6)
+                Text("The same received heart-rate value for five minutes triggers a possible repeated-data warning. A gap over 45 seconds restarts the pending duration; missing data is handled separately. Rounded, averaged or cached readings may legitimately repeat: this heuristic is not proof of sensor failure or an SVT detector. Check the sensor and your child and follow the care plan. A changed value clears this warning but does not prove accuracy. Device-specific validation is required.").font(.caption).padding(.top, 6)
             }
             DisclosureGroup("How do alarms work?") {
                 Text("Low alarms fire strictly below your configured low limit; high alarms fire strictly above the high limit after the selected dwell time. Acknowledgement silences the siren, while a fresh in-range value self-clears the alert and writes a relief event. Configure limits only from your care plan.").font(.caption).padding(.top, 6)

@@ -23,10 +23,10 @@ struct HeartRateFreshness {
     mutating func reset() { self = Self() }
 }
 
-// Three minutes of unchanged received values is a heuristic, not proof of
+// Five minutes of unchanged received values is a heuristic, not proof of
 // sensor failure. Rounding, averaging and cached reads can also repeat values.
 struct StaleHeartRateDetector {
-    static let duration: TimeInterval = 180
+    static let duration: TimeInterval = 300
     // Permit 30-second device updates with delivery jitter. Longer gaps restart
     // the pending duration; absent packets cannot count as repeated readings.
     static let maximumGap: TimeInterval = 45

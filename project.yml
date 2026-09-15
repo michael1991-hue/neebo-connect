@@ -7,7 +7,7 @@ settings:
     SWIFT_VERSION: '5.0'
     PRODUCT_BUNDLE_IDENTIFIER: com.michael1991.nivvi
     MARKETING_VERSION: '0.10.2'
-    CURRENT_PROJECT_VERSION: '17'
+    CURRENT_PROJECT_VERSION: '18'
     CODE_SIGN_STYLE: Automatic
 targets:
   Nivvi:

@@ -20,7 +20,7 @@ Nivvi receives the updates the device supplies. History keeps snapshots about ev
 
 ## What does the repeated-value warning mean?
 
-Three minutes of unchanged received heart rate can trigger a possible repeated-data warning. Rounded or averaged readings can repeat legitimately. This is a heuristic, not proof of sensor failure or an SVT detector. Missing data is handled separately.
+Five minutes of unchanged received heart rate can trigger a possible repeated-data warning. Rounded or averaged readings can repeat legitimately. This is a heuristic, not proof of sensor failure or an SVT detector. Missing data is handled separately.
 
 ## Why no sound in Silent mode or Focus?
 

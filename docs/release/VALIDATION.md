@@ -13,7 +13,7 @@ Use controlled test packets or a spare test setup, not deliberately induced chan
 | High threshold | Strictly above configured high limit for dwell duration triggers once; equality does not | NOT RUN |
 | Acknowledge | Sound silences; excursion remains represented until fresh recovery | NOT RUN |
 | Recovery | Fresh in-range HR clears rate alarm, green event and gentle chime; no-data is not recovery | NOT RUN |
-| Repeating HR | Same received value for 180 seconds triggers potential repeated-data warning; gaps reset as documented | NOT RUN |
+| Repeating HR | Same received value for 300 seconds triggers potential repeated-data warning; gaps reset as documented | NOT RUN |
 | Stopped packets | Stale value stops appearing live; interruption logged; no normal-range relief from missing data | NOT RUN |
 | Phone locked 10 min and overnight | Compare actual notifications/measurements with ground-truth log; record all gaps | NOT RUN |
 | Silent mode and each Focus | Record actual result; failure is not a pass. Critical Alerts unavailable in this build | NOT RUN |
