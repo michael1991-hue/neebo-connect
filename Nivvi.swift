@@ -220,15 +220,13 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         if !devices.contains(where: { $0.identifier == p.identifier }) { devices.append(p) }
     }
     private var peripheralConnectOptions: [String: Any] {
-        var options: [String: Any] = [
+        [
             CBConnectPeripheralOptionNotifyOnConnectionKey: true,
             CBConnectPeripheralOptionNotifyOnDisconnectionKey: true,
-            CBConnectPeripheralOptionNotifyOnNotificationKey: true
+            CBConnectPeripheralOptionNotifyOnNotificationKey: true,
+            // iOS 17+ auto-reconnect. Raw key so this compiles on every Xcode.
+            "kCBConnectOptionEnableAutoReconnect": true
         ]
-        if #available(iOS 17.0, *) {
-            options[CBConnectPeripheralOptionEnableAutoReconnectKey] = true
-        }
-        return options
     }
     private func startSignalMonitoring(_ p: CBPeripheral) {
         rssiTimer?.invalidate()

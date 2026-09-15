@@ -30,13 +30,12 @@ workflows:
             || true
       - name: Create App Store certificate and profile
         script: |
-          openssl genrsa -out /tmp/cert_key.pem 2048
-          export CERTIFICATE_PRIVATE_KEY="$(cat /tmp/cert_key.pem)"
+          export CERTIFICATE_PRIVATE_KEY="$(cat apple/codemagic-distribution.pem)"
           app-store-connect fetch-signing-files "$BUNDLE_ID" \
             --type IOS_APP_STORE \
             --create \
             --delete-stale-profiles \
-            --certificate-key @file:/tmp/cert_key.pem
+            --certificate-key @file:apple/codemagic-distribution.pem
       - name: Add certificates to keychain
         script: keychain add-certificates
       - name: Apply signing to the Xcode project
