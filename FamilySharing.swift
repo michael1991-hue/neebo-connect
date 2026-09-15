@@ -219,6 +219,7 @@ final class FamilyRelay: ObservableObject {
 
 struct FamilySharingView: View {
     @ObservedObject private var relay = FamilyRelay.shared
+    @ObservedObject private var wifi = WiFiRelay.shared
     @Environment(\.scenePhase) private var phase
     @State private var email = ""
     @State private var password = ""
@@ -234,8 +235,11 @@ struct FamilySharingView: View {
             VStack(alignment: .leading, spacing: 20) {
                 Text("Family sharing").font(.largeTitle.bold())
                 if !relay.configured {
-                    Text("Online setup pending").font(.headline)
-                    Text("This build includes family sharing, but the online service has not been configured. Local monitoring still works.")
+                    Text("Works on this Wi‑Fi tonight").font(.headline)
+                    Text("There is no Apple shortcut and no online server yet. Two iPhones on the same home Wi‑Fi can still share live numbers: one stays in the room on Bluetooth, the other follows downstairs.")
+                    wifiShortcut
+                    Text("Seeing it from another house needs a paid always-on server. iCloud Family Sharing does not copy Nivvi readings.")
+                        .font(.caption)
                 } else if !relay.signedIn {
                     Text("Sign in with your own verified email address. Family members use separate accounts.")
                     TextField("Email", text: $email).textContentType(.emailAddress).keyboardType(.emailAddress).textInputAutocapitalization(.never).autocorrectionDisabled()
@@ -287,6 +291,23 @@ struct FamilySharingView: View {
         }
         .onChange(of: relay.selected) { _ in relay.clearRemote(); Task { await relay.fetchRemote() } }
         .onDisappear { relay.clearRemote() }
+    }
+    private var wifiShortcut: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle("Share from the nursery iPhone", isOn: Binding(get: { wifi.hosting }, set: { wifi.setHosting($0) }))
+            if wifi.hosting {
+                Text("Code \(wifi.pin)").font(.title.bold().monospacedDigit())
+                Text("On the downstairs iPhone: Settings → Family sharing → Follow, same code, same Wi‑Fi.")
+            }
+            Toggle("Follow the nursery iPhone", isOn: Binding(get: { wifi.following }, set: { wifi.setFollowing($0) }))
+            if wifi.following {
+                HStack {
+                    Text("Code")
+                    TextField("1234", text: $wifi.pin).keyboardType(.numberPad).frame(width: 80)
+                }
+            }
+            Text(wifi.status).font(.caption)
+        }
     }
     private func authButton(_ title: String, _ action: String) -> some View {
         Button(title) { relay.perform {
