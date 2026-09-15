@@ -1960,7 +1960,7 @@ struct ContentView: View {
             }
         }
     }
-    private func historyRangeLabel: String {
+    private var historyRangeLabel: String {
         let day = monitor.selectedHistoryDay
         if historySpan == 1 { return day.formatted(date: .abbreviated, time: .omitted) }
         let start = Calendar.current.date(byAdding: .day, value: 1 - historySpan, to: Calendar.current.startOfDay(for: day)) ?? day
