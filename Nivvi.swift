@@ -1435,6 +1435,7 @@ struct ContentView: View {
     @AppStorage("nivvi.profile.avatarSymbol") private var avatarSymbol = "star.fill"
     @AppStorage("nivvi.profile.avatarColor") private var avatarColor = "teal"
     @AppStorage("nivvi.atmosphere.enabled") private var atmosphereEnabled = true
+    @AppStorage("nivvi.nursery.acknowledged") private var nurseryAcknowledged = false
     @State private var skyOffset: CGFloat = 0
     @AppStorage("nivvi.favorite.device.ids") private var favoriteDeviceIDs = ""
     @State private var showFamily = false
@@ -1573,9 +1574,7 @@ struct ContentView: View {
                 header
                 if monitor.criticalAlertActive { alarmBanner.padding(.horizontal, 20) }
                 ScrollView(showsIndicators: false) {
-                    Group {
-                        if tab == 0 { home } else if tab == 1 { history } else if tab == 2 { alerts } else { device }
-                    }
+                    selectedTab
                     .padding(.horizontal, 20).padding(.bottom, 110)
                     .modifier(AtmosphereScroll(offset: $skyOffset))
                 }
@@ -1668,6 +1667,16 @@ struct ContentView: View {
         // Monitoring lifecycle belongs to the long-lived monitor, independent of this view.
         .onReceive(NotificationCenter.default.publisher(for: .nivviShowLiveHeartRate)) { _ in tab = 0 }
         .scrollDismissesKeyboard(.interactively)
+    }
+
+    @ViewBuilder
+    private var selectedTab: some View {
+        switch tab {
+        case 1: history
+        case 2: alerts
+        case 3: device
+        default: home
+        }
     }
 
     private var header: some View {
