@@ -29,8 +29,8 @@ struct AtmosphereBackdrop: View {
     private func drawSky(_ canvas: GraphicsContext, size: CGSize) {
         let nightTop = Color(red: 0.01, green: 0.05, blue: 0.12)
         let nightBottom = Color(red: 0.02, green: 0.13, blue: 0.23)
-        let dayTop = Color(red: 0.42, green: 0.72, blue: 0.82)
-        let dayBottom = Color(red: 0.08, green: 0.28, blue: 0.36)
+        let dayTop = Color(red: 0.78, green: 0.90, blue: 0.97)
+        let dayBottom = Color(red: 0.62, green: 0.82, blue: 0.93)
         let top = mode == .night ? nightTop : dayTop
         let bottom = mode == .night ? nightBottom : dayBottom
         canvas.fill(
@@ -63,9 +63,9 @@ struct AtmosphereBackdrop: View {
             let y = bird.y * size.height + shift * bird.depth
             let flap = 0.35 + 0.45 * sin(time * bird.flap)
             var ctx = canvas
-            ctx.opacity = 0.22 + 0.12 * bird.depth
+            ctx.opacity = 0.18 + 0.10 * bird.depth
             ctx.translateBy(x: x, y: y)
-            ctx.stroke(Self.wingPath(size: bird.size, flap: flap), with: .color(.black.opacity(0.55)), style: StrokeStyle(lineWidth: 1.2, lineCap: .round, lineJoin: .round))
+            ctx.stroke(Self.wingPath(size: bird.size, flap: flap), with: .color(Color(red: 0.12, green: 0.22, blue: 0.34).opacity(0.45)), style: StrokeStyle(lineWidth: 1.2, lineCap: .round, lineJoin: .round))
         }
     }
 

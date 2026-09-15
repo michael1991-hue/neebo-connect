@@ -374,6 +374,76 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         do { try archive.export(to: url); return url }
         catch { historyError = "Export failed: \(error.localizedDescription)"; return nil }
     }
+    func updateParentNote(_ event: SavedEvent, detail: String) {
+        let text = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard event.kind == "note", !text.isEmpty else { return }
+        var updated = event
+        updated.detail = String(text.prefix(2000))
+        do {
+            try eventArchive.replace(updated)
+            if let index = events.firstIndex(where: { $0.id == event.id }) { events[index] = updated }
+            eventError = nil
+        } catch { eventError = "Note could not be updated: \(error.localizedDescription)" }
+    }
+    func deleteEvent(_ event: SavedEvent) {
+        do {
+            try eventArchive.delete(event)
+            events.removeAll { $0.id == event.id }
+            eventDays = try eventArchive.days()
+            eventError = nil
+        } catch { eventError = "Item could not be deleted: \(error.localizedDescription)" }
+    }
+    func loadHistorySpan(days: Int, endingOn day: Date = Date()) {
+        let calendar = Calendar.current
+        let endDay = calendar.startOfDay(for: day)
+        guard days >= 1 else { selectHistoryDay(endDay); return }
+        let start = calendar.date(byAdding: .day, value: 1 - days, to: endDay) ?? endDay
+        selectedHistoryDay = endDay
+        var readings: [SavedMeasurement] = []
+        var log: [SavedEvent] = []
+        var cursor = start
+        while cursor <= endDay {
+            if let rows = try? archive.load(day: cursor) { readings.append(contentsOf: rows) }
+            if let rows = try? eventArchive.load(day: cursor) { log.append(contentsOf: rows) }
+            guard let next = Calendar.current.date(byAdding: .day, value: 1, to: cursor), next > cursor else { break }
+            cursor = next
+        }
+        history = readings.sorted { $0.time < $1.time }
+        events = log.sorted { $0.time < $1.time }
+        historyError = nil
+        eventError = nil
+    }
+    func exportReport() -> URL? {
+        let url = folder.appendingPathComponent("Nivvi-report.csv")
+        let iso = ISO8601DateFormatter()
+        func csv(_ value: String) -> String {
+            let safe = value.first.map { "=+-@\t\r".contains($0) } == true ? "'" + value : value
+            return "\"" + safe.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+        }
+        var rows = ["kind,time,heart_rate_bpm,oxygen_percent,detail"]
+        let readings = history.sorted { $0.time < $1.time }
+        for (index, entry) in readings.enumerated() {
+            let hr = entry.heartRateValue.map(MetricText.number) ?? ""
+            let oxygen = entry.oxygenValue.map(MetricText.number) ?? ""
+            rows.append(["reading", iso.string(from: entry.time), hr, oxygen, csv(entry.source)].joined(separator: ","))
+            if index > 0 {
+                let gap = entry.time.timeIntervalSince(readings[index - 1].time)
+                if gap > 60 {
+                    rows.append(["gap", iso.string(from: readings[index - 1].time), "", "", csv("No recorded reading for \(Int(gap)) seconds")].joined(separator: ","))
+                }
+            }
+        }
+        for event in events.sorted(by: { $0.time < $1.time }) {
+            rows.append(["event-\(event.kind)", iso.string(from: event.time), event.heartRate.map(String.init) ?? "", "", csv("\(event.title): \(event.detail)")].joined(separator: ","))
+        }
+        do {
+            try rows.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+            return url
+        } catch {
+            historyError = "Report export failed: \(error.localizedDescription)"
+            return nil
+        }
+    }
     private func clearLiveValues(resetFreshness: Bool = true) {
         verifiedHeartRate = nil; verifiedOxygen = nil
         pulseOximeterRate = nil; pulseOximeterOxygen = nil; oxygenTime = nil
@@ -1369,6 +1439,11 @@ struct ContentView: View {
     @AppStorage("nivvi.favorite.device.ids") private var favoriteDeviceIDs = ""
     @State private var showFamily = false
     @State private var showProfile = false
+    @State private var showSettings = false
+    @State private var historySpan = 1
+    @State private var reportExport: URL?
+    @State private var editingNote: SavedEvent?
+    @State private var alertFilter = "All"
     @State private var showNursery = false
     @State private var showReadinessTest = false
     @State private var captureRequest: CaptureRequest?
@@ -1392,6 +1467,9 @@ struct ContentView: View {
         return (hour >= 20 || hour < 8) ? .night : .day
     }
     private var mode: NivviMode { manualMode ?? automaticMode }
+    private var ink: Color { mode == .night ? .white : Color(red: 0.07, green: 0.18, blue: 0.32) }
+    private var muted: Color { mode == .night ? Color.white.opacity(0.62) : Color(red: 0.28, green: 0.40, blue: 0.50) }
+    private var cardFill: Color { mode == .night ? Color.white.opacity(0.10) : Color.white.opacity(0.84) }
     private var connected: Bool { monitor.connection.isConnected }
     private var favouriteIDs: Set<String> { Set(favoriteDeviceIDs.split(separator: ",").map(String.init)) }
     private func isFavourite(_ peripheral: CBPeripheral) -> Bool { favouriteIDs.contains(peripheral.identifier.uuidString) }
@@ -1428,6 +1506,7 @@ struct ContentView: View {
     }
     private var liveMeasurementNote: String {
         if monitor.staleHeartRateDetected { return "Repeated value · check sensor" }
+        if monitor.staleHeartRateDetected { return "Stale · last reading is not live" }
         if monitor.verifiedHeartRate != nil || monitor.pulseOximeterRate != nil || monitor.pulseOximeterOxygen != nil { return "Standard Bluetooth value" }
         if monitor.customHeartRateCandidate != nil || monitor.customOxygenCandidate != nil { return "Bluetooth value received" }
         return monitor.profile == .heartRate ? "Waiting for heart-rate data" : "Waiting for device data"
@@ -1495,7 +1574,7 @@ struct ContentView: View {
                 if monitor.criticalAlertActive { alarmBanner.padding(.horizontal, 20) }
                 ScrollView(showsIndicators: false) {
                     Group {
-                        if tab == 0 { home } else if tab == 1 { history } else if tab == 2 { device } else { settings }
+                        if tab == 0 { home } else if tab == 1 { history } else if tab == 2 { alerts } else { device }
                     }
                     .padding(.horizontal, 20).padding(.bottom, 110)
                     .modifier(AtmosphereScroll(offset: $skyOffset))
@@ -1504,7 +1583,14 @@ struct ContentView: View {
                 bottomBar
             }
         }
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(mode == .night ? .dark : .light)
+        .sheet(isPresented: $showSettings) {
+            NavigationStack {
+                ScrollView { settings.padding(20) }
+                    .navigationTitle("Settings")
+                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showSettings = false } } }
+            }
+        }
         .sheet(item: $captureRequest) { request in
             VStack(alignment: .leading, spacing: 24) {
                 Text("Connect to \(request.peripheral.name ?? "wearable")").font(.title2.bold())
@@ -1512,7 +1598,7 @@ struct ContentView: View {
                 Button("Connect wearable") {
                     monitor.connect(request.peripheral)
                     captureRequest = nil
-                    tab = 2
+                    tab = 3
                 }.buttonStyle(.borderedProminent).controlSize(.large)
                 Button("Cancel") { captureRequest = nil }
             }.padding(24).presentationDetents([.medium])
@@ -1556,12 +1642,23 @@ struct ContentView: View {
                     Text("A timestamp is added when you save. Notes stay on this iPhone.").font(.caption)
                     if let error = monitor.eventError { Text(error).foregroundStyle(.red) }
                 }
-                .navigationTitle("Add an event note")
+                .navigationTitle(editingNote == nil ? "Add an event note" : "Edit note")
                 .toolbar {
-                    ToolbarItem(placement: .cancellationAction) { Button("Cancel") { showParentNote = false } }
+                    ToolbarItem(placement: .cancellationAction) { Button("Cancel") { showParentNote = false; editingNote = nil } }
                     ToolbarItem(placement: .confirmationAction) { Button("Save") {
-                        monitor.addParentNote(parentNote)
-                        if monitor.eventError == nil { parentNote = ""; showParentNote = false; monitor.selectHistoryDay(Date()); historySection = 0 }
+                        if let editing = editingNote {
+                            monitor.updateParentNote(editing, detail: parentNote)
+                            editingNote = nil
+                        } else {
+                            monitor.addParentNote(parentNote)
+                        }
+                        if monitor.eventError == nil {
+                            parentNote = ""
+                            showParentNote = false
+                            if historySpan == 1 { monitor.selectHistoryDay(monitor.selectedHistoryDay) }
+                            else { monitor.loadHistorySpan(days: historySpan, endingOn: monitor.selectedHistoryDay) }
+                            historySection = 0
+                        }
                     }.disabled(parentNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
                 }
             }
@@ -1582,23 +1679,28 @@ struct ContentView: View {
                 }
                 .accessibilityLabel("Child avatar")
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(Calendar.current.component(.hour, from: Date()) >= 12 && mode == .day ? "Hello," : mode.greeting).font(.subheadline).foregroundStyle(.white.opacity(0.72))
-                    Text(displayName).font(.system(size: 34, weight: .bold, design: .rounded))
+                    Text(Calendar.current.component(.hour, from: Date()) >= 12 && mode == .day ? "Hello," : mode.greeting).font(.subheadline).foregroundStyle(muted)
+                    Text(displayName).font(.system(size: 34, weight: .bold, design: .rounded)).foregroundStyle(ink)
                 }
                 Spacer()
+                Button { showSettings = true } label: {
+                    Image(systemName: "gearshape.fill").font(.title3).foregroundStyle(ink)
+                        .frame(width: 48, height: 48).background(cardFill).clipShape(Circle())
+                }
+                .accessibilityLabel("Settings")
                 Button { manualMode = manualMode == nil ? (mode == .night ? .day : .night) : nil } label: {
-                    Image(systemName: mode.symbol).font(.title3).foregroundStyle(mode == .night ? lavender : .yellow)
-                        .frame(width: 48, height: 48).background(.white.opacity(0.12)).clipShape(Circle())
+                    Image(systemName: mode.symbol).font(.title3).foregroundStyle(mode == .night ? lavender : Color(red: 0.95, green: 0.72, blue: 0.18))
+                        .frame(width: 48, height: 48).background(cardFill).clipShape(Circle())
                 }
             }
             HStack(spacing: 10) {
                 Circle().fill(monitor.connection == .receiving ? teal : (connected ? .orange : .gray)).frame(width: 11, height: 11)
-                Text(monitor.connection.label).font(.subheadline.weight(.semibold))
+                Text(monitor.connection.label).font(.subheadline.weight(.semibold)).foregroundStyle(ink)
                 Spacer()
-                Text("\(mode.rawValue) mode").font(.caption.weight(.bold)).padding(.horizontal, 11).padding(.vertical, 6)
-                    .background(.white.opacity(0.12)).clipShape(Capsule())
+                Text("\(mode.rawValue) mode").font(.caption.weight(.bold)).foregroundStyle(ink).padding(.horizontal, 11).padding(.vertical, 6)
+                    .background(cardFill).clipShape(Capsule())
             }
-            if !ageText.isEmpty { Text(childGender == "Prefer not to say" ? ageText : "\(ageText) · \(childGender)").font(.caption).foregroundStyle(.white.opacity(0.6)) }
+            if !ageText.isEmpty { Text(childGender == "Prefer not to say" ? ageText : "\(ageText) · \(childGender)").font(.caption).foregroundStyle(muted) }
         }.padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 18)
     }
 
@@ -1627,19 +1729,14 @@ struct ContentView: View {
                     .font(.caption.weight(.semibold))
             }
             HStack(spacing: 12) {
-                Button { monitor.selectHistoryDay(Date()); tab = 1 } label: {
-                    HStack { Text("Today’s story").font(.subheadline.weight(.semibold)); Spacer(); Image(systemName: "arrow.right") }
-                        .foregroundStyle(Color(red: 0.06, green: 0.16, blue: 0.25)).padding(14)
-                        .background(lavender).clipShape(RoundedRectangle(cornerRadius: 16))
-                }
                 Button { showParentNote = true } label: {
-                    Image(systemName: "square.and.pencil")
-                        .font(.title3)
-                        .frame(width: 52, height: 52)
-                        .background(.white.opacity(0.12))
-                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                    Text("Add note").font(.subheadline.weight(.semibold)).frame(maxWidth: .infinity).padding(14)
+                        .background(coral).foregroundStyle(.white).clipShape(RoundedRectangle(cornerRadius: 16))
                 }
-                .accessibilityLabel("Add a note")
+                Button { historySpan = 1; monitor.selectHistoryDay(Date()); tab = 1 } label: {
+                    Text("View history").font(.subheadline.weight(.semibold)).frame(maxWidth: .infinity).padding(14)
+                        .background(lavender).foregroundStyle(Color(red: 0.06, green: 0.16, blue: 0.25)).clipShape(RoundedRectangle(cornerRadius: 16))
+                }
             }
             if let spot = monitor.spotCheckText, let time = monitor.spotCheckReceived {
                 panel { VStack(alignment: .leading, spacing: 8) {
@@ -1655,6 +1752,36 @@ struct ContentView: View {
         }
     }
 
+    private var latestNote: SavedEvent? {
+        monitor.events.filter { $0.kind == "note" }.max { $0.time < $1.time }
+    }
+    private var fiveMinuteReadings: [SavedMeasurement] {
+        let start = Date().addingTimeInterval(-300)
+        return monitor.history.filter { sample in
+            sample.time >= start && (sample.heartRateValue ?? 0) > 0
+        }
+    }
+    private var fiveMinuteChart: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Last five minutes").font(.caption.weight(.bold)).foregroundStyle(muted)
+            if fiveMinuteReadings.count < 2 {
+                Text("Not enough saved readings yet. Gaps stay blank — missing values are never drawn as zero.")
+                    .font(.caption).foregroundStyle(muted)
+            } else {
+                Chart {
+                    ForEach(HistoryChartPolicy.points(fiveMinuteReadings, metric: .heartRate)) { point in
+                        LineMark(x: .value("Time", point.entry.time), y: .value("bpm", point.value), series: .value("Continuous segment", point.series))
+                            .foregroundStyle(coral)
+                        PointMark(x: .value("Time", point.entry.time), y: .value("bpm", point.value))
+                            .symbolSize(6).foregroundStyle(coral)
+                    }
+                }
+                .chartXScale(domain: Date().addingTimeInterval(-300)...Date())
+                .frame(height: 120)
+                .accessibilityLabel("Heart-rate chart for the last five minutes")
+            }
+        }
+    }
     private var liveHero: some View {
         panel {
             VStack(alignment: .leading, spacing: 14) {
@@ -1669,16 +1796,16 @@ struct ContentView: View {
                             .foregroundStyle(BluetoothSignal.isWeak(monitor.signalRSSI) ? coral : .white.opacity(0.7))
                     }
                 }
-                Text("Heart rate").font(.caption.weight(.bold)).tracking(1.1).foregroundStyle(.white.opacity(0.55))
+                Text("Heart rate").font(.caption.weight(.bold)).tracking(1.1).foregroundStyle(muted)
                 HStack(alignment: .lastTextBaseline, spacing: 8) {
                     Text(heroHeartRate)
                         .font(.system(size: 72, weight: .bold, design: .rounded))
                         .monospacedDigit()
-                        .foregroundStyle(monitor.staleHeartRateDetected ? coral : .white)
+                        .foregroundStyle(monitor.staleHeartRateDetected ? coral : ink)
                         .minimumScaleFactor(0.5)
                         .lineLimit(1)
                     if heartRateDisplay != "No reading" {
-                        Text("bpm").font(.title2.weight(.semibold)).foregroundStyle(.white.opacity(0.55)).padding(.bottom, 10)
+                        Text("bpm").font(.title2.weight(.semibold)).foregroundStyle(muted).padding(.bottom, 10)
                     }
                 }
                 TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -1689,7 +1816,15 @@ struct ContentView: View {
                 if wifi.remoteFresh {
                     Text("From the nursery iPhone on this Wi‑Fi").font(.caption).foregroundStyle(teal)
                 }
-                Text(liveMeasurementNote).font(.caption).foregroundStyle(.white.opacity(0.65))
+                Text(liveMeasurementNote).font(.caption).foregroundStyle(muted)
+                fiveMinuteChart
+                if let note = latestNote {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Latest note").font(.caption.weight(.bold)).foregroundStyle(muted)
+                        Text(note.detail).font(.subheadline).foregroundStyle(ink)
+                        Text(note.time.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(muted)
+                    }
+                }
                 if monitor.profile == .custom || monitor.profile.hasPulseOximeter {
                     Divider().overlay(.white.opacity(0.12))
                     HStack {
@@ -1728,8 +1863,24 @@ struct ContentView: View {
     }
     private var history: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack { Text("History").font(.largeTitle.bold()); Spacer(); Button { showParentNote = true } label: { Label("Add note", systemImage: "plus") }.buttonStyle(.bordered) }
-            Text("30 calendar days on this iPhone").foregroundStyle(.white.opacity(0.7))
+            HStack { Text("History").font(.largeTitle.bold()).foregroundStyle(ink); Spacer(); Button { showParentNote = true } label: { Label("Add note", systemImage: "plus") }.buttonStyle(.bordered) }
+            Picker("Range", selection: $historySpan) {
+                Text("Today").tag(1)
+                Text("Week").tag(7)
+                Text("Month").tag(30)
+            }.pickerStyle(.segmented)
+            .onChange(of: historySpan) { days in
+                if days == 1 { monitor.selectHistoryDay(monitor.selectedHistoryDay) }
+                else { monitor.loadHistorySpan(days: days, endingOn: monitor.selectedHistoryDay) }
+            }
+            HStack {
+                Button("Earlier") { shiftHistory(-1) }
+                Spacer()
+                Text(historyRangeLabel).font(.subheadline.weight(.semibold)).foregroundStyle(ink)
+                Spacer()
+                Button("Later") { shiftHistory(1) }.disabled(Calendar.current.isDateInToday(monitor.selectedHistoryDay) || monitor.selectedHistoryDay >= Calendar.current.startOfDay(for: Date()))
+            }.buttonStyle(.bordered)
+            Text("30 calendar days on this iPhone").foregroundStyle(muted)
             panel { VStack(alignment: .leading, spacing: 12) {
                 DatePicker("Choose a day", selection: Binding(get: { monitor.selectedHistoryDay }, set: { monitor.selectHistoryDay($0) }), in: ...Date(), displayedComponents: .date).datePickerStyle(.compact)
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -1761,9 +1912,15 @@ struct ContentView: View {
                         if let bpm = event.heartRate { Text("\(bpm) bpm").font(.title3.bold()).foregroundStyle(eventTint) }
                     }
                     .padding(18).frame(maxWidth: .infinity, alignment: .leading)
-                    .background(recovery ? Color.green.opacity(0.14) : Color.white.opacity(0.09))
+                    .background(recovery ? Color.green.opacity(0.14) : cardFill)
                     .clipShape(RoundedRectangle(cornerRadius: 22))
                     .overlay(RoundedRectangle(cornerRadius: 22).stroke(recovery ? Color.green.opacity(0.55) : .clear, lineWidth: 1))
+                    .contextMenu {
+                        if event.kind == "note" {
+                            Button("Edit note") { parentNote = event.detail; editingNote = event; showParentNote = true }
+                            Button("Delete note", role: .destructive) { monitor.deleteEvent(event) }
+                        }
+                    }
                 }
                 if let error = monitor.eventError { Text(error).foregroundStyle(coral) }
             } else {
@@ -1792,6 +1949,8 @@ struct ContentView: View {
                         if let url = historyExport { ShareLink("Share readings CSV", item: url) }
                         Button("Prepare events CSV") { eventsExport = monitor.exportEvents() }
                         if let url = eventsExport { ShareLink("Share events CSV", item: url) }
+                        Button("Prepare report") { reportExport = monitor.exportReport() }
+                        if let url = reportExport { ShareLink("Share report", item: url) }
                         Button("Delete all history", role: .destructive) { confirmDeleteHistory = true }
                     }.padding(.top, 10)
                 }
@@ -1801,6 +1960,22 @@ struct ContentView: View {
             }
         }
     }
+    private func historyRangeLabel: String {
+        let day = monitor.selectedHistoryDay
+        if historySpan == 1 { return day.formatted(date: .abbreviated, time: .omitted) }
+        let start = Calendar.current.date(byAdding: .day, value: 1 - historySpan, to: Calendar.current.startOfDay(for: day)) ?? day
+        return "\(start.formatted(date: .abbreviated, time: .omitted)) – \(day.formatted(date: .abbreviated, time: .omitted))"
+    }
+    private func shiftHistory(_ step: Int) {
+        let calendar = Calendar.current
+        let current = calendar.startOfDay(for: monitor.selectedHistoryDay)
+        let today = calendar.startOfDay(for: Date())
+        let delta = historySpan == 1 ? step : step * historySpan
+        guard let next = calendar.date(byAdding: .day, value: delta, to: current) else { return }
+        let clamped = min(next, today)
+        if historySpan == 1 { monitor.selectHistoryDay(clamped) }
+        else { monitor.loadHistorySpan(days: historySpan, endingOn: clamped) }
+    }
     private func timestamp(_ time: Date, tint: Color) -> some View {
         HStack(alignment: .firstTextBaseline) {
             Text(time.formatted(date: .omitted, time: .standard)).font(.system(size: 24, weight: .bold, design: .rounded)).monospacedDigit().foregroundStyle(tint)
@@ -1809,12 +1984,59 @@ struct ContentView: View {
         }
     }
 
+    private var alerts: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Alerts").font(.largeTitle.bold()).foregroundStyle(ink)
+            Text("Alerts listed here were recorded in Nivvi. That is not proof a notification was delivered. Silent mode and Focus can still hide banners unless a Critical Alerts entitlement is granted — this build does not have one.")
+                .font(.caption).foregroundStyle(muted)
+            Picker("Filter", selection: $alertFilter) {
+                Text("All").tag("All")
+                Text("Heart rate").tag("Heart rate")
+                Text("Connection").tag("Connection")
+            }.pickerStyle(.segmented)
+            panel {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("NOTIFICATIONS").font(.caption.bold()).foregroundStyle(muted)
+                    Text(monitor.notificationStatus).foregroundStyle(ink)
+                    Text("Permission status only — Nivvi cannot confirm each banner reached the Lock Screen.").font(.caption).foregroundStyle(muted)
+                    Button("Open alert settings") { showSettings = true }.buttonStyle(.bordered)
+                }
+            }
+            let items = alertItems
+            if items.isEmpty { panel { Text("No alerts in this filter for the selected days.").foregroundStyle(ink) } }
+            ForEach(items) { event in
+                let restored = event.title.localizedCaseInsensitiveContains("resumed") || event.title.localizedCaseInsensitiveContains("connected") || event.title == "Heart rate back to normal" || event.title == "Wearable connected"
+                panel {
+                    VStack(alignment: .leading, spacing: 8) {
+                        timestamp(event.time, tint: restored ? teal : (event.kind == "critical" ? coral : lavender))
+                        Text(event.title).font(.headline).foregroundStyle(ink)
+                        Text(event.detail).font(.subheadline).foregroundStyle(muted)
+                        Text("Recorded in Nivvi").font(.caption2).foregroundStyle(muted)
+                        if let bpm = event.heartRate { Text("\(bpm) bpm").font(.title3.bold()).foregroundStyle(coral) }
+                    }
+                }
+            }
+        }
+    }
+    private var alertItems: [SavedEvent] {
+        let relevant = monitor.events.filter { event in
+            ["critical", "alarm", "connection", "measurement"].contains(event.kind)
+        }
+        switch alertFilter {
+        case "Heart rate":
+            return relevant.filter { $0.kind == "critical" || $0.kind == "alarm" || $0.title.localizedCaseInsensitiveContains("heart") || $0.title.localizedCaseInsensitiveContains("sensor") }
+        case "Connection":
+            return relevant.filter { $0.kind == "connection" || $0.title.localizedCaseInsensitiveContains("Bluetooth") || $0.title.localizedCaseInsensitiveContains("connect") }
+        default:
+            return relevant
+        }
+    }
     private var device: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Device").font(.largeTitle.bold())
             panel { HStack(spacing: 14) { Image(systemName: "wave.3.right.circle.fill").font(.largeTitle).foregroundStyle(teal); VStack(alignment: .leading) { Text("Bluetooth heart-rate device").font(.headline); Text(monitor.connection.label).foregroundStyle(connected ? teal : .white.opacity(0.6)); if monitor.connection.isConnected { Text("Signal: \(BluetoothSignal.label(monitor.signalRSSI))").font(.caption).foregroundStyle(.white.opacity(0.7)) } }; Spacer() } }
             panel { VStack(alignment: .leading, spacing: 6) { Text("PROFILE").font(.caption.bold()).foregroundStyle(.white.opacity(0.55)); Text(monitor.profile.rawValue).font(.headline); Text("Nivvi only displays measurements when the Bluetooth format is recognised.").font(.caption).foregroundStyle(.white.opacity(0.6)) } }
-            HStack(spacing: 14) { metric("Battery", monitor.battery == "—" ? "—" : monitor.battery); metric("Mode", mode.rawValue) }
+            HStack(spacing: 14) { metric("Battery", (monitor.battery == "—" || monitor.battery.isEmpty) ? "Unavailable" : monitor.battery); metric("Mode", mode.rawValue) }
             Button { monitor.active ? monitor.stop() : monitor.scan() } label: { Text(monitor.active ? "Disconnect" : (monitor.isScanning ? "Scanning…" : "Scan for devices")).font(.headline).frame(maxWidth: .infinity).padding(17) }.buttonStyle(.borderedProminent).tint(coral).disabled(monitor.isScanning)
             ForEach(sortedDevices, id: \.identifier) { p in
                 HStack(spacing: 10) {
@@ -1994,9 +2216,9 @@ struct ContentView: View {
         Text("Nivvi " + (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")).font(.caption).foregroundStyle(.secondary)
     } }
 
-    private var bottomBar: some View { HStack { nav("house.fill", "Home", 0); nav("chart.xyaxis.line", "History", 1); nav("wave.3.right", "Device", 2); nav("gearshape.fill", "Settings", 3) }.padding(8).background(.white.opacity(0.1)).clipShape(Capsule()).padding(.horizontal, 18).padding(.bottom, 10) }
-    private func nav(_ icon: String, _ title: String, _ index: Int) -> some View { Button { withAnimation(.easeInOut(duration: 0.2)) { tab = index } } label: { VStack(spacing: 4) { Image(systemName: icon); Text(title).font(.caption2) }.foregroundStyle(tab == index ? lavender : .white.opacity(0.65)).frame(maxWidth: .infinity).padding(.vertical, 8).background(tab == index ? .white.opacity(0.12) : .clear).clipShape(Capsule()) } }
-    private func panel<Content: View>(@ViewBuilder _ content: () -> Content) -> some View { content().padding(18).frame(maxWidth: .infinity, alignment: .leading).background(.white.opacity(0.09)).clipShape(RoundedRectangle(cornerRadius: 22)) }
+    private var bottomBar: some View { HStack { nav("heart.fill", "Live", 0); nav("chart.xyaxis.line", "History", 1); nav("bell.fill", "Alerts", 2); nav("wave.3.right", "Device", 3) }.padding(8).background(cardFill).clipShape(Capsule()).padding(.horizontal, 18).padding(.bottom, 10) }
+    private func nav(_ icon: String, _ title: String, _ index: Int) -> some View { Button { withAnimation(.easeInOut(duration: 0.2)) { tab = index } } label: { VStack(spacing: 4) { Image(systemName: icon); Text(title).font(.caption2) }.foregroundStyle(tab == index ? Color(red: 0.35, green: 0.48, blue: 0.78) : muted).frame(maxWidth: .infinity).padding(.vertical, 8).background(tab == index ? cardFill : .clear).clipShape(Capsule()) } }
+    private func panel<Content: View>(@ViewBuilder _ content: () -> Content) -> some View { content().padding(18).frame(maxWidth: .infinity, alignment: .leading).background(cardFill).clipShape(RoundedRectangle(cornerRadius: 22)) }
     private func readingCard(_ title: String, _ value: String, _ note: String, _ icon: String, _ tint: Color, receivedAt: Date?, animate: Bool = true) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             ReadingUpdateIcon(symbol: icon, tint: tint, receivedAt: receivedAt, enabled: connected && value != "No reading" && animate)
@@ -2012,6 +2234,7 @@ struct ContentView: View {
     }
     private func readingAge(_ date: Date?, now: Date) -> String {
         guard let date else { return "No reading received" }
+        if monitor.staleHeartRateDetected { return "Stale · not a live value" }
         let seconds = Int(now.timeIntervalSince(date))
         guard connected, seconds >= 0, seconds <= 30 else { return "No fresh reading" }
         return "Updated \(seconds)s ago"

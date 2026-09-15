@@ -81,7 +81,7 @@ enum ProfileAvatarPolicy {
 enum BluetoothSignal {
     static func isUsable(_ rssi: Int) -> Bool { rssi != 127 && rssi < 0 }
     static func label(_ rssi: Int?) -> String {
-        guard let rssi, isUsable(rssi) else { return "Unknown" }
+        guard let rssi, isUsable(rssi) else { return "Unavailable" }
         if rssi >= -60 { return "Strong" }
         if rssi >= -75 { return "Good" }
         if rssi >= -85 { return "Fair" }
@@ -352,8 +352,8 @@ struct SavedEvent: Codable, Identifiable {
     var id = UUID()
     let time: Date
     let kind: String
-    let title: String
-    let detail: String
+    var title: String
+    var detail: String
     let heartRate: Int?
 }
 final class EventHistoryStore {
@@ -386,9 +386,28 @@ final class EventHistoryStore {
         try prepare(now: event.time)
         var entries = try load(day: event.time)
         entries.append(event)
-        try JSONEncoder().encode(entries).write(to: url(event.time), options: .atomic)
+        try write(entries, day: event.time)
+    }
+    func replace(_ event: SavedEvent) throws {
+        var entries = try load(day: event.time)
+        guard let index = entries.firstIndex(where: { $0.id == event.id }) else { return }
+        entries[index] = event
+        try write(entries, day: event.time)
+    }
+    func delete(_ event: SavedEvent) throws {
+        var entries = try load(day: event.time)
+        entries.removeAll { $0.id == event.id }
+        if entries.isEmpty {
+            let file = url(event.time)
+            if fm.fileExists(atPath: file.path) { try fm.removeItem(at: file) }
+        } else {
+            try write(entries, day: event.time)
+        }
+    }
+    private func write(_ entries: [SavedEvent], day: Date) throws {
+        try JSONEncoder().encode(entries).write(to: url(day), options: .atomic)
         #if os(iOS)
-        try fm.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: url(event.time).path)
+        try fm.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: url(day).path)
         #endif
     }
     func clear() throws { for day in try days() { try fm.removeItem(at: url(day)) } }
