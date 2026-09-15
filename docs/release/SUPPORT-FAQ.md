@@ -36,7 +36,7 @@ When the online service is configured, open Settings → Family sharing. Registe
 
 ## How do I delete information?
 
-Delete all history removes the app's main saved readings, events, notes and sleep timer. Edit/remove the profile photo separately. Diagnostic captures and copies already exported or backed up are separate. See the privacy notice for retention details.
+Delete all history removes the app's main saved readings, events, notes and sleep timer. Avatars are stored in profile settings, not as photos. Diagnostic captures and copies already exported or backed up are separate. See the privacy notice for retention details.
 
 ## How do I get support?
 

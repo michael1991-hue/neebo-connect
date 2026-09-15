@@ -13,7 +13,7 @@ Draft date: 14 September 2026. Applies to the inspected version 0.9.5 code only.
 | Information | Purpose and location | Retention/control |
 | --- | --- | --- |
 | Profile name, date of birth and optional gender | Personalises the profile; stored in app preferences on your iPhone | Until edited or app data is removed; there is no separate delete-profile button in this version |
-| Optional profile photo | Resized image stored in app documents; only the image you select is used | Replace/remove through Edit profile; removing a photo does not erase copies you exported elsewhere |
+| Chosen avatar (icon and colour) | Personalises the home header; stored in app preferences | Until edited or app data is removed. Photos of children are not collected. Any previously saved profile photo is deleted when this version opens |
 | Heart rate, oxygen where supported (including inferred custom readings), source label and timestamps | Displays readings and creates local history | Main history retains today plus the previous 29 calendar days; cleanup occurs when the app prepares/writes its stores |
 | Connection/alert events and user-entered notes | Local event timeline | Same main 30-calendar-day retention; Delete all history removes these logs |
 | Legacy parent-marked sleep records | Previous versions stored timer preferences and transition events; the manual feature is now removed | Existing events follow history retention; Delete all history also removes the legacy timer preference |

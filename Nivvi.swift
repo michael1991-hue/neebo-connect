@@ -4,8 +4,6 @@ import AudioToolbox
 import AVFoundation
 import UserNotifications
 import Charts
-import PhotosUI
-import ImageIO
 import Security
 
 struct Reading: Identifiable {
@@ -1105,40 +1103,95 @@ struct ProfileSetupView: View {
     @State private var name: String
     @State private var birthDate: Date
     @State private var gender: String
-    @State private var photo: Data?
-    @State private var photoItem: PhotosPickerItem?
-    @State private var photoError: String?
-    @State private var photoLoading = false
+    @State private var avatarSymbol: String
+    @State private var avatarColor: String
     @FocusState private var editingName: Bool
-    private let save: (String, Date, String, Data?) -> Bool
+    private let save: (String, Date, String, String, String) -> Bool
     private let canCancel: Bool
     private let genders = ["Girl", "Boy", "Other", "Prefer not to say"]
+    private let avatarTints: [(id: String, color: Color)] = [
+        ("teal", Color(red: 0.56, green: 0.89, blue: 0.82)),
+        ("coral", Color(red: 1, green: 0.56, blue: 0.53)),
+        ("lavender", Color(red: 0.85, green: 0.82, blue: 1)),
+        ("mint", Color(red: 0.45, green: 0.85, blue: 0.62)),
+        ("navy", Color(red: 0.35, green: 0.48, blue: 0.78)),
+        ("peach", Color(red: 1, green: 0.72, blue: 0.48))
+    ]
 
-    init(name: String, birthDate: Date, gender: String, photo: Data?, save: @escaping (String, Date, String, Data?) -> Bool) {
+    init(name: String, birthDate: Date, gender: String, avatarSymbol: String, avatarColor: String, save: @escaping (String, Date, String, String, String) -> Bool) {
         _name = State(initialValue: name)
         _birthDate = State(initialValue: min(birthDate, Date()))
         _gender = State(initialValue: gender)
-        _photo = State(initialValue: photo)
+        let allowed = ProfileAvatarPolicy.allowed(symbol: avatarSymbol, color: avatarColor)
+        _avatarSymbol = State(initialValue: allowed ? avatarSymbol : ProfileAvatarPolicy.defaultSymbol)
+        _avatarColor = State(initialValue: allowed ? avatarColor : ProfileAvatarPolicy.defaultColor)
         self.save = save
         canCancel = !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    private var selectedTint: Color {
+        avatarTints.first(where: { $0.id == avatarColor })?.color ?? avatarTints[0].color
     }
     var body: some View {
         NavigationStack {
             Form {
-                Section("Child photo") {
-                    HStack(spacing: 20) {
-                        if let data = photo, let picture = UIImage(data: data) {
-                            Image(uiImage: picture).resizable().scaledToFill().frame(width: 84, height: 84).clipShape(Circle())
-                        } else { Image(systemName: "person.crop.circle.fill").font(.system(size: 64)).foregroundStyle(.teal) }
-                        VStack(alignment: .leading, spacing: 10) {
-                            PhotosPicker(selection: $photoItem, matching: .images) { Text(photo == nil ? "Add photo" : "Change photo") }
-                            if photo != nil { Button("Remove photo", role: .destructive) { photo = nil; photoItem = nil } }
+                Section {
+                    HStack {
+                        Spacer()
+                        ZStack {
+                            Circle().fill(selectedTint.opacity(0.35)).frame(width: 96, height: 96)
+                            Image(systemName: avatarSymbol).font(.system(size: 40, weight: .semibold)).foregroundStyle(selectedTint)
                         }
+                        .accessibilityLabel("Selected avatar")
+                        Spacer()
                     }
-                    if photoLoading { ProgressView("Loading photo…") }
-                    if let error = photoError { Text(error).font(.caption).foregroundStyle(.red) }
-                    Text("Only your selected image is used. Saved on this iPhone.").font(.caption)
+                    Text("Photos of children cannot be added. Choose an avatar, or create one with an icon and colour.")
+                        .font(.caption)
+                } header: { Text("Avatar") }
+
+                Section("Choose an icon") {
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 4), spacing: 10) {
+                        ForEach(ProfileAvatarPolicy.symbols, id: \.self) { symbol in
+                            Button {
+                                editingName = false
+                                avatarSymbol = symbol
+                            } label: {
+                                Image(systemName: symbol)
+                                    .font(.title2)
+                                    .frame(maxWidth: .infinity, minHeight: 44)
+                                    .padding(.vertical, 8)
+                                    .background(avatarSymbol == symbol ? selectedTint.opacity(0.35) : Color.secondary.opacity(0.12))
+                                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(symbol.replacingOccurrences(of: ".fill", with: "").replacingOccurrences(of: ".", with: " "))
+                            .accessibilityAddTraits(avatarSymbol == symbol ? .isSelected : [])
+                        }
+                    }.padding(.vertical, 4)
                 }
+
+                Section("Create colour") {
+                    HStack(spacing: 12) {
+                        ForEach(avatarTints, id: \.id) { tint in
+                            Button {
+                                editingName = false
+                                avatarColor = tint.id
+                            } label: {
+                                Circle()
+                                    .fill(tint.color)
+                                    .frame(width: 32, height: 32)
+                                    .overlay {
+                                        if avatarColor == tint.id {
+                                            Circle().strokeBorder(.primary, lineWidth: 2).padding(-3)
+                                        }
+                                    }
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(tint.id)
+                            .accessibilityAddTraits(avatarColor == tint.id ? .isSelected : [])
+                        }
+                    }.padding(.vertical, 6)
+                }
+
                 Section("Child profile") {
                     TextField("Child’s name", text: $name).focused($editingName)
                         .textInputAutocapitalization(.words).submitLabel(.done)
@@ -1164,10 +1217,10 @@ struct ProfileSetupView: View {
                 Section {
                     Button("Save profile") {
                         editingName = false
-                        if save(name.trimmingCharacters(in: .whitespacesAndNewlines), birthDate, gender, photo) { dismiss() }
-                        else { photoError = "The profile photo could not be saved. Please try again." }
-                    }.disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || photoLoading)
-                } footer: { Text("Your profile stays on this iPhone.") }
+                        _ = save(name.trimmingCharacters(in: .whitespacesAndNewlines), birthDate, gender, avatarSymbol, avatarColor)
+                        dismiss()
+                    }.disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                } footer: { Text("Your profile stays on this iPhone. Avatars are icons only — no camera or photo library access.") }
             }
             .scrollDismissesKeyboard(.interactively)
             .navigationTitle("Set up Nivvi")
@@ -1177,19 +1230,6 @@ struct ProfileSetupView: View {
             }
         }
         .interactiveDismissDisabled(!canCancel)
-        .task(id: photoItem) {
-            guard let selected = photoItem else { photoLoading = false; return }
-            photoLoading = true; photoError = nil
-            do {
-                guard let data = try await selected.loadTransferable(type: Data.self),
-                      let source = CGImageSourceCreateWithData(data as CFData, nil),
-                      let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: 512] as CFDictionary),
-                      let resized = UIImage(cgImage: thumbnail).jpegData(compressionQuality: 0.85) else { throw CocoaError(.fileReadCorruptFile) }
-                try Task.checkCancellation()
-                photo = resized; photoLoading = false
-            } catch is CancellationError { }
-            catch { photoError = "Could not open that photo. Try another image."; photoLoading = false }
-        }
     }
 }
 
@@ -1277,6 +1317,8 @@ struct ContentView: View {
     @AppStorage("nivvi.profile.name") private var childName = ""
     @AppStorage("nivvi.profile.birthDate") private var childBirthDate = 0.0
     @AppStorage("nivvi.profile.gender") private var childGender = "Prefer not to say"
+    @AppStorage("nivvi.profile.avatarSymbol") private var avatarSymbol = "star.fill"
+    @AppStorage("nivvi.profile.avatarColor") private var avatarColor = "teal"
     @AppStorage("nivvi.favorite.device.ids") private var favoriteDeviceIDs = ""
     @State private var showFamily = false
     @State private var showProfile = false
@@ -1290,8 +1332,6 @@ struct ContentView: View {
     @State private var parentNote = ""
     @State private var showParentNote = false
     @State private var selectedHistoryReading: SavedMeasurement?
-    @State private var profilePhoto: Data?
-    private var photoURL: URL { FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("child-profile.jpg") }
     @State private var confirmDeleteHistory = false
     @State private var manualMode: NivviMode?
     @FocusState private var editingLimit: Bool
@@ -1343,6 +1383,19 @@ struct ContentView: View {
         return monitor.profile == .heartRate ? "Waiting for heart-rate data" : "Waiting for device data"
     }
     private var displayName: String { childName.isEmpty ? "Your child" : childName }
+    private var avatarTint: Color {
+        switch avatarColor {
+        case "coral": return coral
+        case "lavender": return lavender
+        case "mint": return Color(red: 0.45, green: 0.85, blue: 0.62)
+        case "navy": return Color(red: 0.35, green: 0.48, blue: 0.78)
+        case "peach": return Color(red: 1, green: 0.72, blue: 0.48)
+        default: return teal
+        }
+    }
+    private var avatarSymbolName: String {
+        ProfileAvatarPolicy.symbols.contains(avatarSymbol) ? avatarSymbol : ProfileAvatarPolicy.defaultSymbol
+    }
     private var birthDate: Date { childBirthDate == 0 ? Date() : Date(timeIntervalSince1970: childBirthDate) }
     private var ageText: String {
         guard childBirthDate > 0 else { return "" }
@@ -1378,15 +1431,19 @@ struct ContentView: View {
                 Button("Cancel") { captureRequest = nil }
             }.padding(24).presentationDetents([.medium])
         }
-        .onAppear { profilePhoto = try? Data(contentsOf: photoURL); if childName.isEmpty { showProfile = true } }
+        .onAppear {
+            let photoURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("child-profile.jpg")
+            try? FileManager.default.removeItem(at: photoURL)
+            if childName.isEmpty { showProfile = true }
+        }
         .sheet(isPresented: $showProfile) {
-            ProfileSetupView(name: childName, birthDate: birthDate, gender: childGender, photo: profilePhoto) { name, date, gender, photo in
-                do {
-                    if let photo = photo { try photo.write(to: photoURL, options: .atomic) }
-                    else if FileManager.default.fileExists(atPath: photoURL.path) { try FileManager.default.removeItem(at: photoURL) }
-                    childName = name; childBirthDate = date.timeIntervalSince1970; childGender = gender; profilePhoto = photo
-                    return true
-                } catch { return false }
+            ProfileSetupView(name: childName, birthDate: birthDate, gender: childGender, avatarSymbol: avatarSymbol, avatarColor: avatarColor) { name, date, gender, symbol, color in
+                childName = name
+                childBirthDate = date.timeIntervalSince1970
+                childGender = gender
+                avatarSymbol = symbol
+                avatarColor = color
+                return true
             }
         }
         .sheet(isPresented: $showParentNote) {
@@ -1416,9 +1473,11 @@ struct ContentView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                if let data = profilePhoto, let photo = UIImage(data: data) {
-                    Image(uiImage: photo).resizable().scaledToFill().frame(width: 52, height: 52).clipShape(Circle()).accessibilityLabel("Child profile photo")
+                ZStack {
+                    Circle().fill(avatarTint.opacity(0.35)).frame(width: 52, height: 52)
+                    Image(systemName: avatarSymbolName).font(.title2.weight(.semibold)).foregroundStyle(avatarTint)
                 }
+                .accessibilityLabel("Child avatar")
                 VStack(alignment: .leading, spacing: 3) {
                     Text(Calendar.current.component(.hour, from: Date()) >= 12 && mode == .day ? "Hello," : mode.greeting).font(.subheadline).foregroundStyle(.white.opacity(0.72))
                     Text(displayName).font(.system(size: 34, weight: .bold, design: .rounded))

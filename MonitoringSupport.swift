@@ -63,6 +63,21 @@ struct StaleHeartRateDetector {
     mutating func reset() { self = Self() }
 }
 
+enum ProfileAvatarPolicy {
+    static let symbols = [
+        "star.fill", "heart.fill", "moon.stars.fill", "sparkles",
+        "leaf.fill", "hare.fill", "tortoise.fill", "bird.fill",
+        "fish.fill", "pawprint.fill", "cloud.fill", "sun.max.fill",
+        "drop.fill", "flame.fill", "snowflake", "bolt.fill"
+    ]
+    static let colors = ["teal", "coral", "lavender", "mint", "navy", "peach"]
+    static let defaultSymbol = "star.fill"
+    static let defaultColor = "teal"
+    static func allowed(symbol: String, color: String) -> Bool {
+        symbols.contains(symbol) && colors.contains(color)
+    }
+}
+
 enum BluetoothSignal {
     static func isUsable(_ rssi: Int) -> Bool { rssi != 127 && rssi < 0 }
     static func label(_ rssi: Int?) -> String {
