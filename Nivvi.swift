@@ -132,6 +132,8 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     @Published var showAllDevices = true
     @Published var deviceNames: [UUID: String] = [:]
     @Published var deviceServices: [UUID: [String]] = [:]
+    @Published var deviceRSSI: [UUID: Int] = [:]
+    @Published var signalRSSI: Int?
     @Published var diagnostics: [String] = []
     @Published var measurementStatus = "No measurement packets received yet."
     private var scanDeadline: Timer?
@@ -144,6 +146,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     private var lastCustomMeasurement: Date?
     private var transportPolicy = MeasurementTransportPolicy()
     private var retryScan = false
+    private var rssiTimer: Timer?
     private var backgroundEnteredAt: Date?
     private var backgroundReminder = BackgroundDataReminderPolicy()
     @Published private(set) var measurementNotificationsEnabled = false
@@ -211,9 +214,31 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         p.readValue(for: pendingRead!)
     }
     private func owns(_ p: CBPeripheral) -> Bool { p === peripheral && session.shouldReconnect(p.identifier) && p.state == .connected && connection != .stopping }
-    private func addDevice(_ p: CBPeripheral, name: String) {
+    private func addDevice(_ p: CBPeripheral, name: String, rssi: Int? = nil) {
         deviceNames[p.identifier] = name.isEmpty ? (p.name ?? "Unnamed Bluetooth device") : name
+        if let rssi, BluetoothSignal.isUsable(rssi) { deviceRSSI[p.identifier] = rssi }
         if !devices.contains(where: { $0.identifier == p.identifier }) { devices.append(p) }
+    }
+    private var peripheralConnectOptions: [String: Any] {
+        var options: [String: Any] = [
+            CBConnectPeripheralOptionNotifyOnConnectionKey: true,
+            CBConnectPeripheralOptionNotifyOnDisconnectionKey: true,
+            CBConnectPeripheralOptionNotifyOnNotificationKey: true
+        ]
+        if #available(iOS 17.0, *) {
+            options[CBConnectPeripheralOptionEnableAutoReconnectKey] = true
+        }
+        return options
+    }
+    private func startSignalMonitoring(_ p: CBPeripheral) {
+        rssiTimer?.invalidate()
+        p.readRSSI()
+        let timer = Timer(timeInterval: 8, repeats: true) { [weak self] _ in
+            guard let self, self.owns(p), self.foreground else { return }
+            p.readRSSI()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        rssiTimer = timer
     }
     @Published var recording: URL?
     @Published var files: [URL] = []
@@ -581,7 +606,9 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     }
     private func resetTransport() {
         pollTimer?.invalidate(); pollTimer = nil; noDataTimer?.invalidate()
-        retryTimer?.invalidate(); retryTimer = nil; transportPolicy.reset()
+        retryTimer?.invalidate(); retryTimer = nil; rssiTimer?.invalidate(); rssiTimer = nil
+        transportPolicy.reset()
+        signalRSSI = nil
         measurementNotificationsEnabled = false
         readQueue = []; pendingRead = nil; measurementCharacteristic = nil
         clearLiveValues(); battery = "—"; lastSample = nil
@@ -591,7 +618,10 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         retryTimer?.invalidate(); retryTimer = nil
         retryScan = true; connection = .reconnecting
         // A filtered scan is retained by Core Bluetooth while this process sleeps.
-        manager.scanForPeripherals(withServices: BluetoothPolicy.measurementServices.map { CBUUID(string: $0) })
+        manager.scanForPeripherals(
+            withServices: BluetoothPolicy.measurementServices.map { CBUUID(string: $0) },
+            options: [CBCentralManagerScanOptionAllowDuplicatesKey: true]
+        )
     }
     private func resumeSession() {
         guard session.enabled, let id = session.deviceID, manager.state == .poweredOn else { return }
@@ -610,6 +640,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
                 configureConnectedServices(p)
             } else {
                 refreshBackgroundDelivery()
+                if rssiTimer == nil { startSignalMonitoring(p) }
             }
         case .connecting:
             connection = .reconnecting // Keep the existing OS-managed request.
@@ -617,7 +648,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             if retryScan { manager.stopScan(); retryScan = false }
             connection = .reconnecting
             status = "Reconnecting automatically. Keep the device nearby, or tap Disconnect to stop."
-            manager.connect(p, options: [CBConnectPeripheralOptionNotifyOnDisconnectionKey: true])
+            manager.connect(p, options: peripheralConnectOptions)
         case .disconnecting:
             connection = .reconnecting // didDisconnect will resume after teardown.
         @unknown default:
@@ -682,7 +713,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         }
         manager.stopScan(); scanDeadline?.invalidate()
         scanToken = UUID(); let token = scanToken
-        devices = []; deviceNames = [:]; deviceServices = [:]; diagnostics = []
+        devices = []; deviceNames = [:]; deviceServices = [:]; deviceRSSI = [:]; diagnostics = []
         connection = .scanning
         status = "Scanning for nearby wearables for 15 seconds…"
         // A BLE device held by another app on this iPhone may not advertise again.
@@ -714,14 +745,14 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     func centralManager(_ central: CBCentralManager, didDiscover p: CBPeripheral, advertisementData: [String: Any], rssi RSSI: NSNumber) {
         if connection == .reconnecting && session.shouldReconnect(p.identifier) {
             central.stopScan(); retryScan = false; peripheral = p; p.delegate = self
-            central.connect(p, options: [CBConnectPeripheralOptionNotifyOnDisconnectionKey: true]); return
+            central.connect(p, options: peripheralConnectOptions); return
         }
         guard connection == .scanning else { return }
         let advertisedName = advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? ""
         let services = (advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID] ?? []).map { $0.uuidString }
         deviceServices[p.identifier] = services
         if showAllDevices || BluetoothPolicy.isCandidate(names: [advertisedName, p.name ?? ""], services: services) {
-            addDevice(p, name: advertisedName.isEmpty ? (p.name ?? "") : advertisedName)
+            addDevice(p, name: advertisedName.isEmpty ? (p.name ?? "") : advertisedName, rssi: RSSI.intValue)
         }
     }
     func connect(_ p: CBPeripheral) {
@@ -743,7 +774,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         peripheral = p; p.delegate = self; connection = .connecting
         status = "Connecting to \(deviceNames[p.identifier] ?? p.name ?? "wearable")…"
         note("Connection requested; waiting for Bluetooth confirmation.")
-        manager.connect(p, options: [CBConnectPeripheralOptionNotifyOnDisconnectionKey: true])
+        manager.connect(p, options: peripheralConnectOptions)
         // Capture only a short diagnostic log; the Bluetooth session has no time limit.
         captureEndsAt = Date().addingTimeInterval(120)
         deadline = Timer.scheduledTimer(withTimeInterval: 120, repeats: false) { [weak self] _ in self?.closeCaptureLog() }
@@ -759,6 +790,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         status = "Connected. Discovering battery and measurement services…"
         note("Bluetooth connection established. Continuous session enabled.")
         recordEvent(kind: "connection", title: "Wearable connected", detail: "Continuous Bluetooth session active. Awaiting fresh measurements.")
+        startSignalMonitoring(p)
         p.discoverServices(nil)
         noDataTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
             guard let self = self, self.owns(p) else { return }
@@ -789,6 +821,13 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         notify(title: "Nivvi connection lost", body: "No live measurements. Reconnecting to the wearable automatically.", identifier: "nivvi-connection", sirenSound: false)
         if central.state == .poweredOn { resumeSession() }
         else { connection = .bluetoothOff }
+    }
+    func peripheral(_ peripheral: CBPeripheral, didReadRSSI RSSI: NSNumber, error: Error?) {
+        guard owns(peripheral), error == nil else { return }
+        let value = RSSI.intValue
+        guard BluetoothSignal.isUsable(value) else { return }
+        signalRSSI = value
+        deviceRSSI[peripheral.identifier] = value
     }
     func peripheral(_ p: CBPeripheral, didDiscoverServices error: Error?) {
         guard owns(p) else { return }
@@ -1548,19 +1587,19 @@ struct ContentView: View {
     private var device: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Device").font(.largeTitle.bold())
-            panel { HStack(spacing: 14) { Image(systemName: "wave.3.right.circle.fill").font(.largeTitle).foregroundStyle(teal); VStack(alignment: .leading) { Text("Bluetooth heart-rate device").font(.headline); Text(monitor.connection.label).foregroundStyle(connected ? teal : .white.opacity(0.6)) }; Spacer() } }
+            panel { HStack(spacing: 14) { Image(systemName: "wave.3.right.circle.fill").font(.largeTitle).foregroundStyle(teal); VStack(alignment: .leading) { Text("Bluetooth heart-rate device").font(.headline); Text(monitor.connection.label).foregroundStyle(connected ? teal : .white.opacity(0.6)); if monitor.connection.isConnected { Text("Signal: \(BluetoothSignal.label(monitor.signalRSSI))").font(.caption).foregroundStyle(.white.opacity(0.7)) } }; Spacer() } }
             panel { VStack(alignment: .leading, spacing: 6) { Text("PROFILE").font(.caption.bold()).foregroundStyle(.white.opacity(0.55)); Text(monitor.profile.rawValue).font(.headline); Text("Nivvi only displays measurements when the Bluetooth format is recognised.").font(.caption).foregroundStyle(.white.opacity(0.6)) } }
             HStack(spacing: 14) { metric("Battery", monitor.battery == "—" ? "—" : monitor.battery); metric("Mode", mode.rawValue) }
             Button { monitor.active ? monitor.stop() : monitor.scan() } label: { Text(monitor.active ? "Disconnect" : (monitor.isScanning ? "Scanning…" : "Scan for devices")).font(.headline).frame(maxWidth: .infinity).padding(17) }.buttonStyle(.borderedProminent).tint(coral).disabled(monitor.isScanning)
             ForEach(sortedDevices, id: \.identifier) { p in
                 HStack(spacing: 10) {
                     Button { captureRequest = CaptureRequest(peripheral: p) } label: {
-                        HStack { VStack(alignment: .leading) { Text(monitor.deviceNames[p.identifier] ?? p.name ?? "Unnamed Bluetooth device").font(.headline); Text(BluetoothPolicy.isCandidate(names: [], services: monitor.deviceServices[p.identifier] ?? []) ? "Measurement service advertised · tap to inspect" : "Compatibility checked after connection").font(.caption) }; Spacer(); Image(systemName: "chevron.right") }.frame(maxWidth: .infinity, alignment: .leading).padding(14)
+                        HStack { VStack(alignment: .leading) { Text(monitor.deviceNames[p.identifier] ?? p.name ?? "Unnamed Bluetooth device").font(.headline); Text(BluetoothPolicy.isCandidate(names: [], services: monitor.deviceServices[p.identifier] ?? []) ? "Measurement service advertised · tap to inspect" : "Compatibility checked after connection").font(.caption); if let rssi = monitor.deviceRSSI[p.identifier] { Text("Signal: \(BluetoothSignal.label(rssi))").font(.caption).foregroundStyle(.white.opacity(0.65)) } }; Spacer(); Image(systemName: "chevron.right") }.frame(maxWidth: .infinity, alignment: .leading).padding(14)
                     }.buttonStyle(.bordered).disabled(monitor.active)
                     Button { toggleFavourite(p) } label: { Image(systemName: isFavourite(p) ? "star.fill" : "star").foregroundStyle(isFavourite(p) ? .yellow : .white.opacity(0.7)).padding(12) }.accessibilityLabel(isFavourite(p) ? "Remove favourite device" : "Favourite device")
                 }
             }
-            Text("Choose your Bluetooth heart-rate device. Star a device to keep it at the top of the list. Supported formats: standard Heart Rate Service and Pulse Oximeter Service. Seeing a Bluetooth device does not mean its measurements are accessible. Mapped formats should be checked independently. Close other Bluetooth apps before connecting.").font(.caption).foregroundStyle(.white.opacity(0.7))
+            Text("Choose your Bluetooth heart-rate device. Star a device to keep it at the top of the list. Supported formats: standard Heart Rate Service and Pulse Oximeter Service. Seeing a Bluetooth device does not mean its measurements are accessible. Mapped formats should be checked independently. Close other Bluetooth apps before connecting. Nivvi cannot boost radio power; stay close if the signal is weak. On iOS 17 or later, the phone will also auto-reconnect when the wearable is in range.").font(.caption).foregroundStyle(.white.opacity(0.7))
             Toggle("Show other nearby Bluetooth devices", isOn: $monitor.showAllDevices)
                 .disabled(monitor.active || monitor.isScanning)
             panel { VStack(alignment: .leading, spacing: 10) {

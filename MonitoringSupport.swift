@@ -63,6 +63,17 @@ struct StaleHeartRateDetector {
     mutating func reset() { self = Self() }
 }
 
+enum BluetoothSignal {
+    static func isUsable(_ rssi: Int) -> Bool { rssi != 127 && rssi < 0 }
+    static func label(_ rssi: Int?) -> String {
+        guard let rssi, isUsable(rssi) else { return "Unknown" }
+        if rssi >= -60 { return "Strong" }
+        if rssi >= -75 { return "Good" }
+        if rssi >= -85 { return "Fair" }
+        return "Weak — keep the iPhone closer"
+    }
+}
+
 enum HistoryMetric { case heartRate, oxygen
     func value(_ entry: SavedMeasurement) -> Double? { self == .heartRate ? entry.heartRateValue : entry.oxygenValue }
 }
