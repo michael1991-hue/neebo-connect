@@ -1588,23 +1588,29 @@ struct ContentView: View {
     }
 
     private var home: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 16) {
+            liveHero
             if BluetoothSignal.isWeak(monitor.signalRSSI) || monitor.connection == .reconnecting {
-                panel {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(nurseryHint).font(.headline)
-                        Text("Bluetooth will not reach downstairs. Lock the phone and leave it here.")
-                            .font(.caption).foregroundStyle(.white.opacity(0.7))
-                        Button("Nursery setup") { showNursery = true }
-                    }
-                }
+                Text(nurseryHint)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(coral)
+                Button("Nursery setup") { showNursery = true }
+                    .font(.caption.weight(.semibold))
             }
-            readinessPanel
-            Text("CURRENT STATUS").font(.caption.weight(.bold)).tracking(1.2).foregroundStyle(.white.opacity(0.55))
-            HStack(alignment: .firstTextBaseline) { Text(monitor.connection == .receiving ? "Fresh heart-rate data" : (connected ? "Waiting for heart rate" : "Ready to connect")).font(.title2.bold()); Spacer(); Image(systemName: mode.symbol).foregroundStyle(mode == .night ? lavender : .yellow) }
-            HStack(spacing: 14) {
-                readingCard("Heart rate", heartRateDisplay, heartRateDisplay == "No reading" ? "Waiting for usable heart rate" : liveMeasurementNote, "heart.fill", coral, receivedAt: monitor.lastHeartRateUpdate, animate: !monitor.staleHeartRateDetected)
-                if monitor.profile == .custom || monitor.profile.hasPulseOximeter { readingCard("Oxygen", oxygenDisplay, oxygenDisplay == "No reading" ? "Waiting for usable oxygen data" : liveMeasurementNote, "lungs.fill", teal, receivedAt: monitor.lastOxygenUpdate) }
+            HStack(spacing: 12) {
+                Button { monitor.selectHistoryDay(Date()); tab = 1 } label: {
+                    HStack { Text("Today’s story").font(.subheadline.weight(.semibold)); Spacer(); Image(systemName: "arrow.right") }
+                        .foregroundStyle(Color(red: 0.06, green: 0.16, blue: 0.25)).padding(14)
+                        .background(lavender).clipShape(RoundedRectangle(cornerRadius: 16))
+                }
+                Button { showParentNote = true } label: {
+                    Image(systemName: "square.and.pencil")
+                        .font(.title3)
+                        .frame(width: 52, height: 52)
+                        .background(.white.opacity(0.12))
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                }
+                .accessibilityLabel("Add a note")
             }
             if let spot = monitor.spotCheckText, let time = monitor.spotCheckReceived {
                 panel { VStack(alignment: .leading, spacing: 8) {
@@ -1614,15 +1620,61 @@ struct ContentView: View {
                     Text("One-off result · not live monitoring · no live alarms").font(.caption).foregroundStyle(.white.opacity(0.7))
                 } }
             }
-
-            Button { monitor.selectHistoryDay(Date()); tab = 1 } label: {
-                HStack { Text("View today’s story").font(.headline); Spacer(); Image(systemName: "arrow.right") }
-                    .foregroundStyle(Color(red: 0.06, green: 0.16, blue: 0.25)).padding(18).frame(maxWidth: .infinity)
-                    .background(lavender).clipShape(RoundedRectangle(cornerRadius: 20))
-            }
+            readinessPanel
             supportiveCard
             if !monitor.status.isEmpty { Text(monitor.status).font(.caption).foregroundStyle(.white.opacity(0.6)).fixedSize(horizontal: false, vertical: true) }
         }
+    }
+
+    private var liveHero: some View {
+        panel {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 8) {
+                    Circle().fill(monitor.connection == .receiving ? teal : (connected ? Color.orange : .gray)).frame(width: 10, height: 10)
+                    Text(monitor.connection == .receiving ? "Live" : monitor.connection.label)
+                        .font(.subheadline.weight(.semibold))
+                    Spacer()
+                    if monitor.connection.isConnected {
+                        Text(BluetoothSignal.label(monitor.signalRSSI))
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(BluetoothSignal.isWeak(monitor.signalRSSI) ? coral : .white.opacity(0.7))
+                    }
+                }
+                Text("Heart rate").font(.caption.weight(.bold)).tracking(1.1).foregroundStyle(.white.opacity(0.55))
+                HStack(alignment: .lastTextBaseline, spacing: 8) {
+                    Text(heroHeartRate)
+                        .font(.system(size: 72, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(monitor.staleHeartRateDetected ? coral : .white)
+                        .minimumScaleFactor(0.5)
+                        .lineLimit(1)
+                    if heartRateDisplay != "No reading" {
+                        Text("bpm").font(.title2.weight(.semibold)).foregroundStyle(.white.opacity(0.55)).padding(.bottom, 10)
+                    }
+                }
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Text(readingAge(monitor.lastHeartRateUpdate, now: context.date))
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(monitor.staleHeartRateDetected ? coral : teal)
+                }
+                Text(liveMeasurementNote).font(.caption).foregroundStyle(.white.opacity(0.65))
+                if monitor.profile == .custom || monitor.profile.hasPulseOximeter {
+                    Divider().overlay(.white.opacity(0.12))
+                    HStack {
+                        Label("Oxygen", systemImage: "lungs.fill").foregroundStyle(teal)
+                        Spacer()
+                        Text(oxygenDisplay).font(.title3.bold()).foregroundStyle(teal)
+                    }
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        Text(readingAge(monitor.lastOxygenUpdate, now: context.date)).font(.caption).foregroundStyle(.white.opacity(0.6))
+                    }
+                }
+            }
+        }
+    }
+    private var heroHeartRate: String {
+        if heartRateDisplay == "No reading" { return "—" }
+        return heartRateDisplay.replacingOccurrences(of: " bpm", with: "")
     }
 
     private var supportiveCard: some View {
