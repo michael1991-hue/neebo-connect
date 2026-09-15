@@ -28,10 +28,19 @@ workflows:
             --platform IOS \
             --capabilities PUSH_NOTIFICATIONS \
             || true
+          app-store-connect bundle-ids create "Nivvi Live Activity" \
+            --identifier "$BUNDLE_ID.widget" \
+            --platform IOS \
+            || true
       - name: Create App Store certificate and profile
         script: |
           export CERTIFICATE_PRIVATE_KEY="$(cat apple/codemagic-distribution.pem)"
           app-store-connect fetch-signing-files "$BUNDLE_ID" \
+            --type IOS_APP_STORE \
+            --create \
+            --delete-stale-profiles \
+            --certificate-key @file:apple/codemagic-distribution.pem
+          app-store-connect fetch-signing-files "$BUNDLE_ID.widget" \
             --type IOS_APP_STORE \
             --create \
             --delete-stale-profiles \
@@ -45,7 +54,7 @@ workflows:
           xcode-project build-ipa \
             --project "$XCODE_PROJECT" \
             --scheme "$XCODE_SCHEME" \
-            --archive-xcargs "MARKETING_VERSION=1.0 CURRENT_PROJECT_VERSION=19 CODE_SIGN_ENTITLEMENTS=apple/FamilySharing.entitlements"
+            --archive-xcargs "MARKETING_VERSION=1.0 CURRENT_PROJECT_VERSION=20 CODE_SIGN_ENTITLEMENTS=apple/FamilySharing.entitlements"
     artifacts:
       - build/ios/ipa/*.ipa
       - /tmp/xcodebuild_logs/*.log

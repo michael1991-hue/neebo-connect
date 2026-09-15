@@ -1233,6 +1233,49 @@ struct ProfileSetupView: View {
     }
 }
 
+
+struct NurserySetupView: View {
+    @Environment(\.dismiss) private var dismiss
+    let onDone: () -> Void
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 18) {
+                Text("Bluetooth only works in the child’s room.")
+                    .font(.title2.bold())
+                VStack(alignment: .leading, spacing: 12) {
+                    label("1", "Leave this iPhone in the room, on charge.")
+                    label("2", "Do not swipe Nivvi away. Lock the phone normally.")
+                    label("3", "If you go downstairs, readings stop unless a hub or a second phone is used.")
+                    label("4", "Weak signal means move the phone closer — Nivvi cannot boost Bluetooth.")
+                }
+                Text("Lock Screen shows heart rate and oxygen while this phone is monitoring. That is not a downstairs feed.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("I will leave this phone in the room") {
+                    onDone()
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .frame(maxWidth: .infinity)
+            }
+            .padding(24)
+            .navigationTitle("Nursery setup")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Later") { dismiss() } } }
+        }
+        .presentationDetents([.medium, .large])
+    }
+    private func label(_ step: String, _ text: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text(step).font(.headline).frame(width: 28, height: 28)
+                .background(Color.teal.opacity(0.3)).clipShape(Circle())
+            Text(text).font(.body)
+        }
+    }
+}
+
 struct CaptureRequest: Identifiable {
     let id = UUID()
     let peripheral: CBPeripheral
@@ -1319,9 +1362,11 @@ struct ContentView: View {
     @AppStorage("nivvi.profile.gender") private var childGender = "Prefer not to say"
     @AppStorage("nivvi.profile.avatarSymbol") private var avatarSymbol = "star.fill"
     @AppStorage("nivvi.profile.avatarColor") private var avatarColor = "teal"
+    @AppStorage("nivvi.nursery.acknowledged") private var nurseryAcknowledged = false
     @AppStorage("nivvi.favorite.device.ids") private var favoriteDeviceIDs = ""
     @State private var showFamily = false
     @State private var showProfile = false
+    @State private var showNursery = false
     @State private var showReadinessTest = false
     @State private var captureRequest: CaptureRequest?
     @State private var tab = 0
@@ -1383,6 +1428,23 @@ struct ContentView: View {
         return monitor.profile == .heartRate ? "Waiting for heart-rate data" : "Waiting for device data"
     }
     private var displayName: String { childName.isEmpty ? "Your child" : childName }
+    private var nurseryHint: String {
+        if BluetoothSignal.isWeak(monitor.signalRSSI) { return "Weak signal — keep this iPhone in the room" }
+        if monitor.connection == .reconnecting { return "Go back to the child’s room" }
+        return "Leave this iPhone in the room"
+    }
+    private func syncLiveActivity() {
+        let live = monitor.connection.isConnected || monitor.connection == .reconnecting
+        NivviLiveActivityBridge.sync(
+            title: displayName,
+            heartRate: heartRateDisplay,
+            oxygen: oxygenDisplay,
+            connection: monitor.connection.label,
+            signal: BluetoothSignal.label(monitor.signalRSSI),
+            nurseryHint: live ? nurseryHint : "",
+            monitoring: live
+        )
+    }
     private var avatarTint: Color {
         switch avatarColor {
         case "coral": return coral
@@ -1435,6 +1497,8 @@ struct ContentView: View {
             let photoURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("child-profile.jpg")
             try? FileManager.default.removeItem(at: photoURL)
             if childName.isEmpty { showProfile = true }
+            else if !nurseryAcknowledged { showNursery = true }
+            syncLiveActivity()
         }
         .sheet(isPresented: $showProfile) {
             ProfileSetupView(name: childName, birthDate: birthDate, gender: childGender, avatarSymbol: avatarSymbol, avatarColor: avatarColor) { name, date, gender, symbol, color in
@@ -1443,9 +1507,19 @@ struct ContentView: View {
                 childGender = gender
                 avatarSymbol = symbol
                 avatarColor = color
+                if !nurseryAcknowledged { showNursery = true }
                 return true
             }
         }
+        .sheet(isPresented: $showNursery) {
+            NurserySetupView { nurseryAcknowledged = true }
+        }
+        .onChange(of: monitor.connection) { _ in syncLiveActivity() }
+        .onChange(of: monitor.verifiedHeartRate) { _ in syncLiveActivity() }
+        .onChange(of: monitor.pulseOximeterOxygen) { _ in syncLiveActivity() }
+        .onChange(of: monitor.customHeartRateCandidate) { _ in syncLiveActivity() }
+        .onChange(of: monitor.customOxygenCandidate) { _ in syncLiveActivity() }
+        .onChange(of: monitor.signalRSSI) { _ in syncLiveActivity() }
         .sheet(isPresented: $showParentNote) {
             NavigationStack {
                 Form {
@@ -1515,6 +1589,16 @@ struct ContentView: View {
 
     private var home: some View {
         VStack(alignment: .leading, spacing: 18) {
+            if BluetoothSignal.isWeak(monitor.signalRSSI) || monitor.connection == .reconnecting {
+                panel {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(nurseryHint).font(.headline)
+                        Text("Bluetooth will not reach downstairs. Lock the phone and leave it here.")
+                            .font(.caption).foregroundStyle(.white.opacity(0.7))
+                        Button("Nursery setup") { showNursery = true }
+                    }
+                }
+            }
             readinessPanel
             Text("CURRENT STATUS").font(.caption.weight(.bold)).tracking(1.2).foregroundStyle(.white.opacity(0.55))
             HStack(alignment: .firstTextBaseline) { Text(monitor.connection == .receiving ? "Fresh heart-rate data" : (connected ? "Waiting for heart rate" : "Ready to connect")).font(.title2.bold()); Spacer(); Image(systemName: mode.symbol).foregroundStyle(mode == .night ? lavender : .yellow) }
@@ -1644,6 +1728,15 @@ struct ContentView: View {
     private var device: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Device").font(.largeTitle.bold())
+            panel {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("NURSERY").font(.caption.bold()).foregroundStyle(.white.opacity(0.55))
+                    Text(nurseryHint).font(.headline)
+                    Text("This iPhone is the monitor. Take it downstairs and the wearable disconnects.")
+                        .font(.caption).foregroundStyle(.white.opacity(0.7))
+                    Button(nurseryAcknowledged ? "Review nursery setup" : "Nursery setup") { showNursery = true }
+                }
+            }
             panel { HStack(spacing: 14) { Image(systemName: "wave.3.right.circle.fill").font(.largeTitle).foregroundStyle(teal); VStack(alignment: .leading) { Text("Bluetooth heart-rate device").font(.headline); Text(monitor.connection.label).foregroundStyle(connected ? teal : .white.opacity(0.6)); if monitor.connection.isConnected { Text("Signal: \(BluetoothSignal.label(monitor.signalRSSI))").font(.caption).foregroundStyle(.white.opacity(0.7)) } }; Spacer() } }
             panel { VStack(alignment: .leading, spacing: 6) { Text("PROFILE").font(.caption.bold()).foregroundStyle(.white.opacity(0.55)); Text(monitor.profile.rawValue).font(.headline); Text("Nivvi only displays measurements when the Bluetooth format is recognised.").font(.caption).foregroundStyle(.white.opacity(0.6)) } }
             HStack(spacing: 14) { metric("Battery", monitor.battery == "—" ? "—" : monitor.battery); metric("Mode", mode.rawValue) }

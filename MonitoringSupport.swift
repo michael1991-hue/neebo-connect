@@ -87,6 +87,10 @@ enum BluetoothSignal {
         if rssi >= -85 { return "Fair" }
         return "Weak — keep the iPhone closer"
     }
+    static func isWeak(_ rssi: Int?) -> Bool {
+        guard let rssi, isUsable(rssi) else { return false }
+        return rssi < -85
+    }
 }
 
 enum HistoryMetric { case heartRate, oxygen
