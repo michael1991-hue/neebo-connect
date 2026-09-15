@@ -38,6 +38,7 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
         ENABLE_USER_SCRIPT_SANDBOXING: YES
+        CODE_SIGN_ENTITLEMENTS: apple/FamilySharing.entitlements
     dependencies:
       - target: NivviLiveActivity
         embed: true

@@ -54,7 +54,7 @@ workflows:
           xcode-project build-ipa \
             --project "$XCODE_PROJECT" \
             --scheme "$XCODE_SCHEME" \
-            --archive-xcargs "MARKETING_VERSION=1.0 CURRENT_PROJECT_VERSION=20 CODE_SIGN_ENTITLEMENTS=apple/FamilySharing.entitlements"
+            --archive-xcargs "MARKETING_VERSION=1.0 CURRENT_PROJECT_VERSION=20"
     artifacts:
       - build/ios/ipa/*.ipa
       - /tmp/xcodebuild_logs/*.log
