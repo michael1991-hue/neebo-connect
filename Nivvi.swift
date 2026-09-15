@@ -1358,12 +1358,14 @@ struct ContentView: View {
     @ObservedObject var monitor: Monitor
     @StateObject private var wifi = WiFiRelay.shared
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("nivvi.profile.name") private var childName = ""
     @AppStorage("nivvi.profile.birthDate") private var childBirthDate = 0.0
     @AppStorage("nivvi.profile.gender") private var childGender = "Prefer not to say"
     @AppStorage("nivvi.profile.avatarSymbol") private var avatarSymbol = "star.fill"
     @AppStorage("nivvi.profile.avatarColor") private var avatarColor = "teal"
-    @AppStorage("nivvi.nursery.acknowledged") private var nurseryAcknowledged = false
+    @AppStorage("nivvi.atmosphere.enabled") private var atmosphereEnabled = true
+    @State private var skyOffset: CGFloat = 0
     @AppStorage("nivvi.favorite.device.ids") private var favoriteDeviceIDs = ""
     @State private var showFamily = false
     @State private var showProfile = false
@@ -1481,15 +1483,24 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            mode.background.ignoresSafeArea()
+            AtmosphereBackdrop(
+                mode: mode,
+                scroll: skyOffset,
+                animate: atmosphereEnabled && !reduceMotion && scenePhase == .active
+            )
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
             VStack(spacing: 0) {
                 header
                 if monitor.criticalAlertActive { alarmBanner.padding(.horizontal, 20) }
                 ScrollView(showsIndicators: false) {
                     Group {
                         if tab == 0 { home } else if tab == 1 { history } else if tab == 2 { device } else { settings }
-                    }.padding(.horizontal, 20).padding(.bottom, 110)
+                    }
+                    .padding(.horizontal, 20).padding(.bottom, 110)
+                    .modifier(AtmosphereScroll(offset: $skyOffset))
                 }
+                .coordinateSpace(name: "nivvi-sky")
                 bottomBar
             }
         }
@@ -1863,6 +1874,12 @@ struct ContentView: View {
             HStack { Label("Child profile", systemImage: "person.crop.circle"); Spacer(); Button("Edit") { showProfile = true }.buttonStyle(.bordered) }
             Text("\(displayName)\(ageText.isEmpty ? "" : " · \(ageText)")").font(.headline)
             Text("Stored on this iPhone by default.").font(.caption).foregroundStyle(.white.opacity(0.6))
+        } }
+        panel { VStack(alignment: .leading, spacing: 10) {
+            Text("Sky").font(.headline)
+            Toggle("Animated wallpaper", isOn: $atmosphereEnabled).tint(teal)
+            Text("Soft stars at night and distant birds by day. Follows Day/Night at the top of Home. Reduce Motion turns the animation off. It pauses when Nivvi is in the background; monitoring is unchanged.")
+                .font(.caption).foregroundStyle(.white.opacity(0.7))
         } }
         panel { VStack(alignment: .leading, spacing: 12) {
             Text("Second iPhone on this Wi‑Fi").font(.headline)
