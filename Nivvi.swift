@@ -1358,13 +1358,15 @@ struct HistoryChartsView: View {
     let coral: Color
     let teal: Color
     let lavender: Color
-    @State private var hours = 0
+    let caption: Color
+    let ink: Color
+    @State private var hours = 1
     @State private var windowEnd: Date?
     private var domain: ClosedRange<Date> {
         HistoryChartPolicy.window(day: day, hours: hours, endingAt: windowEnd ?? entries.last?.time ?? day)
     }
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             Picker("Chart range", selection: $hours) {
                 Text("Full day").tag(0); Text("6 hours").tag(6); Text("1 hour").tag(1)
             }.pickerStyle(.segmented)
@@ -1375,17 +1377,19 @@ struct HistoryChartsView: View {
                     Button("Later") { moveWindow(1) }.disabled(domain.upperBound >= dayEnd)
                 }.buttonStyle(.bordered)
             }
-            Text("\(domain.lowerBound.formatted(date: .omitted, time: .shortened)) – \(domain.upperBound.formatted(date: .omitted, time: .shortened))\(hours == 0 ? " · full calendar day" : "")").font(.caption).monospacedDigit()
-            Text("Blank intervals have no plotted readings. Tap or drag near a point to inspect its saved value.").font(.caption).foregroundStyle(.white.opacity(0.7))
+            Text("\(domain.lowerBound.formatted(date: .omitted, time: .shortened)) – \(domain.upperBound.formatted(date: .omitted, time: .shortened))\(hours == 0 ? " · full calendar day" : "")")
+                .font(.caption.weight(.semibold)).foregroundStyle(ink).monospacedDigit()
+            Text("Blank gaps are missing data. Drag the line to read a time.")
+                .font(.caption).foregroundStyle(caption)
             if let entry = selected {
                 Text("Selected: \(entry.time.formatted(date: .abbreviated, time: .standard)) · HR \(entry.heartRateValue.map(MetricText.number) ?? "—") bpm · O₂ \(entry.oxygenValue.map(MetricText.number) ?? "—")%")
                     .font(.caption.bold()).foregroundStyle(lavender).monospacedDigit()
             }
             Label("Heart rate", systemImage: "heart.fill").foregroundStyle(coral).font(.headline)
-            metricChart(.heartRate, tint: coral).frame(height: 180)
+            metricChart(.heartRate, tint: coral).frame(height: 140)
             if entries.contains(where: { $0.oxygenValue != nil }) {
                 Label("Oxygen", systemImage: "lungs.fill").foregroundStyle(teal).font(.headline)
-                metricChart(.oxygen, tint: teal).frame(height: 130)
+                metricChart(.oxygen, tint: teal).frame(height: 100)
             }
         }
         .onChange(of: hours) { _ in selected = nil; windowEnd = nil }
@@ -1399,12 +1403,19 @@ struct HistoryChartsView: View {
     private func metricChart(_ metric: HistoryMetric, tint: Color) -> some View {
         let visible = entries.filter { domain.contains($0.time) }
         let points = HistoryChartPolicy.points(visible, metric: metric)
+        let values = points.map(\.value)
+        let pad = metric == .heartRate ? 8.0 : 3.0
+        let floor = metric == .oxygen ? 70.0 : 40.0
+        let ceiling = metric == .oxygen ? 100.0 : 220.0
+        let fallback = metric == .oxygen ? 90.0 : 80.0
+        let low = max(floor, (values.min() ?? fallback) - pad)
+        let high = min(ceiling, (values.max() ?? (fallback + 20)) + pad)
         return Chart {
             ForEach(points) { point in
                 LineMark(x: .value("Time", point.entry.time), y: .value("Value", point.value), series: .value("Continuous segment", point.series))
                     .foregroundStyle(tint)
                 PointMark(x: .value("Time", point.entry.time), y: .value("Value", point.value))
-                    .symbolSize(5).foregroundStyle(tint)
+                    .symbolSize(8).foregroundStyle(tint)
             }
             if let entry = selected, let value = metric.value(entry), domain.contains(entry.time) {
                 RuleMark(x: .value("Selected time", entry.time)).foregroundStyle(lavender.opacity(0.6))
@@ -1412,6 +1423,19 @@ struct HistoryChartsView: View {
             }
         }
         .chartXScale(domain: domain)
+        .chartYScale(domain: low...max(low + 1, high))
+        .chartXAxis {
+            AxisMarks(values: .automatic(desiredCount: 4)) { _ in
+                AxisGridLine().foregroundStyle(caption.opacity(0.35))
+                AxisValueLabel().foregroundStyle(caption)
+            }
+        }
+        .chartYAxis {
+            AxisMarks(values: .automatic(desiredCount: 4)) { _ in
+                AxisGridLine().foregroundStyle(caption.opacity(0.35))
+                AxisValueLabel().foregroundStyle(caption)
+            }
+        }
         .chartOverlay { proxy in
             GeometryReader { geometry in
                 Rectangle().fill(.clear).contentShape(Rectangle()).gesture(DragGesture(minimumDistance: 0).onChanged { value in
@@ -1469,8 +1493,8 @@ struct ContentView: View {
     }
     private var mode: NivviMode { manualMode ?? automaticMode }
     private var ink: Color { mode == .night ? .white : Color(red: 0.20, green: 0.28, blue: 0.34) }
-    private var muted: Color { mode == .night ? Color.white.opacity(0.72) : Color(red: 0.36, green: 0.44, blue: 0.48) }
-    private var cardFill: Color { mode == .night ? Color.white.opacity(0.12) : Color(red: 0.97, green: 0.96, blue: 0.93).opacity(0.92) }
+    private var muted: Color { mode == .night ? Color.white.opacity(0.78) : Color(red: 0.28, green: 0.36, blue: 0.38) }
+    private var cardFill: Color { mode == .night ? Color.white.opacity(0.14) : Color(red: 0.88, green: 0.91, blue: 0.88) }
     private var accentMint: Color { mode == .night ? teal : Color(red: 0.08, green: 0.46, blue: 0.44) }
     private var connected: Bool { monitor.connection.isConnected }
     private var favouriteIDs: Set<String> { Set(favoriteDeviceIDs.split(separator: ",").map(String.init)) }
@@ -1753,7 +1777,7 @@ struct ContentView: View {
                     Label("Last spot-check", systemImage: "checkmark.circle").font(.headline)
                     Text("Received \(time.formatted(date: .abbreviated, time: .standard))").font(.caption.bold()).foregroundStyle(lavender)
                     Text(spot).font(.subheadline)
-                    Text("One-off result · not live monitoring · no live alarms").font(.caption).foregroundStyle(.white.opacity(0.7))
+                    Text("One-off result · not live monitoring · no live alarms").font(.caption).foregroundStyle(muted)
                 } }
             }
             readinessPanel
@@ -1880,7 +1904,7 @@ struct ContentView: View {
                     Link("GOSH: understanding SVT", destination: URL(string: "https://www.gosh.nhs.uk/conditions-and-treatments/conditions-we-treat/supraventricular-tachycardia/")!).font(.caption)
                 }
             }
-            Text("General guidance only · not medical advice").font(.caption2).foregroundStyle(.white.opacity(0.6))
+            Text("General guidance only · not medical advice").font(.caption2).foregroundStyle(muted)
         } }
     }
     private var history: some View {
@@ -1929,8 +1953,8 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 9) {
                         timestamp(event.time, tint: eventTint)
                         Label(event.title, systemImage: recovery ? "checkmark.circle.fill" : event.kind == "alarm" || event.kind == "critical" ? "bell.fill" : event.kind == "sleep" ? "moon.zzz.fill" : event.kind == "note" ? "note.text" : "antenna.radiowaves.left.and.right")
-                            .font(.headline).foregroundStyle(recovery ? eventTint : .white)
-                        Text(event.detail).font(.subheadline).foregroundStyle(recovery ? eventTint : .white.opacity(0.8))
+                            .font(.headline).foregroundStyle(recovery ? eventTint : ink)
+                        Text(event.detail).font(.subheadline).foregroundStyle(recovery ? eventTint : muted)
                         if let bpm = event.heartRate { Text("\(bpm) bpm").font(.title3.bold()).foregroundStyle(eventTint) }
                     }
                     .padding(18).frame(maxWidth: .infinity, alignment: .leading)
@@ -1946,19 +1970,19 @@ struct ContentView: View {
                 }
                 if let error = monitor.eventError { Text(error).foregroundStyle(coral) }
             } else {
-                Text("\(monitor.history.count) readings on this day").font(.subheadline)
-                Text("New history snapshots are saved every 30 seconds while data arrives. Alarm checks use eligible incoming heart-rate readings, independently of history snapshots. Older imports keep their original timing.").font(.caption).foregroundStyle(.white.opacity(0.7))
+                Text("\(monitor.history.count) readings on this day").font(.subheadline).foregroundStyle(ink)
+                Text("New history snapshots are saved every 30 seconds while data arrives. Alarm checks use eligible incoming heart-rate readings, independently of history snapshots. Older imports keep their original timing.").font(.caption).foregroundStyle(muted)
                 if monitor.history.isEmpty { panel { Text("No saved readings for this day.") } }
                 else {
                     panel {
-                        HistoryChartsView(entries: monitor.history, day: monitor.selectedHistoryDay, selected: $selectedHistoryReading, coral: coral, teal: teal, lavender: lavender)
+                        HistoryChartsView(entries: monitor.history, day: monitor.selectedHistoryDay, selected: $selectedHistoryReading, coral: coral, teal: accentMint, lavender: lavender, caption: muted, ink: ink)
                     }
-                    Text("Latest 50 readings for this day · export CSV for all entries").font(.caption)
+                    Text("Latest 50 readings for this day · export CSV for all entries").font(.caption).foregroundStyle(muted)
                     ForEach(Array(monitor.history.suffix(50).reversed())) { sample in
                         panel { VStack(alignment: .leading, spacing: 9) {
                             timestamp(sample.time, tint: lavender)
-                            HStack { Text(sample.heartRateValue.map { "\(MetricText.number($0)) bpm" } ?? "HR —").foregroundStyle(coral); Spacer(); Text(sample.oxygenValue.map { "O₂ \(MetricText.number($0))%" } ?? "O₂ —").foregroundStyle(teal) }.font(.title3.bold())
-                            Text(sample.source == "experimental-custom" ? "Mapped Bluetooth reading" : "Standard Bluetooth reading").font(.caption).foregroundStyle(.white.opacity(0.7))
+                            HStack { Text(sample.heartRateValue.map { "\(MetricText.number($0)) bpm" } ?? "HR —").foregroundStyle(coral); Spacer(); Text(sample.oxygenValue.map { "O₂ \(MetricText.number($0))%" } ?? "O₂ —").foregroundStyle(accentMint) }.font(.title3.bold())
+                            Text(sample.source == "experimental-custom" ? "Mapped Bluetooth reading" : "Standard Bluetooth reading").font(.caption).foregroundStyle(muted)
                         } }
                     }
                 }
@@ -2002,7 +2026,7 @@ struct ContentView: View {
         HStack(alignment: .firstTextBaseline) {
             Text(time.formatted(date: .omitted, time: .standard)).font(.system(size: 24, weight: .bold, design: .rounded)).monospacedDigit().foregroundStyle(tint)
             Spacer()
-            Text(time.formatted(date: .abbreviated, time: .omitted)).font(.caption.weight(.semibold)).foregroundStyle(.white.opacity(0.75))
+            Text(time.formatted(date: .abbreviated, time: .omitted)).font(.caption.weight(.semibold)).foregroundStyle(muted)
         }
     }
 
@@ -2056,19 +2080,19 @@ struct ContentView: View {
     private var device: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Device").font(.largeTitle.bold())
-            panel { HStack(spacing: 14) { Image(systemName: "wave.3.right.circle.fill").font(.largeTitle).foregroundStyle(teal); VStack(alignment: .leading) { Text("Bluetooth heart-rate device").font(.headline); Text(monitor.connection.label).foregroundStyle(connected ? teal : .white.opacity(0.6)); if monitor.connection.isConnected { Text("Signal: \(BluetoothSignal.label(monitor.signalRSSI))").font(.caption).foregroundStyle(.white.opacity(0.7)) } }; Spacer() } }
-            panel { VStack(alignment: .leading, spacing: 6) { Text("PROFILE").font(.caption.bold()).foregroundStyle(.white.opacity(0.55)); Text(monitor.profile.rawValue).font(.headline); Text("Nivvi only displays measurements when the Bluetooth format is recognised.").font(.caption).foregroundStyle(.white.opacity(0.6)) } }
+            panel { HStack(spacing: 14) { Image(systemName: "wave.3.right.circle.fill").font(.largeTitle).foregroundStyle(teal); VStack(alignment: .leading) { Text("Bluetooth heart-rate device").font(.headline); Text(monitor.connection.label).foregroundStyle(connected ? accentMint : muted); if monitor.connection.isConnected { Text("Signal: \(BluetoothSignal.label(monitor.signalRSSI))").font(.caption).foregroundStyle(muted) } }; Spacer() } }
+            panel { VStack(alignment: .leading, spacing: 6) { Text("PROFILE").font(.caption.bold()).foregroundStyle(muted); Text(monitor.profile.rawValue).font(.headline); Text("Nivvi only displays measurements when the Bluetooth format is recognised.").font(.caption).foregroundStyle(muted) } }
             HStack(spacing: 14) { metric("Battery", (monitor.battery == "—" || monitor.battery.isEmpty) ? "Unavailable" : monitor.battery); metric("Mode", mode.rawValue) }
             Button { monitor.active ? monitor.stop() : monitor.scan() } label: { Text(monitor.active ? "Disconnect" : (monitor.isScanning ? "Scanning…" : "Scan for devices")).font(.headline).frame(maxWidth: .infinity).padding(17) }.buttonStyle(.borderedProminent).tint(coral).disabled(monitor.isScanning)
             ForEach(sortedDevices, id: \.identifier) { p in
                 HStack(spacing: 10) {
                     Button { captureRequest = CaptureRequest(peripheral: p) } label: {
-                        HStack { VStack(alignment: .leading) { Text(monitor.deviceNames[p.identifier] ?? p.name ?? "Unnamed Bluetooth device").font(.headline); Text(BluetoothPolicy.isCandidate(names: [], services: monitor.deviceServices[p.identifier] ?? []) ? "Measurement service advertised · tap to inspect" : "Compatibility checked after connection").font(.caption); if let rssi = monitor.deviceRSSI[p.identifier] { Text("Signal: \(BluetoothSignal.label(rssi))").font(.caption).foregroundStyle(.white.opacity(0.65)) } }; Spacer(); Image(systemName: "chevron.right") }.frame(maxWidth: .infinity, alignment: .leading).padding(14)
+                        HStack { VStack(alignment: .leading) { Text(monitor.deviceNames[p.identifier] ?? p.name ?? "Unnamed Bluetooth device").font(.headline); Text(BluetoothPolicy.isCandidate(names: [], services: monitor.deviceServices[p.identifier] ?? []) ? "Measurement service advertised · tap to inspect" : "Compatibility checked after connection").font(.caption); if let rssi = monitor.deviceRSSI[p.identifier] { Text("Signal: \(BluetoothSignal.label(rssi))").font(.caption).foregroundStyle(muted) } }; Spacer(); Image(systemName: "chevron.right") }.frame(maxWidth: .infinity, alignment: .leading).padding(14)
                     }.buttonStyle(.bordered).disabled(monitor.active)
-                    Button { toggleFavourite(p) } label: { Image(systemName: isFavourite(p) ? "star.fill" : "star").foregroundStyle(isFavourite(p) ? .yellow : .white.opacity(0.7)).padding(12) }.accessibilityLabel(isFavourite(p) ? "Remove favourite device" : "Favourite device")
+                    Button { toggleFavourite(p) } label: { Image(systemName: isFavourite(p) ? "star.fill" : "star").foregroundStyle(isFavourite(p) ? .yellow : muted).padding(12) }.accessibilityLabel(isFavourite(p) ? "Remove favourite device" : "Favourite device")
                 }
             }
-            Text("Choose your Bluetooth heart-rate device. Star a device to keep it at the top of the list. Supported formats: standard Heart Rate Service and Pulse Oximeter Service. Seeing a Bluetooth device does not mean its measurements are accessible. Mapped formats should be checked independently. Close other Bluetooth apps before connecting. Nivvi cannot boost radio power; stay close if the signal is weak. On iOS 17 or later, the phone will also auto-reconnect when the wearable is in range.").font(.caption).foregroundStyle(.white.opacity(0.7))
+            Text("Choose your Bluetooth heart-rate device. Star a device to keep it at the top of the list. Supported formats: standard Heart Rate Service and Pulse Oximeter Service. Seeing a Bluetooth device does not mean its measurements are accessible. Mapped formats should be checked independently. Close other Bluetooth apps before connecting. Nivvi cannot boost radio power; stay close if the signal is weak. On iOS 17 or later, the phone will also auto-reconnect when the wearable is in range.").font(.caption).foregroundStyle(muted)
             Toggle("Show other nearby Bluetooth devices", isOn: $monitor.showAllDevices)
                 .disabled(monitor.active || monitor.isScanning)
             panel { VStack(alignment: .leading, spacing: 10) {
@@ -2085,7 +2109,7 @@ struct ContentView: View {
                     Text("Apple Watch needs a Watch/HealthKit integration. Oura needs an Oura integration. These are not connected in this build, and seeing their Bluetooth names does not make their measurements available.")
                     Text("Base-station and proprietary monitors may require manufacturer documentation or an API. Unrecognised formats remain undecoded.")
                     Text("Pulse-oximeter continuous readings can use the configured rate alarms. Spot-checks are saved as events and never start live alarms. Oxygen is displayed and recorded; oxygen alarms are not implemented.")
-                }.font(.caption).foregroundStyle(.white.opacity(0.8))
+                }.font(.caption).foregroundStyle(muted)
             }
             DisclosureGroup("Connection details") {
                 VStack(alignment: .leading, spacing: 8) {
@@ -2117,17 +2141,17 @@ struct ContentView: View {
         panel { VStack(alignment: .leading, spacing: 10) {
             HStack { Label("Child profile", systemImage: "person.crop.circle"); Spacer(); Button("Edit") { showProfile = true }.buttonStyle(.bordered) }
             Text("\(displayName)\(ageText.isEmpty ? "" : " · \(ageText)")").font(.headline)
-            Text("Stored on this iPhone by default.").font(.caption).foregroundStyle(.white.opacity(0.6))
+            Text("Stored on this iPhone by default.").font(.caption).foregroundStyle(muted)
         } }
         panel { VStack(alignment: .leading, spacing: 10) {
             Text("Sky").font(.headline)
             Toggle("Animated wallpaper", isOn: $atmosphereEnabled).tint(teal)
             Text("Soft stars at night and distant birds by day. Follows Day/Night at the top of Home. Reduce Motion turns the animation off. It pauses when Nivvi is in the background; monitoring is unchanged.")
-                .font(.caption).foregroundStyle(.white.opacity(0.7))
+                .font(.caption).foregroundStyle(muted)
         } }
         panel { VStack(alignment: .leading, spacing: 12) {
             Text("Second iPhone on this Wi‑Fi").font(.headline)
-            Text("Bluetooth cannot serve two phones. Leave the nursery iPhone connected to the wearable, then share over Wi‑Fi to the downstairs phone.").font(.caption).foregroundStyle(.white.opacity(0.7))
+            Text("Bluetooth cannot serve two phones. Leave the nursery iPhone connected to the wearable, then share over Wi‑Fi to the downstairs phone.").font(.caption).foregroundStyle(muted)
             Toggle("Share from this iPhone", isOn: Binding(get: { wifi.hosting }, set: { wifi.setHosting($0) })).tint(teal)
             if wifi.hosting {
                 Text("Share code \(wifi.pin)").font(.title2.bold().monospacedDigit())
@@ -2144,7 +2168,7 @@ struct ContentView: View {
                 }
                 Text("Both phones must be on the same Wi‑Fi. Allow local network access if iOS asks.").font(.caption)
             }
-            Text(wifi.status).font(.caption).foregroundStyle(.white.opacity(0.7))
+            Text(wifi.status).font(.caption).foregroundStyle(muted)
         } }
         panel { VStack(alignment: .leading, spacing: 12) {
             Text("Heart-rate alerts").font(.headline)
@@ -2188,7 +2212,7 @@ struct ContentView: View {
             Button("Test notification in 10 seconds") { monitor.testNotification() }.buttonStyle(.bordered)
             Text(monitor.soundStatus).font(.caption)
             Text(monitor.notificationStatus).font(.caption)
-            Text("Low alarms fire strictly below the low limit; high alarms fire strictly above the high limit. The alarm self-clears after a fresh in-range reading. Lock-screen sounds depend on iPhone volume, Silent mode, Focus and notification permissions; Critical Alerts approval is not included.").font(.caption).foregroundStyle(.white.opacity(0.7))
+            Text("Low alarms fire strictly below the low limit; high alarms fire strictly above the high limit. The alarm self-clears after a fresh in-range reading. Lock-screen sounds depend on iPhone volume, Silent mode, Focus and notification permissions; Critical Alerts approval is not included.").font(.caption).foregroundStyle(muted)
         }.padding(.top, 12) } }
         Group {
         panel { DisclosureGroup("FAQ") { VStack(alignment: .leading, spacing: 12) {
@@ -2211,12 +2235,12 @@ struct ContentView: View {
         }.padding(.top, 12) } }
         panel { DisclosureGroup("Privacy") { VStack(alignment: .leading, spacing: 12) {
             Text("Local monitoring needs no account. Optional family sharing uses verified email accounts and uploads the latest readings and status only after you enable it. Photos, birth dates, notes and historical readings stay on this phone. No analytics or AI service is used.").font(.caption)
-            Text("Family sharing has its own privacy notice and Stop sharing control. You can remove members and delete the online account. File exports, recipients and iOS backups can retain separate copies.").font(.caption).foregroundStyle(.white.opacity(0.7))
+            Text("Family sharing has its own privacy notice and Stop sharing control. You can remove members and delete the online account. File exports, recipients and iOS backups can retain separate copies.").font(.caption).foregroundStyle(muted)
 
         }.padding(.top, 12) } }
         panel { DisclosureGroup("Terms") { VStack(alignment: .leading, spacing: 12) {
             Text("Nivvi displays device readings and records events. It does not provide a diagnosis or emergency response. Bluetooth links, sensors, alarms and notifications can fail or be delayed. Follow your child’s care plan and seek urgent help for serious symptoms; do not wait for this app.").font(.caption)
-            Text("Before public release, the operator name, monitored support address, final privacy notice and jurisdiction-specific terms must be completed in the support documentation.").font(.caption).foregroundStyle(.white.opacity(0.7))
+            Text("Before public release, the operator name, monitored support address, final privacy notice and jurisdiction-specific terms must be completed in the support documentation.").font(.caption).foregroundStyle(muted)
 
         }.padding(.top, 12) } }
         panel {
@@ -2225,13 +2249,13 @@ struct ContentView: View {
         }.sheet(isPresented: $showFamily) { NavigationStack { FamilySharingView().toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showFamily = false } } } } }
         panel { DisclosureGroup("Connection and support") { VStack(alignment: .leading, spacing: 12) {
             Text("Keeps the Bluetooth session active and attempts reconnection after signal loss. Tap Disconnect to end the session.").font(.caption)
-            Text("Background readings require device notifications. Keep Nivvi open if the wearable only responds to reads. Force-quitting the app, Bluetooth being off, an empty battery or iOS restrictions can interrupt monitoring.").font(.caption).foregroundStyle(.white.opacity(0.7))
+            Text("Background readings require device notifications. Keep Nivvi open if the wearable only responds to reads. Force-quitting the app, Bluetooth being off, an empty battery or iOS restrictions can interrupt monitoring.").font(.caption).foregroundStyle(muted)
 
         }.padding(.top, 12) } }
         panel { DisclosureGroup("About Nivvi") { VStack(alignment: .leading, spacing: 12) {
             Text("Nivvi \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—") · Build \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")").font(.headline)
             Text("Bluetooth: \(monitor.connection.label) · Profile: \(monitor.profile.rawValue) · Battery: \(monitor.battery)").font(.caption)
-            Text("Readings, events and notes are retained locally for 30 calendar days. The iPhone controls Bluetooth and notifications; Nivvi cannot activate cellular service or update proprietary device firmware.").font(.caption).foregroundStyle(.white.opacity(0.7))
+            Text("Readings, events and notes are retained locally for 30 calendar days. The iPhone controls Bluetooth and notifications; Nivvi cannot activate cellular service or update proprietary device firmware.").font(.caption).foregroundStyle(muted)
 
         }.padding(.top, 12) } }
         }
@@ -2250,9 +2274,9 @@ struct ContentView: View {
                 Text(readingAge(receivedAt, now: context.date)).font(.caption.bold())
                     .foregroundStyle(tint)
             }
-            Text(note).font(.caption2).foregroundStyle(.white.opacity(0.65))
+            Text(note).font(.caption2).foregroundStyle(muted)
         }.padding(16).frame(maxWidth: .infinity, minHeight: 170, alignment: .leading)
-            .background(.white.opacity(0.09)).clipShape(RoundedRectangle(cornerRadius: 22))
+            .background(cardFill).clipShape(RoundedRectangle(cornerRadius: 22))
     }
     private func readingAge(_ date: Date?, now: Date) -> String {
         guard let date else { return "No reading received" }
@@ -2291,8 +2315,8 @@ struct ContentView: View {
         HStack { Image(systemName: ready ? "checkmark.circle.fill" : "exclamationmark.circle").foregroundStyle(ready ? teal : coral)
             Text(title); Spacer(); Text(detail).font(.caption).multilineTextAlignment(.trailing) }
     }
-    private func smallCard(_ title: String, _ value: String, _ icon: String, _ tint: Color) -> some View { HStack { Image(systemName: icon).foregroundStyle(tint); VStack(alignment: .leading) { Text(title).font(.subheadline); Text(value).font(.caption).foregroundStyle(.white.opacity(0.6)) } }.padding(16).frame(maxWidth: .infinity, alignment: .leading).background(.white.opacity(0.09)).clipShape(RoundedRectangle(cornerRadius: 18)) }
-    private func metric(_ title: String, _ value: String) -> some View { VStack(alignment: .leading) { Text(title).font(.caption).foregroundStyle(.white.opacity(0.55)); Text(value).font(.headline) }.padding(16).frame(maxWidth: .infinity, alignment: .leading).background(.white.opacity(0.09)).clipShape(RoundedRectangle(cornerRadius: 18)) }
+    private func smallCard(_ title: String, _ value: String, _ icon: String, _ tint: Color) -> some View { HStack { Image(systemName: icon).foregroundStyle(tint); VStack(alignment: .leading) { Text(title).font(.subheadline); Text(value).font(.caption).foregroundStyle(muted) } }.padding(16).frame(maxWidth: .infinity, alignment: .leading).background(cardFill).clipShape(RoundedRectangle(cornerRadius: 18)) }
+    private func metric(_ title: String, _ value: String) -> some View { VStack(alignment: .leading) { Text(title).font(.caption).foregroundStyle(muted); Text(value).font(.headline) }.padding(16).frame(maxWidth: .infinity, alignment: .leading).background(cardFill).clipShape(RoundedRectangle(cornerRadius: 18)) }
 }
 
 extension Notification.Name {
