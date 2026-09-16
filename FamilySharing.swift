@@ -5,6 +5,11 @@ import UserNotifications
 struct FamilyAccount: Codable { let token: String; let user_id: String; let email: String }
 struct SharedFamily: Codable, Identifiable { let id: String; let label: String; let owner: String }
 struct FamilyMember: Codable, Identifiable { let id: String; let email: String }
+struct FamilySample: Codable {
+    var t: Double
+    var hr: Double?
+    var o2: Double?
+}
 struct FamilySnapshot: Codable {
     var captured: Double
     var heart_rate: Double?
@@ -12,6 +17,7 @@ struct FamilySnapshot: Codable {
     var source: String
     var alarm: String
     var connection: String
+    var history: [FamilySample] = []
 }
 struct RemoteReading: Codable { let fresh: Bool; let age: Double?; let snapshot: FamilySnapshot? }
 struct FamilyReply: Codable { var message: String?; var code: String?; var ok: Bool? }
@@ -343,20 +349,19 @@ struct FamilySharingView: View {
     }
     private var ownerControls: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Share from this phone").font(.headline)
-            Text("Only the latest readings, source, status, alert state and your chosen family label are uploaded. Photos, birth dates, notes and historical readings are not shared. The latest snapshot expires after 24 hours; you can revoke access or stop sharing at any time.").font(.caption)
-            TextField("Family label (use a nickname)", text: $label)
-            Toggle("I have authority to share these readings and agree to the family privacy notice", isOn: $consent)
-            Button(relay.publishing ? "Uploading from this phone" : "Enable sharing on this phone") { relay.perform { try await relay.enable(label: label) } }.disabled(!consent || relay.publishing)
+            Text("Nursery iPhone").font(.headline)
+            Text("This phone stays on Bluetooth and sends live numbers plus today’s history to invited emails.").font(.caption)
+            Toggle("I have authority to share these readings", isOn: $consent)
+            Button(relay.publishing ? "Sharing from this phone" : "Start sharing") { relay.perform { try await relay.enable(label: label) } }.disabled(!consent || relay.publishing)
             if relay.families.contains(where: { $0.owner == relay.userID }) {
-                Button("Stop sharing and remove all access", role: .destructive) { confirmStop = true }
-                TextField("Family member's email", text: $inviteEmail).keyboardType(.emailAddress).textInputAutocapitalization(.never).autocorrectionDisabled()
-                Button("Create private invitation") { relay.perform { try await relay.invite(email: inviteEmail) } }
-                if let invitation = relay.invitation { ShareLink("Share invitation code", item: invitation) }
-                Button("Manage members") { relay.perform { try await relay.refreshMembers() } }
-                ForEach(relay.members) { member in
-                    HStack { Text(member.email); Spacer(); Button("Remove", role: .destructive) { relay.perform { try await relay.revoke(member) } } }
+                TextField("Family member’s email", text: $inviteEmail).keyboardType(.emailAddress).textInputAutocapitalization(.never).autocorrectionDisabled()
+                Button("Email an invite") { relay.perform { try await relay.invite(email: inviteEmail) } }
+                if let invitation = relay.invitation {
+                    Text("Invite code").font(.caption)
+                    Text(invitation).font(.title3.monospacedDigit().weight(.bold))
+                    ShareLink("Send the code", item: invitation)
                 }
+                Button("Stop sharing", role: .destructive) { confirmStop = true }
             }
         }
     }

@@ -10,6 +10,7 @@ import smtplib
 import ssl
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager, asynccontextmanager
 from email.message import EmailMessage
 from pathlib import Path
@@ -157,6 +158,12 @@ class Invite(BaseModel):
     code: str = Field(min_length=20, max_length=128)
 
 
+class HistoryPoint(BaseModel):
+    t: float
+    hr: float | None = Field(default=None, ge=1, le=65535)
+    o2: float | None = Field(default=None, ge=0, le=100)
+
+
 class Snapshot(BaseModel):
     # The capture time must come from the source device callback, never upload time.
     captured: float
@@ -165,6 +172,7 @@ class Snapshot(BaseModel):
     source: str = Field(max_length=80)
     alarm: str = Field(default="none", pattern="^(none|high|low|sensor)$")
     connection: str = Field(max_length=80)
+    history: list[HistoryPoint] = Field(default_factory=list, max_length=500)
 
 
 class Device(BaseModel):

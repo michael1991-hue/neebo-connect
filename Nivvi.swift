@@ -347,7 +347,10 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         let hr = hrTime.map { now.timeIntervalSince($0) <= 30 } == true ? (pulseOximeterRate ?? verifiedHeartRate.map(Double.init) ?? customHeartRateCandidate.map(Double.init)) : nil
         let ox = oxTime.map { now.timeIntervalSince($0) <= 30 } == true ? (pulseOximeterOxygen ?? verifiedOxygen.map(Double.init) ?? customOxygenCandidate.map(Double.init)) : nil
         let times = [(hr == nil ? nil : hrTime), (ox == nil ? nil : oxTime)].compactMap { $0 }
-        let snapshot = FamilySnapshot(captured: (times.min() ?? now).timeIntervalSince1970, heart_rate: hr, oxygen: ox, source: profile.rawValue, alarm: alarmKind.map { $0 == .high ? "high" : "low" } ?? (staleHeartRateDetected ? "sensor" : "none"), connection: connection.label)
+        let day = Calendar.current.startOfDay(for: now)
+        let rows = (try? archive.load(day: day)) ?? history
+        let points = rows.suffix(400).map { FamilySample(t: $0.time.timeIntervalSince1970, hr: $0.heartRateValue, o2: $0.oxygenValue) }
+        let snapshot = FamilySnapshot(captured: (times.min() ?? now).timeIntervalSince1970, heart_rate: hr, oxygen: ox, source: profile.rawValue, alarm: alarmKind.map { $0 == .high ? "high" : "low" } ?? (staleHeartRateDetected ? "sensor" : "none"), connection: connection.label, history: Array(points))
         Task { @MainActor in FamilyRelay.shared.capture(snapshot) }
     }
     private func saveMeasurement(heartRate: Int?, oxygen: Int?, source: String, exactHeartRate: Double? = nil, exactOxygen: Double? = nil, segment: UUID? = nil) {
@@ -1656,7 +1659,21 @@ struct ContentView: View {
         if monitor.customHeartRateCandidate != nil || monitor.customOxygenCandidate != nil { return "Bluetooth value received" }
         return monitor.profile == .heartRate ? "Waiting for heart-rate data" : "Waiting for device data"
     }
-    private var displayName: String { childName.isEmpty ? "Your child" : childName }
+    private var displayedHistory: [SavedMeasurement] {
+        if family.viewingRemote, let samples = family.remote?.snapshot?.history, !samples.isEmpty {
+            return samples.map {
+                SavedMeasurement(
+                    time: Date(timeIntervalSince1970: $0.t),
+                    heartRate: $0.hr.map { Int($0.rounded()) },
+                    oxygen: $0.o2.map { Int($0.rounded()) },
+                    source: "family-share",
+                    exactHeartRate: $0.hr,
+                    exactOxygen: $0.o2
+                )
+            }
+        }
+        return monitor.history
+    }
     private var statusCaption: String {
         if monitor.wearableCharging { return "Charging · monitoring paused" }
         if wifi.remoteFresh { return "Shared over Wi‑Fi" }
@@ -1977,7 +1994,7 @@ struct ContentView: View {
     }
     private var fiveMinuteReadings: [SavedMeasurement] {
         let start = Date().addingTimeInterval(-300)
-        return monitor.history.filter { sample in
+        return displayedHistory.filter { sample in
             sample.time >= start && (sample.heartRateValue ?? 0) > 0
         }
     }
@@ -2160,15 +2177,15 @@ struct ContentView: View {
                 }
                 if let error = monitor.eventError { Text(error).foregroundStyle(coral) }
             } else {
-                Text("\(monitor.history.count) readings on this day").font(.subheadline).foregroundStyle(ink)
-                Text("New history snapshots are saved every 30 seconds while data arrives. Alarm checks use eligible incoming heart-rate readings, independently of history snapshots. Older imports keep their original timing.").font(.caption).foregroundStyle(muted)
-                if monitor.history.isEmpty { panel { Text("No saved readings for this day.") } }
+                Text("\(displayedHistory.count) readings on this day").font(.subheadline).foregroundStyle(ink)
+                Text(family.viewingRemote ? "These charts are from the nursery iPhone over family sharing." : "New history snapshots are saved every 30 seconds while data arrives. Alarm checks use eligible incoming heart-rate readings, independently of history snapshots. Older imports keep their original timing.").font(.caption).foregroundStyle(muted)
+                if displayedHistory.isEmpty { panel { Text("No saved readings for this day.") } }
                 else {
                     panel {
-                        HistoryChartsView(entries: monitor.history, day: monitor.selectedHistoryDay, selected: $selectedHistoryReading, coral: coral, teal: accentMint, lavender: stamp, caption: muted, ink: ink)
+                        HistoryChartsView(entries: displayedHistory, day: family.viewingRemote ? Calendar.current.startOfDay(for: Date()) : monitor.selectedHistoryDay, selected: $selectedHistoryReading, coral: coral, teal: accentMint, lavender: stamp, caption: muted, ink: ink)
                     }
                     Text("Latest 50 readings for this day · export CSV for all entries").font(.caption).foregroundStyle(muted)
-                    ForEach(Array(monitor.history.suffix(50).reversed())) { sample in
+                    ForEach(Array(displayedHistory.suffix(50).reversed())) { sample in
                         panel { VStack(alignment: .leading, spacing: 9) {
                             timestamp(sample.time, tint: stamp)
                             HStack { Text(sample.heartRateValue.map { "\(MetricText.number($0)) bpm" } ?? "HR —").foregroundStyle(coral); Spacer(); Text(sample.oxygenValue.map { "O₂ \(MetricText.number($0))%" } ?? "O₂ —").foregroundStyle(accentMint) }.font(.title3.bold())
