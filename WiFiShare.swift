@@ -24,12 +24,22 @@ final class WiFiRelay: ObservableObject {
     @Published var playAlerts = true
     @Published var status = "Off"
     @Published var latest: WiFiSnapshot?
+    private var wantHost = false
+    private var wantFollow = false
     private var listener: NWListener?
     private var browser: NWBrowser?
     private var hosts: [NWConnection] = []
     private var viewer: NWConnection?
     private var payload = Data()
     private var buffer = Data()
+    private var keepAlive: Timer?
+    private var knownEndpoint: NWEndpoint?
+    private var lastHR = "No reading"
+    private var lastO2 = "No reading"
+    private var lastConnection = "Off"
+    private var lastAlarm = "none"
+    private var lastCharging = false
+    private var lastBattery = "—"
 
     init() {
         if let saved = UserDefaults.standard.string(forKey: "nivvi.wifi.pin"), saved.count == 4 {
@@ -38,23 +48,37 @@ final class WiFiRelay: ObservableObject {
             pin = String(format: "%04d", Int.random(in: 1000...9999))
             UserDefaults.standard.set(pin, forKey: "nivvi.wifi.pin")
         }
+        keepAlive = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.tick() }
+        }
+        if let timer = keepAlive { RunLoop.main.add(timer, forMode: .common) }
     }
 
     var remoteFresh: Bool {
         guard following, let latest else { return false }
-        return Date().timeIntervalSince1970 - latest.captured < 20
+        return Date().timeIntervalSince1970 - latest.captured < 45
     }
 
     func publish(heartRate: String, oxygen: String, connection: String, alarm: String = "none", charging: Bool = false, battery: String = "—") {
-        let snap = WiFiSnapshot(pin: pin, heartRate: heartRate, oxygen: oxygen, connection: connection, captured: Date().timeIntervalSince1970, alarm: alarm, charging: charging, battery: battery)
+        lastHR = heartRate
+        lastO2 = oxygen
+        lastConnection = connection
+        lastAlarm = alarm
+        lastCharging = charging
+        lastBattery = battery
+        emit()
+    }
+
+    private func emit() {
+        let snap = WiFiSnapshot(pin: pin, heartRate: lastHR, oxygen: lastO2, connection: lastConnection, captured: Date().timeIntervalSince1970, alarm: lastAlarm, charging: lastCharging, battery: lastBattery)
         payload = (try? JSONEncoder().encode(snap)) ?? Data()
         payload.append(10)
-        guard hosting else { return }
-        for connection in hosts { connection.send(content: payload, completion: .contentProcessed { _ in }) }
+        flush()
     }
 
     func setHosting(_ on: Bool) {
-        if on { startHost() } else { stopHost() }
+        wantHost = on
+        if on { wantFollow = false; startHost() } else { stopHost() }
     }
 
     func setJoinPin(_ value: String) {
@@ -62,29 +86,79 @@ final class WiFiRelay: ObservableObject {
     }
 
     func setFollowing(_ on: Bool) {
+        wantFollow = on
         if on {
             guard joinPin.count == 4 else {
                 status = "Type the 4-digit code from the nursery iPhone first."
                 following = false
+                wantFollow = false
                 return
             }
+            wantHost = false
             startViewer()
         } else {
             stopViewer()
         }
     }
 
+    func revive() {
+        if wantHost { if listener == nil { startHost() } else { flush() } }
+        if wantFollow, viewer == nil { startViewer() }
+    }
+
+    private func tick() {
+        if wantHost {
+            emit()
+            if listener == nil { startHost() }
+        }
+        if wantFollow {
+            following = true
+            if viewer == nil { reconnectViewer() }
+        }
+    }
+
+    private func parameters() -> NWParameters {
+        let parameters = NWParameters.tcp
+        parameters.includePeerToPeer = true
+        if let tcp = parameters.defaultProtocolStack.transportProtocol as? NWProtocolTCP.Options {
+            tcp.enableKeepalive = true
+            tcp.keepaliveIdle = 5
+            tcp.keepaliveInterval = 5
+            tcp.noDelay = true
+        }
+        return parameters
+    }
+
+    private func flush() {
+        guard wantHost, !payload.isEmpty else { return }
+        for connection in hosts {
+            connection.send(content: payload, completion: .contentProcessed { [weak self] error in
+                if error != nil {
+                    Task { @MainActor in self?.hosts.removeAll { $0 === connection } }
+                }
+            })
+        }
+    }
+
     private func startHost() {
         stopViewer()
-        stopHost()
+        stopHost(clearWant: false)
         do {
-            let listener = try NWListener(using: .tcp)
+            let listener = try NWListener(using: parameters())
             listener.service = NWListener.Service(name: "Nivvi", type: Self.type)
             listener.stateUpdateHandler = { [weak self] state in
                 Task { @MainActor in
                     switch state {
-                    case .ready: self?.hosting = true; self?.status = "Sharing on this Wi‑Fi · code \(self?.pin ?? "")"
-                    case .failed(let error): self?.status = error.localizedDescription; self?.stopHost()
+                    case .ready:
+                        self?.hosting = true
+                        self?.status = "Sharing on this Wi‑Fi · code \(self?.pin ?? "")"
+                    case .failed(let error):
+                        self?.status = error.localizedDescription
+                        self?.listener?.cancel()
+                        self?.listener = nil
+                        self?.hosting = false
+                    case .cancelled:
+                        self?.hosting = false
                     default: break
                     }
                 }
@@ -94,6 +168,7 @@ final class WiFiRelay: ObservableObject {
             }
             listener.start(queue: .main)
             self.listener = listener
+            hosting = true
             status = "Starting Wi‑Fi share…"
         } catch {
             status = error.localizedDescription
@@ -106,55 +181,72 @@ final class WiFiRelay: ObservableObject {
             Task { @MainActor in
                 if case .failed = state { self?.hosts.removeAll { $0 === connection } }
                 if case .cancelled = state { self?.hosts.removeAll { $0 === connection } }
+                if case .ready = state { self?.flush() }
             }
         }
         connection.start(queue: .main)
-        if !payload.isEmpty {
-            connection.send(content: payload, completion: .contentProcessed { _ in })
-        }
+        flush()
     }
 
-    private func stopHost() {
+    private func stopHost(clearWant: Bool = true) {
+        if clearWant { wantHost = false }
         listener?.cancel(); listener = nil
         hosts.forEach { $0.cancel() }; hosts = []
         if hosting { hosting = false }
-        if !following { status = "Off" }
+        if !wantFollow { status = "Off" }
     }
 
     private func startViewer() {
         stopHost()
-        stopViewer()
         following = true
-        latest = nil
         status = "Looking for the nursery iPhone on this Wi‑Fi…"
-        let browser = NWBrowser(for: .bonjour(type: Self.type, domain: nil), using: .tcp)
-        browser.stateUpdateHandler = { [weak self] state in
-            Task { @MainActor in
-                if case .failed(let error) = state {
-                    self?.status = error.localizedDescription
-                    self?.stopViewer()
+        if browser == nil {
+            let browser = NWBrowser(for: .bonjour(type: Self.type, domain: nil), using: parameters())
+            browser.stateUpdateHandler = { [weak self] state in
+                Task { @MainActor in
+                    if case .failed(let error) = state {
+                        self?.status = error.localizedDescription
+                        self?.browser?.cancel()
+                        self?.browser = nil
+                    }
                 }
             }
-        }
-        browser.browseResultsChangedHandler = { [weak self] results, _ in
-            Task { @MainActor in
-                guard let self, self.viewer == nil, let first = results.first else { return }
-                self.connect(first.endpoint)
+            browser.browseResultsChangedHandler = { [weak self] results, _ in
+                Task { @MainActor in
+                    guard let self, self.wantFollow else { return }
+                    if let first = results.first { self.knownEndpoint = first.endpoint }
+                    if self.viewer == nil, let first = results.first {
+                        self.connect(first.endpoint)
+                    }
+                }
             }
+            browser.start(queue: .main)
+            self.browser = browser
         }
-        browser.start(queue: .main)
-        self.browser = browser
+        reconnectViewer()
+    }
+
+    private func reconnectViewer() {
+        guard wantFollow, viewer == nil else { return }
+        if let knownEndpoint { connect(knownEndpoint) }
     }
 
     private func connect(_ endpoint: NWEndpoint) {
-        let connection = NWConnection(to: endpoint, using: .tcp)
+        viewer?.cancel()
+        buffer = Data()
+        let connection = NWConnection(to: endpoint, using: parameters())
         viewer = connection
         connection.stateUpdateHandler = { [weak self] state in
             Task { @MainActor in
-                if case .ready = state { self?.status = "Linked on this Wi‑Fi" }
+                guard let self else { return }
+                if case .ready = state { self.status = "Linked on this Wi‑Fi" }
                 if case .failed(let error) = state {
-                    self?.status = error.localizedDescription
-                    self?.viewer = nil
+                    self.status = "Lost the nursery iPhone. Reconnecting…"
+                    if self.viewer === connection { self.viewer = nil }
+                    _ = error
+                }
+                if case .cancelled = state, self.viewer === connection {
+                    self.viewer = nil
                 }
             }
         }
@@ -184,8 +276,10 @@ final class WiFiRelay: ObservableObject {
                     }
                 }
                 if isComplete || error != nil {
-                    self.viewer = nil
-                    if self.following { self.status = "Lost the nursery iPhone. Stay on the same Wi‑Fi." }
+                    if self.viewer === connection {
+                        self.viewer = nil
+                        if self.wantFollow { self.status = "Lost the nursery iPhone. Reconnecting…" }
+                    }
                     return
                 }
                 self.receive(connection)
@@ -194,11 +288,13 @@ final class WiFiRelay: ObservableObject {
     }
 
     private func stopViewer() {
+        wantFollow = false
         browser?.cancel(); browser = nil
         viewer?.cancel(); viewer = nil
+        knownEndpoint = nil
         buffer = Data()
         latest = nil
         if following { following = false }
-        if !hosting { status = "Off" }
+        if !wantHost { status = "Off" }
     }
 }

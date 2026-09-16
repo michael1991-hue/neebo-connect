@@ -693,6 +693,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             // Resume a failed/suspended retry even when the UI still says reconnecting.
             if session.enabled && manager.state == .poweredOn { resumeSession() }
             requestCustomFallback()
+            WiFiRelay.shared.revive()
         } else {
             backgroundReadingCount = 0
             if session.enabled {
@@ -1765,6 +1766,7 @@ struct ContentView: View {
             if childName.isEmpty { showProfile = true }
             monitor.showAllDevices = false
             syncLiveActivity()
+            UIApplication.shared.isIdleTimerDisabled = wifi.hosting || wifi.following || monitor.connection.isConnected
         }
         .sheet(isPresented: $showProfile) {
             ProfileSetupView(name: childName, birthDate: birthDate, gender: childGender, avatarSymbol: avatarSymbol, avatarColor: avatarColor) { name, date, gender, symbol, color in
@@ -1780,7 +1782,19 @@ struct ContentView: View {
         .sheet(isPresented: $showNursery) {
             NurserySetupView { nurseryAcknowledged = true }
         }
-        .onChange(of: monitor.connection) { _ in publishWiFiShare(); syncLiveActivity() }
+        .onChange(of: wifi.hosting) { _ in
+            publishWiFiShare()
+            UIApplication.shared.isIdleTimerDisabled = wifi.hosting || wifi.following || monitor.connection.isConnected
+        }
+        .onChange(of: wifi.following) { on in
+            if on { monitor.requestNotificationPermission() }
+            applyShareAlert()
+            UIApplication.shared.isIdleTimerDisabled = wifi.hosting || wifi.following || monitor.connection.isConnected
+        }
+        .onChange(of: monitor.connection) { _ in
+            publishWiFiShare(); syncLiveActivity()
+            UIApplication.shared.isIdleTimerDisabled = wifi.hosting || wifi.following || monitor.connection.isConnected
+        }
         .onChange(of: monitor.verifiedHeartRate) { _ in publishWiFiShare(); syncLiveActivity() }
         .onChange(of: monitor.pulseOximeterOxygen) { _ in publishWiFiShare(); syncLiveActivity() }
         .onChange(of: monitor.customHeartRateCandidate) { _ in publishWiFiShare(); syncLiveActivity() }
@@ -1793,12 +1807,7 @@ struct ContentView: View {
             applyShareAlert()
             syncLiveActivity()
         }
-        .onChange(of: wifi.following) { on in
-            if on { monitor.requestNotificationPermission() }
-            applyShareAlert()
-        }
         .onChange(of: wifi.playAlerts) { _ in applyShareAlert() }
-        .onChange(of: wifi.hosting) { _ in publishWiFiShare() }
         .onChange(of: wifi.pin) { value in UserDefaults.standard.set(value, forKey: "nivvi.wifi.pin") }
         .sheet(isPresented: $showParentNote) {
             NavigationStack {
@@ -2349,7 +2358,7 @@ struct ContentView: View {
             Toggle("Play alerts from the nursery iPhone", isOn: $wifi.playAlerts).tint(coral)
             Text("Limits are set on the nursery phone (the one on Bluetooth). This phone cannot run its own heart-rate alarms while following — it repeats the nursery alert and can sound here. Allow notifications when iOS asks.")
                 .font(.caption).foregroundStyle(muted)
-            Text("Both on the same Wi‑Fi. Allow local network if iOS asks.").font(.caption).foregroundStyle(muted)
+            Text("Both on the same Wi‑Fi. Keep Nivvi open on the nursery phone (screen can stay awake). The downstairs phone reconnects by itself if the link drops. Allow local network if iOS asks.").font(.caption).foregroundStyle(muted)
             Text(wifi.status).font(.caption).foregroundStyle(muted)
         } }
         panel { VStack(alignment: .leading, spacing: 12) {
