@@ -615,7 +615,6 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     }
     private func startSiren(loop: Bool) {
         let sensorOnly = shareAlertSensor || (staleHeartRateDetected && !alarmActive && !testingSiren)
-        if !foreground && sensorOnly { return }
         do {
             guard let url = Bundle.main.url(forResource: sensorOnly ? "NivviSensor" : "NivviSiren", withExtension: "wav") else { throw CocoaError(.fileNoSuchFile) }
             try configureAlarmAudio()
@@ -640,14 +639,23 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             identifier: "nivvi-wifi-share-alarm",
             soundName: sensor ? "NivviSensor.wav" : "NivviSiren.wav"
         )
+        if !sensor {
+            notify(
+                title: attentionTitle,
+                body: "This heart-rate alert is still active on the nursery iPhone. Open Nivvi.",
+                identifier: "nivvi-wifi-share-alarm-reminder",
+                soundName: "NivviSiren.wav",
+                repeatInterval: 60
+            )
+        }
         startSiren(loop: !sensor)
     }
     func endShareAlert() {
         guard shareAlertActive else { return }
         shareAlertActive = false
         shareAlertSensor = false
-        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["nivvi-wifi-share-alarm"])
-        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["nivvi-wifi-share-alarm"])
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["nivvi-wifi-share-alarm", "nivvi-wifi-share-alarm-reminder"])
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["nivvi-wifi-share-alarm", "nivvi-wifi-share-alarm-reminder"])
         if !alarmActive && !staleHeartRateDetected && !testingSiren { stopSiren() }
     }
     func testRecoverySound() {
@@ -705,10 +713,16 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
                             detail: "Recording continues for usable Bluetooth updates delivered by iOS. A polling-only device may stop supplying data while the app is suspended.")
                 scheduleBackgroundWatchdog()
             }
-            if criticalAlertActive, !alarmAcknowledged, alarmActive {
-                notify(title: attentionTitle, body: "A heart-rate alarm is still active. Open Nivvi to acknowledge it.", identifier: "nivvi-rate-alarm")
+            if criticalAlertActive && !alarmAcknowledged {
+                startSiren(loop: alarmActive || (shareAlertActive && !shareAlertSensor))
+                if shareAlertActive {
+                    notify(title: shareAlertSensor ? "Check sensor data" : attentionTitle, body: "Nursery alert still active. Open Nivvi.", identifier: "nivvi-wifi-share-alarm", soundName: shareAlertSensor ? "NivviSensor.wav" : "NivviSiren.wav")
+                } else if alarmActive {
+                    notify(title: attentionTitle, body: "A heart-rate alarm is still active. Open Nivvi to acknowledge it.", identifier: "nivvi-rate-alarm")
+                }
+            } else {
+                stopSiren()
             }
-            stopSiren()
             // Stop only a user-initiated broad scan. Preserve saved-device recovery.
             if isScanning {
                 scanToken = UUID(); scanDeadline?.invalidate(); manager.stopScan(); connection = .idle
@@ -1727,7 +1741,7 @@ struct ContentView: View {
         return "none"
     }
     private func applyShareAlert() {
-        if wifi.following, wifi.playAlerts, wifi.remoteFresh, let snap = wifi.latest {
+        if wifi.following, wifi.playAlerts, let snap = wifi.latest, Date().timeIntervalSince1970 - snap.captured < 90 {
             let alarm = snap.alarm ?? "none"
             if alarm == "none" { monitor.endShareAlert() }
             else { monitor.beginShareAlert(sensor: alarm == "sensor") }
