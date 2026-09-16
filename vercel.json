@@ -7,6 +7,9 @@
     { "source": "/style.css", "destination": "/web/style.css" },
     { "source": "/home.jpg", "destination": "/web/home.jpg" },
     { "source": "/history.jpg", "destination": "/web/history.jpg" },
+    { "source": "/live.jpg", "destination": "/web/live.jpg" },
+    { "source": "/alerts.jpg", "destination": "/web/alerts.jpg" },
+    { "source": "/device.jpg", "destination": "/web/device.jpg" },
     { "source": "/icon.png", "destination": "/web/icon.png" },
     { "source": "/favicon.png", "destination": "/web/favicon.png" }
   ]
