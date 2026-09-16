@@ -127,7 +127,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     @Published var connection: ConnectionPhase = .idle
     var active: Bool { connection.isBusy }
     var isScanning: Bool { connection == .scanning }
-    @Published var showAllDevices = true
+    @Published var showAllDevices = false
     @Published var deviceNames: [UUID: String] = [:]
     @Published var deviceServices: [UUID: [String]] = [:]
     @Published var deviceRSSI: [UUID: Int] = [:]
@@ -787,11 +787,11 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         for p in connected {
             addDevice(p, name: p.name ?? "Bluetooth device already connected to iPhone")
         }
-        manager.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
+        manager.scanForPeripherals(withServices: showAllDevices ? nil : BluetoothPolicy.measurementServices.map { CBUUID(string: $0) }, options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
         scanDeadline = Timer.scheduledTimer(withTimeInterval: 15, repeats: false) { [weak self] _ in
             guard let self = self, self.scanToken == token, self.connection == .scanning else { return }
             self.manager.stopScan(); self.connection = .idle
-            self.status = self.devices.isEmpty ? "No wearable found. Disconnect other Bluetooth apps, keep the wearable close, then scan again. Try Show other nearby devices if its name differs." : "Tap a device below to connect."
+            self.status = self.devices.isEmpty ? "No compatible wearable advertised Heart Rate, Pulse Oximeter or the mapped service. Keep it close, disconnect other apps, then scan again. If it still missing, turn on Show all Bluetooth devices once — some bands hide their service until you connect." : "Tap a device below to connect. Compatibility is confirmed after connection."
         }
     }
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
@@ -2094,8 +2094,10 @@ struct ContentView: View {
                 }
             }
             Text("Choose your Bluetooth heart-rate device. Star a device to keep it at the top of the list. Supported formats: standard Heart Rate Service and Pulse Oximeter Service. Seeing a Bluetooth device does not mean its measurements are accessible. Mapped formats should be checked independently. Close other Bluetooth apps before connecting. Nivvi cannot boost radio power; stay close if the signal is weak. On iOS 17 or later, the phone will also auto-reconnect when the wearable is in range.").font(.caption).foregroundStyle(muted)
-            Toggle("Show other nearby Bluetooth devices", isOn: $monitor.showAllDevices)
+            Toggle("My device isn’t listed — show all Bluetooth devices", isOn: $monitor.showAllDevices)
                 .disabled(monitor.active || monitor.isScanning)
+            Text("Off by default. On shows every nearby Bluetooth gadget (headphones, TVs, watches). Nivvi still only displays HR/SpO₂ after the packet format is recognised.")
+                .font(.caption).foregroundStyle(muted)
             panel { VStack(alignment: .leading, spacing: 10) {
                 Text("CONNECTION STATUS").font(.caption.bold())
                 Text(monitor.status).fixedSize(horizontal: false, vertical: true)
