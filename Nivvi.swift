@@ -1492,10 +1492,11 @@ struct ContentView: View {
         return (hour >= 20 || hour < 8) ? .night : .day
     }
     private var mode: NivviMode { manualMode ?? automaticMode }
-    private var ink: Color { mode == .night ? .white : Color(red: 0.20, green: 0.28, blue: 0.34) }
-    private var muted: Color { mode == .night ? Color.white.opacity(0.78) : Color(red: 0.28, green: 0.36, blue: 0.38) }
-    private var cardFill: Color { mode == .night ? Color.white.opacity(0.14) : Color(red: 0.88, green: 0.91, blue: 0.88) }
-    private var accentMint: Color { mode == .night ? teal : Color(red: 0.08, green: 0.46, blue: 0.44) }
+    private var ink: Color { mode == .night ? .white : Color(red: 0.10, green: 0.14, blue: 0.18) }
+    private var muted: Color { mode == .night ? Color.white.opacity(0.82) : Color(red: 0.22, green: 0.28, blue: 0.30) }
+    private var cardFill: Color { mode == .night ? Color.white.opacity(0.14) : Color.white }
+    private var accentMint: Color { mode == .night ? teal : Color(red: 0.02, green: 0.42, blue: 0.40) }
+    private var stamp: Color { mode == .night ? lavender : Color(red: 0.32, green: 0.28, blue: 0.58) }
     private var connected: Bool { monitor.connection.isConnected }
     private var favouriteIDs: Set<String> { Set(favoriteDeviceIDs.split(separator: ",").map(String.init)) }
     private func isFavourite(_ peripheral: CBPeripheral) -> Bool { favouriteIDs.contains(peripheral.identifier.uuidString) }
@@ -1713,7 +1714,7 @@ struct ContentView: View {
                 }
                 .accessibilityLabel("Child avatar")
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(Calendar.current.component(.hour, from: Date()) >= 12 && mode == .day ? "Hello," : mode.greeting).font(.subheadline).foregroundStyle(muted)
+                    Text(Calendar.current.component(.hour, from: Date()) >= 12 && mode == .day ? "Hello," : mode.greeting).font(.subheadline.weight(.semibold)).foregroundStyle(muted)
                     Text(displayName).font(.system(size: 34, weight: .bold, design: .rounded)).foregroundStyle(ink)
                 }
                 Spacer()
@@ -1975,14 +1976,14 @@ struct ContentView: View {
                 if monitor.history.isEmpty { panel { Text("No saved readings for this day.") } }
                 else {
                     panel {
-                        HistoryChartsView(entries: monitor.history, day: monitor.selectedHistoryDay, selected: $selectedHistoryReading, coral: coral, teal: accentMint, lavender: lavender, caption: muted, ink: ink)
+                        HistoryChartsView(entries: monitor.history, day: monitor.selectedHistoryDay, selected: $selectedHistoryReading, coral: coral, teal: accentMint, lavender: stamp, caption: muted, ink: ink)
                     }
                     Text("Latest 50 readings for this day · export CSV for all entries").font(.caption).foregroundStyle(muted)
                     ForEach(Array(monitor.history.suffix(50).reversed())) { sample in
                         panel { VStack(alignment: .leading, spacing: 9) {
-                            timestamp(sample.time, tint: lavender)
+                            timestamp(sample.time, tint: stamp)
                             HStack { Text(sample.heartRateValue.map { "\(MetricText.number($0)) bpm" } ?? "HR —").foregroundStyle(coral); Spacer(); Text(sample.oxygenValue.map { "O₂ \(MetricText.number($0))%" } ?? "O₂ —").foregroundStyle(accentMint) }.font(.title3.bold())
-                            Text(sample.source == "experimental-custom" ? "Mapped Bluetooth reading" : "Standard Bluetooth reading").font(.caption).foregroundStyle(muted)
+                            Text(sample.source == "experimental-custom" ? "Mapped Bluetooth reading" : "Standard Bluetooth reading").font(.caption.weight(.semibold)).foregroundStyle(muted)
                         } }
                     }
                 }
@@ -2026,7 +2027,7 @@ struct ContentView: View {
         HStack(alignment: .firstTextBaseline) {
             Text(time.formatted(date: .omitted, time: .standard)).font(.system(size: 24, weight: .bold, design: .rounded)).monospacedDigit().foregroundStyle(tint)
             Spacer()
-            Text(time.formatted(date: .abbreviated, time: .omitted)).font(.caption.weight(.semibold)).foregroundStyle(muted)
+            Text(time.formatted(date: .abbreviated, time: .omitted)).font(.caption.weight(.bold)).foregroundStyle(muted)
         }
     }
 
@@ -2183,7 +2184,7 @@ struct ContentView: View {
             Text("Heart-rate alerts").font(.headline)
             HStack { Label("Low", systemImage: "arrow.down.heart"); Spacer(); Text(monitor.alarmSettings.lowEnabled ? monitor.alarmSettings.lowThreshold.map { "Below \($0) bpm" } ?? "Set a limit" : "Off") }.foregroundStyle(coral)
             Divider()
-            HStack { Text("Within limits"); Spacer(); Text(configuredRangeLabel) }.foregroundStyle(teal)
+            HStack { Text("Within limits"); Spacer(); Text(configuredRangeLabel) }.foregroundStyle(accentMint)
             Divider()
             HStack { Label("High", systemImage: "arrow.up.heart"); Spacer(); Text(monitor.alarmSettings.highEnabled ? monitor.alarmSettings.highThreshold.map { "Above \($0) bpm" } ?? "Set a limit" : "Off") }.foregroundStyle(coral)
             Text("Use the limits from your care plan.").font(.caption)
@@ -2271,9 +2272,16 @@ struct ContentView: View {
         Text("Nivvi " + (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")).font(.caption).foregroundStyle(.secondary)
     } }
 
-    private var bottomBar: some View { HStack { nav("heart.fill", "Live", 0); nav("chart.xyaxis.line", "History", 1); nav("bell.fill", "Alerts", 2); nav("wave.3.right", "Device", 3) }.padding(8).background(cardFill).clipShape(Capsule()).padding(.horizontal, 18).padding(.bottom, 10) }
-    private func nav(_ icon: String, _ title: String, _ index: Int) -> some View { Button { withAnimation(.easeInOut(duration: 0.2)) { tab = index } } label: { VStack(spacing: 4) { Image(systemName: icon); Text(title).font(.caption2) }.foregroundStyle(tab == index ? Color(red: 0.35, green: 0.48, blue: 0.78) : muted).frame(maxWidth: .infinity).padding(.vertical, 8).background(tab == index ? cardFill : .clear).clipShape(Capsule()) } }
-    private func panel<Content: View>(@ViewBuilder _ content: () -> Content) -> some View { content().padding(14).frame(maxWidth: .infinity, alignment: .leading).background(cardFill).clipShape(RoundedRectangle(cornerRadius: 22)) }
+    private var bottomBar: some View { HStack { nav("heart.fill", "Live", 0); nav("chart.xyaxis.line", "History", 1); nav("bell.fill", "Alerts", 2); nav("wave.3.right", "Device", 3) }.padding(8).background(cardFill).clipShape(Capsule()).shadow(color: mode == .night ? .clear : Color.black.opacity(0.10), radius: 8, y: 2).padding(.horizontal, 18).padding(.bottom, 10) }
+    private func nav(_ icon: String, _ title: String, _ index: Int) -> some View { Button { withAnimation(.easeInOut(duration: 0.2)) { tab = index } } label: { VStack(spacing: 4) { Image(systemName: icon); Text(title).font(.caption.weight(.semibold)) }.foregroundStyle(tab == index ? ink : muted).frame(maxWidth: .infinity).padding(.vertical, 8).background(tab == index ? (mode == .night ? Color.white.opacity(0.12) : Color(red: 0.90, green: 0.93, blue: 0.91)) : .clear).clipShape(Capsule()) } }
+    private func panel<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        content().padding(16).frame(maxWidth: .infinity, alignment: .leading)
+            .foregroundStyle(ink)
+            .background(cardFill)
+            .clipShape(RoundedRectangle(cornerRadius: 22))
+            .overlay(RoundedRectangle(cornerRadius: 22).stroke(mode == .night ? Color.white.opacity(0.10) : Color.black.opacity(0.10), lineWidth: 1))
+            .shadow(color: mode == .night ? .clear : Color.black.opacity(0.07), radius: 6, y: 2)
+    }
     private func readingCard(_ title: String, _ value: String, _ note: String, _ icon: String, _ tint: Color, receivedAt: Date?, animate: Bool = true) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             ReadingUpdateIcon(symbol: icon, tint: tint, receivedAt: receivedAt, enabled: connected && value != "No reading" && animate)
