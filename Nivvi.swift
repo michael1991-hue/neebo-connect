@@ -100,7 +100,7 @@ enum BluetoothPolicy {
         let service = normalized(service), characteristic = normalized(characteristic)
         switch service {
         case "FFE0": return [customMeasurementUUID, "FFEA", "FFE4"].contains(characteristic)
-        case "180F": return characteristic == "2A19"
+        case "180F": return characteristic == "2A19" || characteristic == "2A1A"
         case "180D": return characteristic == "2A37"
         case "1822": return ["2A5E", "2A5F", "2A60"].contains(characteristic)
         default: return false
@@ -114,6 +114,14 @@ enum BluetoothPolicy {
         let hr = bytes[4] == 0 && (30...240).contains(Int(bytes[3])) ? Int(bytes[3]) : nil
         let oxygen = bytes[6] == 0 && (70...100).contains(Int(bytes[5])) ? Int(bytes[5]) : nil
         return (hr, oxygen)
+    }
+    static func batteryCharging(_ data: Data) -> Bool? {
+        guard let byte = data.first else { return nil }
+        switch (byte >> 6) & 0x3 {
+        case 1: return false
+        case 2: return true
+        default: return nil
+        }
     }
 }
 // END TESTABLE BLUETOOTH POLICY
@@ -192,6 +200,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     private func scheduleBackgroundWatchdog() {
         guard !foreground, session.enabled else { return }
         guard let delay = backgroundReminder.delay(at: Date(), lastMeasurement: lastHeartRateUpdate) else { return }
+        if wearableCharging { return }
         notify(title: "Check sensor data", body: "Nivvi has not received a recent heart-rate update. Open the app to check the wearable and connection.",
                identifier: "nivvi-background-data", delay: delay, soundName: "NivviSensor.wav")
     }
@@ -266,6 +275,8 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     @Published private(set) var alarmKind: RateAlarm?
     var alarmActive: Bool { alarmKind != nil }
     @Published private(set) var staleHeartRateDetected = false
+    @Published private(set) var wearableCharging = false
+    private var chargePolicy = WearableChargePolicy()
     var criticalAlertActive: Bool { alarmActive || staleHeartRateDetected }
     @Published private(set) var alarmAcknowledged = false
     @Published var notificationStatus = "Notification permission has not been checked."
@@ -458,7 +469,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         if heartRateFreshness.pause() {
             continuityID = UUID(); sampling.reset()
             recordEvent(kind: "measurement", title: "Heart-rate readings paused", detail: reason)
-            if !alarmActive { notify(title: "Check sensor data", body: "No fresh reading received. Check the wearable and connection.", identifier: "nivvi-sensor-paused", soundName: "NivviSensor.wav") }
+            if !alarmActive && !wearableCharging { notify(title: "Check sensor data", body: "No fresh reading received. Check the wearable and connection.", identifier: "nivvi-sensor-paused", soundName: "NivviSensor.wav") }
         }
         verifiedHeartRate = nil; customHeartRateCandidate = nil; alarmEngine.interrupt()
         pulseOximeterRate = nil
@@ -678,6 +689,8 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         measurementNotificationsEnabled = false
         readQueue = []; pendingRead = nil; measurementCharacteristic = nil
         clearLiveValues(); battery = "—"; lastSample = nil
+        chargePolicy.reset()
+        applyCharging(false, record: false)
     }
     private func beginRecoveryScan() {
         guard session.enabled, manager.state == .poweredOn else { return }
@@ -993,7 +1006,15 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         if let i = readings.firstIndex(where: { $0.id == key }) {
             readings[i].count += 1; readings[i].hex = hex
         } else { readings.append(Reading(id:key, count:1, hex:hex)) }
-        if uuid == "2A19", serviceID == "180F", data.count == 1, data[0] <= 100 { battery = "\(data[0])%" }
+        if uuid == "2A19", serviceID == "180F", data.count == 1, data[0] <= 100 {
+            battery = "\(data[0])%"
+            chargePolicy.observeLevel(Int(data[0]))
+            applyCharging(chargePolicy.isCharging)
+        }
+        if uuid == "2A1A", serviceID == "180F", let charging = BluetoothPolicy.batteryCharging(data) {
+            chargePolicy.observePowerState(charging: charging)
+            applyCharging(chargePolicy.isCharging)
+        }
         if uuid == "FFEA", serviceID == "FFE0", data.count == 2 { counter = "\(Int(data[0]) | (Int(data[1]) << 8)) — possible minutes" }
     }
     private func receivePulseOximetry(_ data: Data, characteristic: String) {
@@ -1041,7 +1062,26 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         sampling.reset(source: "standard-PLX-oxygen")
         if !profile.hasStandardHeartRate { pauseHeartRate(pulseOximeterStatus) }
     }
+    private func applyCharging(_ on: Bool, record: Bool = true) {
+        guard wearableCharging != on else { return }
+        wearableCharging = on
+        if on {
+            cancelBackgroundWatchdog()
+            UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["nivvi-background-data", "nivvi-sensor-paused"])
+            staleHeartRate.reset(); staleHeartRateDetected = false
+            alarmEngine.interrupt(); alarmKind = nil
+            if !testingSiren { stopSiren() }
+            if record {
+                recordEvent(kind: "connection", title: "Wearable charging", detail: "Live readings paused while the band reports charging. No-reading alerts are silenced until it is worn again.")
+            }
+            status = "Charging · monitoring paused"
+            measurementStatus = "Wearable on charge. Heart-rate alerts are paused."
+        } else if record {
+            recordEvent(kind: "connection", title: "Charging ended", detail: "Waiting for a worn reading. Put the band on the child before relying on alerts.")
+        }
+    }
     private func observeStaleHeartRate(_ bpm: Double, source: String) {
+        if wearableCharging { return }
         let wasStale = staleHeartRateDetected
         let crossed = staleHeartRate.observe(bpm, at: Date())
         if crossed {
@@ -1526,12 +1566,19 @@ struct ContentView: View {
         let value = monitor.verifiedHeartRate.map(Double.init) ?? monitor.pulseOximeterRate ?? monitor.customHeartRateCandidate.map(Double.init)
         return value.map { "\(MetricText.number($0)) bpm" } ?? "No reading"
     }
+    private var batteryLabel: String {
+        if monitor.wearableCharging {
+            return (monitor.battery == "—" || monitor.battery.isEmpty) ? "Charging" : "Charging · \(monitor.battery)"
+        }
+        return (monitor.battery == "—" || monitor.battery.isEmpty) ? "Unavailable" : monitor.battery
+    }
     private var oxygenDisplay: String {
         if wifi.remoteFresh, let remote = wifi.latest { return remote.oxygen }
         let value = monitor.pulseOximeterOxygen ?? monitor.customOxygenCandidate.map(Double.init)
         return value.map { "\(MetricText.number($0))%" } ?? "No reading"
     }
     private var liveMeasurementNote: String {
+        if monitor.wearableCharging { return "Wearable on charge · not a live pulse" }
         if monitor.staleHeartRateDetected { return "Repeated value · check sensor" }
         if monitor.staleHeartRateDetected { return "Stale · last reading is not live" }
         if monitor.verifiedHeartRate != nil || monitor.pulseOximeterRate != nil || monitor.pulseOximeterOxygen != nil { return "Standard Bluetooth value" }
@@ -1730,8 +1777,8 @@ struct ContentView: View {
                 }
             }
             HStack(spacing: 10) {
-                Circle().fill(monitor.connection == .receiving ? teal : (connected ? .orange : .gray)).frame(width: 11, height: 11)
-                Text(monitor.connection.label).font(.subheadline.weight(.semibold)).foregroundStyle(ink)
+                Circle().fill(monitor.wearableCharging ? Color.orange : (monitor.connection == .receiving ? teal : (connected ? .orange : .gray))).frame(width: 11, height: 11)
+                Text(monitor.wearableCharging ? "Charging · monitoring paused" : monitor.connection.label).font(.subheadline.weight(.semibold)).foregroundStyle(ink)
                 Spacer()
                 Text("\(mode.rawValue) mode").font(.caption.weight(.bold)).foregroundStyle(ink).padding(.horizontal, 11).padding(.vertical, 6)
                     .background(cardFill).clipShape(Capsule())
@@ -1841,7 +1888,7 @@ struct ContentView: View {
                 Text("Heart rate").font(.caption.weight(.bold)).tracking(1.1).foregroundStyle(muted)
                 HStack(alignment: .center, spacing: 12) {
                     PulsingHeart(
-                        beatsPerMinute: monitor.staleHeartRateDetected ? nil : (monitor.verifiedHeartRate.map(Double.init) ?? monitor.pulseOximeterRate ?? monitor.customHeartRateCandidate.map(Double.init)),
+                        beatsPerMinute: monitor.wearableCharging || monitor.staleHeartRateDetected ? nil : (monitor.verifiedHeartRate.map(Double.init) ?? monitor.pulseOximeterRate ?? monitor.customHeartRateCandidate.map(Double.init)),
                         tint: monitor.staleHeartRateDetected ? coral : Color(red: 0.93, green: 0.38, blue: 0.42)
                     )
                     Text(heroHeartRate)
@@ -1888,6 +1935,7 @@ struct ContentView: View {
         }
     }
     private var heroHeartRate: String {
+        if monitor.wearableCharging { return "—" }
         if heartRateDisplay == "No reading" { return "—" }
         return heartRateDisplay.replacingOccurrences(of: " bpm", with: "")
     }
@@ -2084,7 +2132,7 @@ struct ContentView: View {
             Text("Device").font(.largeTitle.bold())
             panel { HStack(spacing: 14) { Image(systemName: "wave.3.right.circle.fill").font(.largeTitle).foregroundStyle(teal); VStack(alignment: .leading) { Text("Bluetooth heart-rate device").font(.headline); Text(monitor.connection.label).foregroundStyle(connected ? accentMint : muted); if monitor.connection.isConnected { Text("Signal: \(BluetoothSignal.label(monitor.signalRSSI))").font(.caption).foregroundStyle(muted) } }; Spacer() } }
             panel { VStack(alignment: .leading, spacing: 6) { Text("PROFILE").font(.caption.bold()).foregroundStyle(muted); Text(monitor.profile.rawValue).font(.headline); Text("Nivvi only displays measurements when the Bluetooth format is recognised.").font(.caption).foregroundStyle(muted) } }
-            HStack(spacing: 14) { metric("Battery", (monitor.battery == "—" || monitor.battery.isEmpty) ? "Unavailable" : monitor.battery); metric("Mode", mode.rawValue) }
+            HStack(spacing: 14) { metric("Battery", batteryLabel); metric("Mode", mode.rawValue) }
             Button { monitor.active ? monitor.stop() : monitor.scan() } label: { Text(monitor.active ? "Disconnect" : (monitor.isScanning ? "Scanning…" : "Scan for devices")).font(.headline).frame(maxWidth: .infinity).padding(17) }.buttonStyle(.borderedProminent).tint(coral).disabled(monitor.isScanning)
             ForEach(sortedDevices, id: \.identifier) { p in
                 HStack(spacing: 10) {

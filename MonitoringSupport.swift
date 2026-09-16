@@ -63,7 +63,22 @@ struct StaleHeartRateDetector {
     mutating func reset() { self = Self() }
 }
 
-enum ProfileAvatarPolicy {
+struct WearableChargePolicy {
+    private(set) var isCharging = false
+    private var lastLevel: Int?
+    mutating func observePowerState(charging: Bool) {
+        isCharging = charging
+    }
+    mutating func observeLevel(_ percent: Int) {
+        guard (0...100).contains(percent) else { return }
+        if let last = lastLevel {
+            if percent >= last + 2 { isCharging = true }
+            if percent + 1 < last { isCharging = false }
+        }
+        lastLevel = percent
+    }
+    mutating func reset() { self = Self() }
+}
     static let symbols = [
         "star.fill", "heart.fill", "moon.stars.fill", "sparkles",
         "leaf.fill", "hare.fill", "tortoise.fill", "bird.fill",
