@@ -6,7 +6,7 @@ import AVFoundation
 struct FamilyAccount: Codable { let token: String; let user_id: String; let email: String }
 struct SharedFamily: Codable, Identifiable { let id: String; let label: String; let owner: String }
 struct FamilyMember: Codable, Identifiable { let id: String; let email: String }
-struct FamilySample: Codable {
+struct FamilySample: Codable, Equatable {
     var t: Double
     var hr: Double?
     var o2: Double?

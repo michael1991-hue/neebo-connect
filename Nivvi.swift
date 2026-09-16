@@ -629,7 +629,10 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
     }
     func beginShareAlert(sensor: Bool) {
-        if shareAlertActive && shareAlertSensor == sensor { return }
+        if shareAlertActive && shareAlertSensor == sensor {
+            if siren?.isPlaying != true { startSiren(loop: !sensor) }
+            return
+        }
         shareAlertSensor = sensor
         shareAlertActive = true
         alarmAcknowledged = false
@@ -1731,7 +1734,8 @@ struct ContentView: View {
             connection: monitor.connection.label,
             alarm: shareAlarmKind,
             charging: monitor.wearableCharging,
-            battery: monitor.battery
+            battery: monitor.battery,
+            history: monitor.history.suffix(40).map { FamilySample(t: $0.time.timeIntervalSince1970, hr: $0.heartRateValue, o2: $0.oxygenValue) }
         )
     }
     private var shareAlarmKind: String {
@@ -2624,24 +2628,18 @@ struct PulsingHeart: View {
     let beatsPerMinute: Double?
     let tint: Color
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.scenePhase) private var scenePhase
-    @State private var beat = false
     var body: some View {
-        Image(systemName: "heart.fill")
-            .font(.system(size: 34, weight: .semibold))
-            .foregroundStyle(tint)
-            .scaleEffect(beat && !reduceMotion ? 1.16 : 1)
-            .opacity(beat && !reduceMotion ? 1 : 0.85)
-            .accessibilityHidden(true)
-            .onAppear { run() }
-            .onChange(of: beatsPerMinute ?? 0) { _ in run() }
-            .onChange(of: scenePhase) { _ in run() }
-    }
-    private func run() {
-        beat = false
-        guard scenePhase == .active, !reduceMotion, let bpm = beatsPerMinute, bpm >= 40, bpm <= 220 else { return }
-        let period = 60 / bpm
-        withAnimation(.easeInOut(duration: period / 2).repeatForever(autoreverses: true)) { beat = true }
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion || beatsPerMinute == nil)) { context in
+            let bpm = max(40, min(220, beatsPerMinute ?? 80))
+            let period = 60 / bpm
+            let wave = beatsPerMinute == nil || reduceMotion ? 0 : (sin(context.date.timeIntervalSinceReferenceDate * 2 * .pi / period) + 1) / 2
+            Image(systemName: "heart.fill")
+                .font(.system(size: 34, weight: .semibold))
+                .foregroundStyle(tint)
+                .scaleEffect(1 + 0.18 * wave)
+                .opacity(0.82 + 0.18 * wave)
+                .accessibilityHidden(true)
+        }
     }
 }
 

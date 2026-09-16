@@ -11,6 +11,7 @@ struct WiFiSnapshot: Codable, Equatable {
     var alarm: String?
     var charging: Bool?
     var battery: String?
+    var history: [FamilySample]? = nil
 }
 
 final class WiFiRelay: ObservableObject {
@@ -40,6 +41,7 @@ final class WiFiRelay: ObservableObject {
     private var lastAlarm = "none"
     private var lastCharging = false
     private var lastBattery = "—"
+    private var lastHistory: [FamilySample] = []
 
     init() {
         if let saved = UserDefaults.standard.string(forKey: "nivvi.wifi.pin"), saved.count == 4 {
@@ -61,13 +63,14 @@ final class WiFiRelay: ObservableObject {
         return Date().timeIntervalSince1970 - latest.captured < 45
     }
 
-    func publish(heartRate: String, oxygen: String, connection: String, alarm: String = "none", charging: Bool = false, battery: String = "—") {
+    func publish(heartRate: String, oxygen: String, connection: String, alarm: String = "none", charging: Bool = false, battery: String = "—", history: [FamilySample] = []) {
         lastHR = heartRate
         lastO2 = oxygen
         lastConnection = connection
         lastAlarm = alarm
         lastCharging = charging
         lastBattery = battery
+        lastHistory = history
         emit()
     }
 
@@ -97,9 +100,22 @@ final class WiFiRelay: ObservableObject {
     }
 
     private func record(_ snap: WiFiSnapshot) {
+        if trail.count < 2, let packed = snap.history, !packed.isEmpty {
+            trail = packed.map {
+                SavedMeasurement(
+                    time: Date(timeIntervalSince1970: $0.t),
+                    heartRate: $0.hr.map { Int($0.rounded()) },
+                    oxygen: $0.o2.map { Int($0.rounded()) },
+                    source: "wifi-share",
+                    exactHeartRate: $0.hr,
+                    exactOxygen: $0.o2
+                )
+            }
+        }
         let hr = Self.number(snap.heartRate)
         let o2 = Self.number(snap.oxygen)
         guard hr != nil || o2 != nil else { return }
+        if let last = trail.last, abs(last.time.timeIntervalSince1970 - snap.captured) < 0.4 { return }
         trail.append(SavedMeasurement(
             time: Date(timeIntervalSince1970: snap.captured),
             heartRate: hr.map { Int($0.rounded()) },
@@ -124,7 +140,7 @@ final class WiFiRelay: ObservableObject {
     }
 
     private func emit() {
-        let snap = WiFiSnapshot(pin: pin, heartRate: lastHR, oxygen: lastO2, connection: lastConnection, captured: Date().timeIntervalSince1970, alarm: lastAlarm, charging: lastCharging, battery: lastBattery)
+        let snap = WiFiSnapshot(pin: pin, heartRate: lastHR, oxygen: lastO2, connection: lastConnection, captured: Date().timeIntervalSince1970, alarm: lastAlarm, charging: lastCharging, battery: lastBattery, history: lastHistory)
         payload = (try? JSONEncoder().encode(snap)) ?? Data()
         payload.append(10)
         flush()
