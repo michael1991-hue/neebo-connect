@@ -277,7 +277,9 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     @Published private(set) var staleHeartRateDetected = false
     @Published private(set) var wearableCharging = false
     private var chargePolicy = WearableChargePolicy()
-    var criticalAlertActive: Bool { alarmActive || staleHeartRateDetected }
+    var criticalAlertActive: Bool { alarmActive || staleHeartRateDetected || shareAlertActive }
+    @Published private(set) var shareAlertActive = false
+    private var shareAlertSensor = false
     @Published private(set) var alarmAcknowledged = false
     @Published var notificationStatus = "Notification permission has not been checked."
     @Published var soundStatus = "Use Test siren to check the iPhone’s current volume."
@@ -607,7 +609,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         } catch { soundStatus = "Relief sound could not play: \(error.localizedDescription)" }
     }
     private func startSiren(loop: Bool) {
-        let sensorOnly = staleHeartRateDetected && !alarmActive && !testingSiren
+        let sensorOnly = shareAlertSensor || (staleHeartRateDetected && !alarmActive && !testingSiren)
         if !foreground && sensorOnly { return }
         do {
             guard let url = Bundle.main.url(forResource: sensorOnly ? "NivviSensor" : "NivviSiren", withExtension: "wav") else { throw CocoaError(.fileNoSuchFile) }
@@ -621,6 +623,27 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         soundTestTimer?.invalidate(); soundTestTimer = nil; testingSiren = false
         siren?.stop(); siren = nil
         try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+    }
+    func beginShareAlert(sensor: Bool) {
+        if shareAlertActive && shareAlertSensor == sensor { return }
+        shareAlertSensor = sensor
+        shareAlertActive = true
+        alarmAcknowledged = false
+        notify(
+            title: sensor ? "Check sensor data" : attentionTitle,
+            body: sensor ? "The nursery iPhone reports no fresh heart-rate data. Check the child and the wearable." : "The nursery iPhone has a heart-rate alert. Check \(displayNameForAlert) and follow the care plan.",
+            identifier: "nivvi-wifi-share-alarm",
+            soundName: sensor ? "NivviSensor.wav" : "NivviSiren.wav"
+        )
+        startSiren(loop: !sensor)
+    }
+    func endShareAlert() {
+        guard shareAlertActive else { return }
+        shareAlertActive = false
+        shareAlertSensor = false
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["nivvi-wifi-share-alarm"])
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["nivvi-wifi-share-alarm"])
+        if !alarmActive && !staleHeartRateDetected && !testingSiren { stopSiren() }
     }
     func testRecoverySound() {
         guard !criticalAlertActive else { return }
@@ -1620,8 +1643,25 @@ struct ContentView: View {
         wifi.publish(
             heartRate: localHR.map { "\(MetricText.number($0)) bpm" } ?? "No reading",
             oxygen: localO2.map { "\(MetricText.number($0))%" } ?? "No reading",
-            connection: monitor.connection.label
+            connection: monitor.connection.label,
+            alarm: shareAlarmKind,
+            charging: monitor.wearableCharging
         )
+    }
+    private var shareAlarmKind: String {
+        if monitor.wearableCharging { return "none" }
+        if let kind = monitor.alarmKind { return kind.rawValue }
+        if monitor.staleHeartRateDetected { return "sensor" }
+        return "none"
+    }
+    private func applyShareAlert() {
+        guard wifi.following, wifi.playAlerts, wifi.remoteFresh, let snap = wifi.latest else {
+            monitor.endShareAlert()
+            return
+        }
+        let alarm = snap.alarm ?? "none"
+        if alarm == "none" { monitor.endShareAlert() }
+        else { monitor.beginShareAlert(sensor: alarm == "sensor") }
     }
     private var avatarTint: Color {
         switch avatarColor {
@@ -1712,10 +1752,18 @@ struct ContentView: View {
         .onChange(of: monitor.customHeartRateCandidate) { _ in publishWiFiShare(); syncLiveActivity() }
         .onChange(of: monitor.customOxygenCandidate) { _ in publishWiFiShare(); syncLiveActivity() }
         .onChange(of: monitor.signalRSSI) { _ in syncLiveActivity() }
+        .onChange(of: monitor.alarmKind) { _ in publishWiFiShare(); syncLiveActivity() }
+        .onChange(of: monitor.staleHeartRateDetected) { _ in publishWiFiShare(); syncLiveActivity() }
+        .onChange(of: monitor.wearableCharging) { _ in publishWiFiShare() }
         .onChange(of: wifi.latest) { _ in
-            publishWiFiShare()
+            applyShareAlert()
             syncLiveActivity()
         }
+        .onChange(of: wifi.following) { on in
+            if on { monitor.requestNotificationPermission() }
+            applyShareAlert()
+        }
+        .onChange(of: wifi.playAlerts) { _ in applyShareAlert() }
         .onChange(of: wifi.hosting) { _ in publishWiFiShare() }
         .onChange(of: wifi.pin) { value in UserDefaults.standard.set(value, forKey: "nivvi.wifi.pin") }
         .sheet(isPresented: $showParentNote) {
@@ -1801,14 +1849,28 @@ struct ContentView: View {
                 HStack(spacing: 12) {
                     Image(systemName: "bell.and.waves.fill").foregroundStyle(.white)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(monitor.alarmActive ? "\(displayName) needs your attention" : "Check sensor data").font(.headline)
-                        Text(monitor.staleHeartRateDetected ? (monitor.alarmAcknowledged ? "Acknowledged · repeated reading still needs checking." : "Repeated heart-rate value detected. Check sensor contact and your child.") : (monitor.alarmAcknowledged ? "Acknowledged · waiting for a fresh in-range reading." : "Check your child and follow their care plan.")).font(.caption)
+                        Text(shareAlarmTitle).font(.headline)
+                        Text(shareAlarmDetail).font(.caption)
                     }
                     Spacer()
-                    if !monitor.alarmAcknowledged {
+                    if monitor.shareAlertActive && !monitor.alarmActive && !monitor.staleHeartRateDetected {
+                        Button("Heard it") { monitor.endShareAlert() }.buttonStyle(.bordered).tint(.white)
+                    } else if !monitor.alarmAcknowledged {
                         Button("Acknowledge") { monitor.silenceAlarm() }.buttonStyle(.bordered).tint(.white)
                     }
-                }.padding(16).background(monitor.alarmActive ? coral : Color.orange.opacity(0.75)).clipShape(RoundedRectangle(cornerRadius: 20))
+                }.padding(16).background((monitor.alarmActive || (wifi.latest?.alarm == "high") || (wifi.latest?.alarm == "low")) ? coral : Color.orange.opacity(0.75)).clipShape(RoundedRectangle(cornerRadius: 20))
+    }
+    private var shareAlarmTitle: String {
+        if monitor.shareAlertActive && !monitor.alarmActive {
+            return (wifi.latest?.alarm == "sensor") ? "Check sensor data" : "\(displayName) needs your attention"
+        }
+        return monitor.alarmActive ? "\(displayName) needs your attention" : "Check sensor data"
+    }
+    private var shareAlarmDetail: String {
+        if monitor.shareAlertActive && !monitor.alarmActive {
+            return "From the nursery iPhone on this Wi‑Fi. Limits are set on that phone. Check the child."
+        }
+        return monitor.staleHeartRateDetected ? (monitor.alarmAcknowledged ? "Acknowledged · repeated reading still needs checking." : "Repeated heart-rate value detected. Check sensor contact and your child.") : (monitor.alarmAcknowledged ? "Acknowledged · waiting for a fresh in-range reading." : "Check your child and follow their care plan.")
     }
 
     private var home: some View {
@@ -2238,11 +2300,18 @@ struct ContentView: View {
             .background(Color.white.opacity(mode == .night ? 0.12 : 0.7))
             .clipShape(RoundedRectangle(cornerRadius: 12))
             Toggle("Follow the nursery iPhone", isOn: Binding(get: { wifi.following }, set: { wifi.setFollowing($0) })).tint(lavender)
+            Toggle("Play alerts from the nursery iPhone", isOn: $wifi.playAlerts).tint(coral)
+            Text("Limits are set on the nursery phone (the one on Bluetooth). This phone cannot run its own heart-rate alarms while following — it repeats the nursery alert and can sound here. Allow notifications when iOS asks.")
+                .font(.caption).foregroundStyle(muted)
             Text("Both on the same Wi‑Fi. Allow local network if iOS asks.").font(.caption).foregroundStyle(muted)
             Text(wifi.status).font(.caption).foregroundStyle(muted)
         } }
         panel { VStack(alignment: .leading, spacing: 12) {
             Text("Heart-rate alerts").font(.headline)
+            if wifi.following {
+                Text("You are following the nursery iPhone. Change Low / High limits on that phone, not here.")
+                    .font(.caption).foregroundStyle(muted)
+            }
             HStack { Label("Low", systemImage: "arrow.down.heart"); Spacer(); Text(monitor.alarmSettings.lowEnabled ? monitor.alarmSettings.lowThreshold.map { "Below \($0) bpm" } ?? "Set a limit" : "Off") }.foregroundStyle(coral)
             Divider()
             HStack { Text("Within limits"); Spacer(); Text(configuredRangeLabel) }.foregroundStyle(accentMint)
