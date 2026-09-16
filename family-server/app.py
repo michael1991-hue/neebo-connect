@@ -9,7 +9,7 @@ import secrets
 import smtplib
 import ssl
 import sqlite3
-import time
+import threading
 from contextlib import contextmanager, asynccontextmanager
 from email.message import EmailMessage
 from pathlib import Path
@@ -113,15 +113,22 @@ def send_code(address, purpose):
     if TEST:
         OUTBOX.append((address, purpose, token))
         return
-    msg = EmailMessage()
-    msg["From"] = os.environ["NIVVI_SMTP_FROM"]
-    msg["To"] = address
-    msg["Subject"] = "Nivvi account verification" if purpose == "verify" else "Nivvi password reset"
-    msg.set_content(f"Paste this code in Nivvi to {purpose} your account:\n\n{token}\n\nIt expires in 15 minutes. If you did not request it, ignore this message.")
-    with smtplib.SMTP(os.environ["NIVVI_SMTP_HOST"], int(os.environ.get("NIVVI_SMTP_PORT", "587")), timeout=15) as smtp:
-        smtp.starttls(context=ssl.create_default_context())
-        smtp.login(os.environ["NIVVI_SMTP_USER"], os.environ["NIVVI_SMTP_PASSWORD"])
-        smtp.send_message(msg)
+    threading.Thread(target=_deliver_code, args=(address, purpose, token), daemon=True).start()
+
+
+def _deliver_code(address, purpose, token):
+    try:
+        msg = EmailMessage()
+        msg["From"] = os.environ["NIVVI_SMTP_FROM"]
+        msg["To"] = address
+        msg["Subject"] = "Nivvi account verification" if purpose == "verify" else "Nivvi password reset"
+        msg.set_content(f"Paste this code in Nivvi to {purpose} your account:\n\n{token}\n\nIt expires in 15 minutes. If you did not request it, ignore this message.")
+        with smtplib.SMTP(os.environ["NIVVI_SMTP_HOST"], int(os.environ.get("NIVVI_SMTP_PORT", "587")), timeout=12) as smtp:
+            smtp.starttls(context=ssl.create_default_context())
+            smtp.login(os.environ["NIVVI_SMTP_USER"], os.environ["NIVVI_SMTP_PASSWORD"])
+            smtp.send_message(msg)
+    except Exception as exc:
+        print(f"SMTP failed for {purpose}: {type(exc).__name__}: {exc}", flush=True)
 
 
 class Credentials(BaseModel):

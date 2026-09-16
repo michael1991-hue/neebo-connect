@@ -74,7 +74,7 @@ final class FamilyRelay: ObservableObject {
     private func request<T: Decodable>(_ path: String, method: String = "GET", body: Data? = nil, authenticated: Bool = true) async throws -> T {
         guard configured, let server else { throw FamilyError.message("Family sharing needs the Nivvi online service to be configured.") }
         var req = URLRequest(url: server.appendingPathComponent(path))
-        req.httpMethod = method; req.timeoutInterval = 15
+        req.httpMethod = method; req.timeoutInterval = 45
         req.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let current = account?.token
