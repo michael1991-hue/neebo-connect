@@ -1,0 +1,13 @@
+{
+  "cleanUrls": true,
+  "rewrites": [
+    { "source": "/", "destination": "/web/index.html" },
+    { "source": "/privacy", "destination": "/web/privacy.html" },
+    { "source": "/privacy.html", "destination": "/web/privacy.html" },
+    { "source": "/style.css", "destination": "/web/style.css" },
+    { "source": "/home.jpg", "destination": "/web/home.jpg" },
+    { "source": "/history.jpg", "destination": "/web/history.jpg" },
+    { "source": "/icon.png", "destination": "/web/icon.png" },
+    { "source": "/favicon.png", "destination": "/web/favicon.png" }
+  ]
+}
