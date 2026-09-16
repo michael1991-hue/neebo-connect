@@ -98,7 +98,7 @@ final class FamilyRelay: ObservableObject {
         guard let remote, remote.fresh || remote.snapshot?.heart_rate != nil, let fetched = remoteFetched else { return false }
         let elapsed = Date().timeIntervalSince(fetched)
         let age = (remote.age ?? .infinity) + max(0, elapsed)
-        return age <= 45 && elapsed <= 20
+        return age <= 30 && elapsed <= 8
     }
     var liveHeartRate: String? {
         guard viewingRemote, let value = remote?.snapshot?.heart_rate else { return nil }
@@ -213,7 +213,7 @@ final class FamilyRelay: ObservableObject {
         watchTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.tickWatch()
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
         }
     }
@@ -240,7 +240,7 @@ final class FamilyRelay: ObservableObject {
     func capture(_ snapshot: FamilySnapshot) {
         guard publishing, let family = ownFamily else { return }
         if uploadBusy { pendingSnapshot = snapshot; return }
-        if snapshot.alarm == lastAlarm, let lastUpload, Date().timeIntervalSince(lastUpload) < 2 { return }
+        if snapshot.alarm == lastAlarm, let lastUpload, Date().timeIntervalSince(lastUpload) < 1 { return }
         let token = generation
         uploadBusy = true
         Task {
