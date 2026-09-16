@@ -1632,6 +1632,7 @@ struct ContentView: View {
             let photoURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("child-profile.jpg")
             try? FileManager.default.removeItem(at: photoURL)
             if childName.isEmpty { showProfile = true }
+            monitor.showAllDevices = false
             syncLiveActivity()
         }
         .sheet(isPresented: $showProfile) {
