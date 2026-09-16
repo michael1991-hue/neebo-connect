@@ -230,7 +230,9 @@ final class FamilyRelay: ObservableObject {
     private func holdAudio() {
         guard viewingRemote || publishing else { return }
         let audio = AVAudioSession.sharedInstance()
-        try? audio.setCategory(.playback, mode: .default, options: [.mixWithOthers, .defaultToSpeaker])
+        if audio.category != .playback {
+            try? audio.setCategory(.playback, mode: .default, options: [.duckOthers, .defaultToSpeaker])
+        }
         try? audio.setActive(true)
     }
     func clearRemote() { remote = nil; remoteFetched = nil }

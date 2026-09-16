@@ -609,8 +609,9 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     }
     private func configureAlarmAudio() throws {
         let audio = AVAudioSession.sharedInstance()
+        if audio.isOtherAudioPlaying { try? audio.setActive(false, options: [.notifyOthersOnDeactivation]) }
         try audio.setCategory(.playback, mode: .default, options: [.duckOthers, .defaultToSpeaker])
-        try audio.setActive(true)
+        try audio.setActive(true, options: [])
     }
     private func playReliefSound() {
         guard foreground else { return }
@@ -618,6 +619,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             guard let url = Bundle.main.url(forResource: "NivviRelief", withExtension: "wav") else { throw CocoaError(.fileNoSuchFile) }
             try configureAlarmAudio()
             siren = try AVAudioPlayer(contentsOf: url); siren?.numberOfLoops = 0; siren?.volume = 0.5
+            siren?.prepareToPlay()
             _ = siren?.play()
             soundStatus = "Playing the gentle recovery chime."
         } catch { soundStatus = "Relief sound could not play: \(error.localizedDescription)" }
@@ -628,6 +630,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             guard let url = Bundle.main.url(forResource: sensorOnly ? "NivviSensor" : "NivviSiren", withExtension: "wav") else { throw CocoaError(.fileNoSuchFile) }
             try configureAlarmAudio()
             siren = try AVAudioPlayer(contentsOf: url); siren?.numberOfLoops = sensorOnly ? 0 : (loop ? -1 : 0); siren?.volume = sensorOnly ? 0.4 : 1
+            siren?.prepareToPlay()
             guard siren?.play() == true else { throw CocoaError(.fileReadUnknown) }
             soundStatus = sensorOnly ? "Gentle sensor-check chime." : "Siren playing as media audio — the Silent switch does not mute this. Turn the volume buttons up. Lock-screen notification pings can still be silent."
         } catch { soundStatus = "Siren could not play: \(error.localizedDescription)" }
@@ -1686,8 +1689,6 @@ struct ContentView: View {
         return monitor.profile == .heartRate ? "Waiting for heart-rate data" : "Waiting for device data"
     }
     private var displayedHistory: [SavedMeasurement] {
-        if wifi.remoteFresh, !wifi.trail.isEmpty { return wifi.trail }
-        if !mirroringNursery, !monitor.liveTrace.isEmpty { return monitor.liveTrace }
         if family.viewingRemote, let samples = family.remote?.snapshot?.history, !samples.isEmpty {
             return samples.map {
                 SavedMeasurement(
@@ -2043,7 +2044,16 @@ struct ContentView: View {
     }
     private var fiveMinuteReadings: [SavedMeasurement] {
         let start = Date().addingTimeInterval(-120)
-        return displayedHistory.filter { sample in
+        let source: [SavedMeasurement] = {
+            if wifi.remoteFresh, !wifi.trail.isEmpty { return wifi.trail }
+            if family.viewingRemote, let samples = family.remote?.snapshot?.history, !samples.isEmpty {
+                return samples.map {
+                    SavedMeasurement(time: Date(timeIntervalSince1970: $0.t), heartRate: $0.hr.map { Int($0.rounded()) }, oxygen: $0.o2.map { Int($0.rounded()) }, source: "family-share", exactHeartRate: $0.hr, exactOxygen: $0.o2)
+                }
+            }
+            return monitor.liveTrace
+        }()
+        return source.filter { sample in
             sample.time >= start && (sample.heartRateValue ?? 0) > 0
         }
     }
@@ -2236,6 +2246,17 @@ struct ContentView: View {
                         Text(selected.heartRateValue.map { "\(MetricText.number($0)) bpm" } ?? "—").foregroundStyle(coral)
                         Text(selected.oxygenValue.map { "O₂ \(MetricText.number($0))%" } ?? "").foregroundStyle(accentMint)
                     }.font(.subheadline.weight(.semibold)).foregroundStyle(ink)
+                }
+                ForEach(Array(displayedHistory.suffix(40).reversed())) { sample in
+                    HStack {
+                        Text(sample.time.formatted(date: .omitted, time: .standard)).font(.subheadline.monospacedDigit().weight(.semibold)).foregroundStyle(stamp).frame(width: 88, alignment: .leading)
+                        Text(sample.heartRateValue.map { "\(MetricText.number($0)) bpm" } ?? "—").font(.headline.monospacedDigit()).foregroundStyle(coral)
+                        Spacer()
+                        Text(sample.oxygenValue.map { "O₂ \(MetricText.number($0))%" } ?? "").font(.subheadline.weight(.semibold)).foregroundStyle(accentMint)
+                    }
+                    .padding(.horizontal, 14).padding(.vertical, 10)
+                    .background(cardFill)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
                 }
                 if let error = monitor.historyError { Text(error).foregroundStyle(coral) }
             }
