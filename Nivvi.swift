@@ -1960,7 +1960,7 @@ struct ContentView: View {
                 .background(monitor.batteryWarning == .urgent ? coral : Color.orange)
                 .clipShape(RoundedRectangle(cornerRadius: 16))
             }
-            if BluetoothSignal.isWeak(monitor.signalRSSI) || monitor.connection == .reconnecting {
+            if !family.viewingRemote && (BluetoothSignal.isWeak(monitor.signalRSSI) || monitor.connection == .reconnecting) {
                 Text(nurseryHint)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(coral)

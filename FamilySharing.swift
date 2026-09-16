@@ -93,12 +93,12 @@ final class FamilyRelay: ObservableObject {
     private var ownFamily: SharedFamily? { families.first { $0.owner == account?.user_id } }
     var signedIn: Bool { account != nil }
     var userID: String? { account?.user_id }
-    var viewingRemote: Bool { signedIn && !publishing && familyFresh }
+    var viewingRemote: Bool { signedIn && familyFresh && selected != ownFamily?.id }
     var familyFresh: Bool {
-        guard let remote, remote.fresh, let fetched = remoteFetched else { return false }
+        guard let remote, remote.fresh || remote.snapshot?.heart_rate != nil, let fetched = remoteFetched else { return false }
         let elapsed = Date().timeIntervalSince(fetched)
         let age = (remote.age ?? .infinity) + max(0, elapsed)
-        return age <= 30 && elapsed <= 8
+        return age <= 45 && elapsed <= 20
     }
     var liveHeartRate: String? {
         guard viewingRemote, let value = remote?.snapshot?.heart_rate else { return nil }
@@ -218,7 +218,8 @@ final class FamilyRelay: ObservableObject {
         }
     }
     private func tickWatch() async {
-        guard signedIn, !publishing else { return }
+        guard signedIn else { return }
+        if publishing && selected == ownFamily?.id { return }
         if families.isEmpty {
             do { try await refreshFamilies() } catch { message = error.localizedDescription }
         }
