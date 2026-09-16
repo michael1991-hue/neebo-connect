@@ -321,7 +321,9 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             guard let day = calendar.date(byAdding: .day, value: -offset, to: today) else { continue }
             if let rows = try? eventArchive.load(day: day) {
                 log.append(contentsOf: rows.filter {
-                    $0.kind == "critical" || $0.kind == "alarm" || $0.title == "Heart rate back to normal" || $0.title == "High heart-rate alert" || $0.title == "Low heart-rate alert" || $0.title.localizedCaseInsensitiveContains("needs your attention")
+                    $0.kind == "critical" || $0.kind == "alarm" || $0.kind == "connection"
+                    || $0.title == "Heart rate back to normal" || $0.title == "High heart-rate alert" || $0.title == "Low heart-rate alert"
+                    || $0.title.localizedCaseInsensitiveContains("needs your attention")
                 })
             }
         }
@@ -1991,9 +1993,6 @@ struct ContentView: View {
     private var home: some View {
         VStack(alignment: .leading, spacing: 16) {
             liveHero
-            ForEach(Array(rateAlertEvents.suffix(2).reversed())) { event in
-                heartEventCard(event)
-            }
             if monitor.batteryWarning != .ok && !monitor.wearableCharging {
                 HStack(spacing: 10) {
                     Image(systemName: "battery.25percent")
@@ -2210,13 +2209,6 @@ struct ContentView: View {
                 }
             }
             if let error = monitor.historyError { Text(error).foregroundStyle(coral) }
-            DisclosureGroup("Events") {
-                let visibleEvents = rateAlertEvents
-                if visibleEvents.isEmpty { Text("No high or low heart-rate alerts this day.").font(.caption).foregroundStyle(muted) }
-                ForEach(Array(visibleEvents.reversed())) { event in
-                    heartEventCard(event)
-                }
-            }
             if !monitor.recordedDays.isEmpty {
                 DisclosureGroup("Export") {
                     VStack(alignment: .leading, spacing: 10) {
@@ -2268,21 +2260,12 @@ struct ContentView: View {
                 Text("Connection").tag("Connection")
             }.pickerStyle(.segmented)
             let items = alertItems
-            if items.isEmpty { panel { Text("No high or low heart-rate alerts in the last 7 days.") } }
+            if items.isEmpty { panel { Text(alertFilter == "Connection" ? "No connection events in the last 7 days." : "No high or low heart-rate alerts in the last 7 days.") } }
             ForEach(items) { event in
-                heartEventCard(event)
+                if event.kind == "connection" { connectionEventCard(event) }
+                else { heartEventCard(event) }
             }
         }
-    }
-    private var rateAlertEvents: [SavedEvent] {
-        monitor.events.filter { event in
-            event.title == "Heart rate back to normal"
-                || event.title == "High heart-rate alert"
-                || event.title == "Low heart-rate alert"
-                || event.kind == "critical"
-                || event.kind == "alarm"
-                || event.title.localizedCaseInsensitiveContains("needs your attention")
-        }.filter { !$0.title.localizedCaseInsensitiveContains("paused") }
     }
     private func heartEventCard(_ event: SavedEvent) -> some View {
         let restored = event.title == "Heart rate back to normal"
@@ -2298,6 +2281,23 @@ struct ContentView: View {
         .background(restored ? Color.green.opacity(0.16) : cardFill)
         .clipShape(RoundedRectangle(cornerRadius: 22))
         .overlay(RoundedRectangle(cornerRadius: 22).stroke(restored ? Color.green.opacity(0.55) : coral.opacity(0.28), lineWidth: 1))
+    }
+    private func connectionEventCard(_ event: SavedEvent) -> some View {
+        let lost = event.title.localizedCaseInsensitiveContains("lost") || event.title.localizedCaseInsensitiveContains("unavailable") || event.title.localizedCaseInsensitiveContains("disconnected")
+        let tint: Color = lost ? coral : teal
+        return HStack(alignment: .center, spacing: 12) {
+            Image(systemName: lost ? "wifi.slash" : "antenna.radiowaves.left.and.right")
+                .foregroundStyle(tint)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(event.title).font(.subheadline.weight(.semibold)).foregroundStyle(ink)
+                Text(event.time.formatted(date: .abbreviated, time: .shortened)).font(.caption.monospacedDigit()).foregroundStyle(muted)
+            }
+            Spacer()
+        }
+        .padding(14)
+        .background(cardFill)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(tint.opacity(0.28), lineWidth: 1))
     }
     private var alertItems: [SavedEvent] {
         let relevant = monitor.recentAlerts()
@@ -2372,7 +2372,6 @@ struct ContentView: View {
     }
 
     private var settings: some View { VStack(alignment: .leading, spacing: 16) {
-        Text("Settings").font(.largeTitle.bold())
         panel { VStack(alignment: .leading, spacing: 10) {
             HStack { Label("Child profile", systemImage: "person.crop.circle"); Spacer(); Button("Edit") { showProfile = true }.buttonStyle(.bordered) }
             Text("\(displayName)\(ageText.isEmpty ? "" : " · \(ageText)")").font(.headline)
@@ -2384,38 +2383,20 @@ struct ContentView: View {
             Text("Soft stars at night and distant birds by day. Follows Day/Night at the top of Home. Reduce Motion turns the animation off. It pauses when Nivvi is in the background; monitoring is unchanged.")
                 .font(.caption).foregroundStyle(muted)
         } }
-        panel { VStack(alignment: .leading, spacing: 12) {
-            Text("Second iPhone on this Wi‑Fi").font(.headline)
-            Text("Use two phones. This one either shares a code or types the other phone’s code — not both.")
-                .font(.caption).foregroundStyle(muted)
-            Text("Nursery iPhone").font(.subheadline.weight(.semibold))
-            Toggle("Share from this iPhone", isOn: Binding(get: { wifi.hosting }, set: { wifi.setHosting($0) })).tint(teal)
-            if wifi.hosting {
-                Text(wifi.pin).font(.system(size: 40, weight: .bold, design: .rounded)).monospacedDigit()
-                Text("Show this code to the downstairs iPhone. You do not type it here.")
-                    .font(.caption).foregroundStyle(muted)
-                Button("Copy code") { UIPasteboard.general.string = wifi.pin }
-            }
-            Divider()
-            Text("Downstairs iPhone").font(.subheadline.weight(.semibold))
-            Text("Type the nursery code, then turn Follow on.")
-                .font(.caption).foregroundStyle(muted)
-            TextField("4-digit code", text: Binding(
-                get: { wifi.joinPin },
-                set: { wifi.setJoinPin($0) }
-            ))
-            .keyboardType(.numberPad)
-            .textInputAutocapitalization(.never)
-            .font(.title.monospacedDigit())
-            .padding(12)
-            .background(Color.white.opacity(mode == .night ? 0.12 : 0.7))
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-            Toggle("Follow the nursery iPhone", isOn: Binding(get: { wifi.following }, set: { wifi.setFollowing($0) })).tint(lavender)
-            Toggle("Play alerts from the nursery iPhone", isOn: $wifi.playAlerts).tint(coral)
-            Text("Limits are set on the nursery phone (the one on Bluetooth). This phone cannot run its own heart-rate alarms while following — it repeats the nursery alert and can sound here. Allow notifications when iOS asks.")
-                .font(.caption).foregroundStyle(muted)
-            Text("Both on the same Wi‑Fi. Keep Nivvi open on the nursery phone (screen can stay awake). The downstairs phone reconnects by itself if the link drops. Allow local network if iOS asks.").font(.caption).foregroundStyle(muted)
-            Text(wifi.status).font(.caption).foregroundStyle(muted)
+        panel { DisclosureGroup("Second iPhone on this Wi‑Fi") {
+            VStack(alignment: .leading, spacing: 10) {
+                Toggle("Share from this iPhone", isOn: Binding(get: { wifi.hosting }, set: { wifi.setHosting($0) })).tint(teal)
+                if wifi.hosting {
+                    Text(wifi.pin).font(.system(size: 34, weight: .bold, design: .rounded)).monospacedDigit()
+                    Button("Copy code") { UIPasteboard.general.string = wifi.pin }
+                }
+                TextField("Downstairs code", text: Binding(get: { wifi.joinPin }, set: { wifi.setJoinPin($0) }))
+                    .keyboardType(.numberPad)
+                    .font(.title3.monospacedDigit())
+                Toggle("Follow the nursery iPhone", isOn: Binding(get: { wifi.following }, set: { wifi.setFollowing($0) })).tint(lavender)
+                Toggle("Play nursery alerts here", isOn: $wifi.playAlerts).tint(coral)
+                Text(wifi.status).font(.caption).foregroundStyle(muted)
+            }.padding(.top, 8)
         } }
         panel { VStack(alignment: .leading, spacing: 12) {
             Text("Heart-rate alerts").font(.headline)
