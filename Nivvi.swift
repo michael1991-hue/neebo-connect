@@ -1702,6 +1702,7 @@ struct ContentView: View {
         }
         return monitor.history
     }
+    private var displayName: String { childName.isEmpty ? "Your child" : childName }
     private var mirroringNursery: Bool { wifi.remoteFresh || family.viewingRemote }
     private var remoteStamp: Date? {
         if wifi.remoteFresh, let captured = wifi.latest?.captured { return Date(timeIntervalSince1970: captured) }
