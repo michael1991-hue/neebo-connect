@@ -320,7 +320,9 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         for offset in 0..<7 {
             guard let day = calendar.date(byAdding: .day, value: -offset, to: today) else { continue }
             if let rows = try? eventArchive.load(day: day) {
-                log.append(contentsOf: rows.filter { $0.kind == "critical" || $0.kind == "alarm" || $0.title == "Heart-rate readings paused" || $0.title == "Heart rate back to normal" })
+                log.append(contentsOf: rows.filter {
+                    $0.kind == "critical" || $0.kind == "alarm" || $0.title == "Heart rate back to normal" || $0.title == "High heart-rate alert" || $0.title == "Low heart-rate alert" || $0.title.localizedCaseInsensitiveContains("needs your attention")
+                })
             }
         }
         return log.sorted { $0.time > $1.time }
@@ -496,7 +498,6 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     private func pauseHeartRate(_ reason: String) {
         if heartRateFreshness.pause() {
             continuityID = UUID(); sampling.reset()
-            recordEvent(kind: "measurement", title: "Heart-rate readings paused", detail: reason)
             if !alarmActive && !wearableCharging { notify(title: "Check sensor data", body: "No fresh reading received. Check the wearable and connection.", identifier: "nivvi-sensor-paused", soundName: "NivviSensor.wav") }
         }
         verifiedHeartRate = nil; customHeartRateCandidate = nil; alarmEngine.interrupt()
@@ -621,7 +622,9 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     }
     private func configureAlarmAudio() throws {
         let audio = AVAudioSession.sharedInstance()
-        try audio.setCategory(.playback, mode: .default, options: [.duckOthers, .defaultToSpeaker])
+        if audio.category != .playback {
+            try audio.setCategory(.playback, mode: .default, options: [])
+        }
         try audio.setActive(true)
     }
     private func playReliefSound() {
@@ -648,7 +651,6 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     private func stopSiren() {
         soundTestTimer?.invalidate(); soundTestTimer = nil; testingSiren = false
         siren?.stop(); siren = nil
-        try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
     }
     func beginShareAlert(sensor: Bool) {
         if shareAlertActive && shareAlertSensor == sensor { return }
@@ -1989,6 +1991,9 @@ struct ContentView: View {
     private var home: some View {
         VStack(alignment: .leading, spacing: 16) {
             liveHero
+            ForEach(Array(rateAlertEvents.suffix(2).reversed())) { event in
+                heartEventCard(event)
+            }
             if monitor.batteryWarning != .ok && !monitor.wearableCharging {
                 HStack(spacing: 10) {
                     Image(systemName: "battery.25percent")
@@ -2206,19 +2211,10 @@ struct ContentView: View {
             }
             if let error = monitor.historyError { Text(error).foregroundStyle(coral) }
             DisclosureGroup("Events") {
-                let visibleEvents = monitor.events.filter { event in
-                    event.kind == "critical" || event.kind == "alarm" || event.title == "Heart-rate readings paused" || event.title == "Heart rate back to normal" || event.title.localizedCaseInsensitiveContains("needs your attention")
-                }
-                if visibleEvents.isEmpty { Text("No heart-rate alerts this day.").font(.caption).foregroundStyle(muted) }
+                let visibleEvents = rateAlertEvents
+                if visibleEvents.isEmpty { Text("No high or low heart-rate alerts this day.").font(.caption).foregroundStyle(muted) }
                 ForEach(Array(visibleEvents.reversed())) { event in
-                    let restored = event.title == "Heart rate back to normal"
-                    HStack {
-                        Text(event.time.formatted(date: .omitted, time: .shortened)).font(.caption.monospacedDigit()).foregroundStyle(muted).frame(width: 64, alignment: .leading)
-                        Text(event.title).font(.caption.weight(.semibold)).foregroundStyle(restored ? teal : coral)
-                        Spacer()
-                        if let bpm = event.heartRate { Text("\(bpm)").font(.caption.bold().monospacedDigit()).foregroundStyle(restored ? teal : coral) }
-                    }
-                    .padding(.vertical, 4)
+                    heartEventCard(event)
                 }
             }
             if !monitor.recordedDays.isEmpty {
@@ -2272,25 +2268,36 @@ struct ContentView: View {
                 Text("Connection").tag("Connection")
             }.pickerStyle(.segmented)
             let items = alertItems
-            if items.isEmpty { panel { Text("No heart-rate or connection alerts in the last 7 days.") } }
+            if items.isEmpty { panel { Text("No high or low heart-rate alerts in the last 7 days.") } }
             ForEach(items) { event in
-                let restored = event.title == "Heart rate back to normal"
-                HStack(alignment: .center, spacing: 12) {
-                    Circle().fill(restored ? teal : coral).frame(width: 10, height: 10)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(restored ? "Back to normal" : event.title).font(.subheadline.weight(.semibold)).foregroundStyle(ink)
-                        Text(event.time.formatted(date: .abbreviated, time: .shortened)).font(.caption.monospacedDigit()).foregroundStyle(muted)
-                    }
-                    Spacer()
-                    if let bpm = event.heartRate {
-                        Text("\(bpm)").font(.title3.bold().monospacedDigit()).foregroundStyle(restored ? teal : coral)
-                    }
-                }
-                .padding(12)
-                .background((restored ? teal : coral).opacity(0.14))
-                .clipShape(RoundedRectangle(cornerRadius: 14))
+                heartEventCard(event)
             }
         }
+    }
+    private var rateAlertEvents: [SavedEvent] {
+        monitor.events.filter { event in
+            event.title == "Heart rate back to normal"
+                || event.title == "High heart-rate alert"
+                || event.title == "Low heart-rate alert"
+                || event.kind == "critical"
+                || event.kind == "alarm"
+                || event.title.localizedCaseInsensitiveContains("needs your attention")
+        }.filter { !$0.title.localizedCaseInsensitiveContains("paused") }
+    }
+    private func heartEventCard(_ event: SavedEvent) -> some View {
+        let restored = event.title == "Heart rate back to normal"
+        let tint: Color = restored ? Color(red: 0.45, green: 0.95, blue: 0.65) : coral
+        return VStack(alignment: .leading, spacing: 9) {
+            timestamp(event.time, tint: tint)
+            Label(event.title, systemImage: restored ? "checkmark.circle.fill" : "bell.fill")
+                .font(.headline).foregroundStyle(restored ? tint : ink)
+            Text(event.detail).font(.subheadline).foregroundStyle(restored ? tint : muted)
+            if let bpm = event.heartRate { Text("\(bpm) bpm").font(.title3.bold()).foregroundStyle(tint) }
+        }
+        .padding(18).frame(maxWidth: .infinity, alignment: .leading)
+        .background(restored ? Color.green.opacity(0.16) : cardFill)
+        .clipShape(RoundedRectangle(cornerRadius: 22))
+        .overlay(RoundedRectangle(cornerRadius: 22).stroke(restored ? Color.green.opacity(0.55) : coral.opacity(0.28), lineWidth: 1))
     }
     private var alertItems: [SavedEvent] {
         let relevant = monitor.recentAlerts()
