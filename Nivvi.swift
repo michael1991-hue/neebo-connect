@@ -1985,8 +1985,8 @@ struct ContentView: View {
                     Text("One-off result · not live monitoring · no live alarms").font(.caption).foregroundStyle(muted)
                 } }
             }
-            readinessPanel
-            if !monitor.status.isEmpty { Text(monitor.status).font(.caption).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true) }
+            if !family.viewingRemote { readinessPanel }
+            if !family.viewingRemote && !monitor.status.isEmpty { Text(monitor.status).font(.caption).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true) }
         }
     }
 
@@ -2044,8 +2044,8 @@ struct ContentView: View {
                 Text("Heart rate").font(.caption.weight(.bold)).tracking(1.1).foregroundStyle(muted)
                 HStack(alignment: .center, spacing: 12) {
                     PulsingHeart(
-                        beatsPerMinute: monitor.wearableCharging || monitor.staleHeartRateDetected ? nil : (monitor.verifiedHeartRate.map(Double.init) ?? monitor.pulseOximeterRate ?? monitor.customHeartRateCandidate.map(Double.init)),
-                        tint: monitor.staleHeartRateDetected ? coral : Color(red: 0.93, green: 0.38, blue: 0.42)
+                        beatsPerMinute: family.viewingRemote ? family.remote?.snapshot?.heart_rate : (monitor.wearableCharging || monitor.staleHeartRateDetected ? nil : (monitor.verifiedHeartRate.map(Double.init) ?? monitor.pulseOximeterRate ?? monitor.customHeartRateCandidate.map(Double.init))),
+                        tint: monitor.staleHeartRateDetected && !family.viewingRemote ? coral : Color(red: 0.93, green: 0.38, blue: 0.42)
                     )
                     Text(heroHeartRate)
                         .font(.system(size: 58, weight: .bold, design: .rounded))
@@ -2060,16 +2060,18 @@ struct ContentView: View {
                 }
                 .accessibilityElement(children: .combine)
                 TimelineView(.periodic(from: .now, by: 1)) { context in
-                    Text(readingAge(monitor.lastHeartRateUpdate, now: context.date))
+                    Text(readingAge(family.viewingRemote ? family.remote?.snapshot.map { Date(timeIntervalSince1970: $0.captured) } : monitor.lastHeartRateUpdate, now: context.date))
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(monitor.staleHeartRateDetected ? coral : accentMint)
+                        .foregroundStyle(monitor.staleHeartRateDetected && !family.viewingRemote ? coral : accentMint)
                 }
                 if wifi.remoteFresh {
                     Text("From the nursery iPhone on this Wi‑Fi").font(.caption).foregroundStyle(accentMint)
                 } else if family.viewingRemote {
                     Text("From the nursery iPhone · family sharing").font(.caption).foregroundStyle(accentMint)
                 }
-                Text(liveMeasurementNote).font(.caption).foregroundStyle(muted)
+                if !family.viewingRemote {
+                    Text(liveMeasurementNote).font(.caption).foregroundStyle(muted)
+                }
                 fiveMinuteChart
                 if let note = latestNote {
                     VStack(alignment: .leading, spacing: 2) {
@@ -2078,7 +2080,7 @@ struct ContentView: View {
                         Text(note.time.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(muted)
                     }
                 }
-                if monitor.profile == .custom || monitor.profile.hasPulseOximeter {
+                if family.viewingRemote || monitor.profile == .custom || monitor.profile.hasPulseOximeter {
                     Divider().overlay(muted.opacity(0.25))
                     HStack {
                         Label("Oxygen", systemImage: "lungs.fill").foregroundStyle(accentMint)
@@ -2086,7 +2088,7 @@ struct ContentView: View {
                         Text(oxygenDisplay).font(.title3.bold()).foregroundStyle(accentMint)
                     }
                     TimelineView(.periodic(from: .now, by: 1)) { context in
-                        Text(readingAge(monitor.lastOxygenUpdate, now: context.date)).font(.caption).foregroundStyle(muted)
+                        Text(readingAge(family.viewingRemote ? family.remote?.snapshot.map { Date(timeIntervalSince1970: $0.captured) } : monitor.lastOxygenUpdate, now: context.date)).font(.caption).foregroundStyle(muted)
                     }
                 }
             }
@@ -2513,9 +2515,13 @@ struct ContentView: View {
             .background(cardFill).clipShape(RoundedRectangle(cornerRadius: 22))
     }
     private func readingAge(_ date: Date?, now: Date) -> String {
-        guard let date else { return "No reading received" }
-        if monitor.staleHeartRateDetected { return "Stale · not a live value" }
+        guard let date else { return family.viewingRemote ? "Waiting for nursery" : "No reading received" }
         let seconds = Int(now.timeIntervalSince(date))
+        if family.viewingRemote {
+            guard seconds >= 0 else { return "Updated just now" }
+            return "Updated \(seconds)s ago"
+        }
+        if monitor.staleHeartRateDetected { return "Stale · not a live value" }
         guard connected, seconds >= 0, seconds <= 30 else { return "No fresh reading" }
         return "Updated \(seconds)s ago"
     }
