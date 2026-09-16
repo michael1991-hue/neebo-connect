@@ -23,6 +23,7 @@ final class WiFiRelay: ObservableObject {
     @Published var playAlerts = true
     @Published var status = "Off"
     @Published var latest: WiFiSnapshot?
+    @Published private(set) var trail: [SavedMeasurement] = []
     private var wantHost = false
     private var wantFollow = false
     private var listener: NWListener?
@@ -49,7 +50,7 @@ final class WiFiRelay: ObservableObject {
         }
         keepTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                try? await Task.sleep(nanoseconds: 500_000_000)
                 await MainActor.run { self?.tick() }
             }
         }
@@ -93,6 +94,28 @@ final class WiFiRelay: ObservableObject {
         } else {
             stopViewer()
         }
+    }
+
+    private func record(_ snap: WiFiSnapshot) {
+        let hr = Self.number(snap.heartRate)
+        let o2 = Self.number(snap.oxygen)
+        guard hr != nil || o2 != nil else { return }
+        trail.append(SavedMeasurement(
+            time: Date(timeIntervalSince1970: snap.captured),
+            heartRate: hr.map { Int($0.rounded()) },
+            oxygen: o2.map { Int($0.rounded()) },
+            source: "wifi-share",
+            exactHeartRate: hr,
+            exactOxygen: o2
+        ))
+        let cut = Date().addingTimeInterval(-300)
+        trail.removeAll { $0.time < cut }
+        if trail.count > 400 { trail.removeFirst(trail.count - 400) }
+    }
+    private static func number(_ text: String) -> Double? {
+        let digits = text.filter { $0.isNumber || $0 == "." }
+        guard let value = Double(digits), value > 0 else { return nil }
+        return value
     }
 
     func revive() {
@@ -263,6 +286,7 @@ final class WiFiRelay: ObservableObject {
                         }
                         if let snap = try? JSONDecoder().decode(WiFiSnapshot.self, from: line), snap.pin == self.joinPin {
                             self.latest = snap
+                            self.record(snap)
                             self.status = "Linked on this Wi‑Fi"
                         } else if let snap = try? JSONDecoder().decode(WiFiSnapshot.self, from: line), snap.pin != self.joinPin {
                             self.status = "Wrong share code. Match the nursery iPhone."
@@ -286,6 +310,7 @@ final class WiFiRelay: ObservableObject {
         knownEndpoint = nil
         buffer = Data()
         latest = nil
+        trail = []
         if following { following = false }
         if !wantHost { status = "Off" }
     }

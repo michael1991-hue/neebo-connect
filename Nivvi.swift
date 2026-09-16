@@ -1660,6 +1660,7 @@ struct ContentView: View {
         return monitor.profile == .heartRate ? "Waiting for heart-rate data" : "Waiting for device data"
     }
     private var displayedHistory: [SavedMeasurement] {
+        if wifi.remoteFresh, !wifi.trail.isEmpty { return wifi.trail }
         if family.viewingRemote, let samples = family.remote?.snapshot?.history, !samples.isEmpty {
             return samples.map {
                 SavedMeasurement(
@@ -1674,7 +1675,15 @@ struct ContentView: View {
         }
         return monitor.history
     }
-    private var displayName: String { childName.isEmpty ? "Your child" : childName }
+    private var mirroringNursery: Bool { wifi.remoteFresh || family.viewingRemote }
+    private var remoteStamp: Date? {
+        if wifi.remoteFresh, let captured = wifi.latest?.captured { return Date(timeIntervalSince1970: captured) }
+        if family.viewingRemote, let captured = family.remote?.snapshot?.captured { return Date(timeIntervalSince1970: captured) }
+        return nil
+    }
+    private var remoteBeats: Double? {
+        family.remote?.snapshot?.heart_rate ?? wifi.latest.flatMap { Double($0.heartRate.filter { $0.isNumber || $0 == "." }) }
+    }
     private var statusCaption: String {
         if monitor.wearableCharging { return "Charging · monitoring paused" }
         if wifi.remoteFresh { return "Shared over Wi‑Fi" }
@@ -1995,8 +2004,8 @@ struct ContentView: View {
                     Text("One-off result · not live monitoring · no live alarms").font(.caption).foregroundStyle(muted)
                 } }
             }
-            if !family.viewingRemote { readinessPanel }
-            if !family.viewingRemote && !monitor.status.isEmpty { Text(monitor.status).font(.caption).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true) }
+            if !mirroringNursery { readinessPanel }
+            if !mirroringNursery && !monitor.status.isEmpty { Text(monitor.status).font(.caption).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true) }
         }
     }
 
@@ -2054,8 +2063,8 @@ struct ContentView: View {
                 Text("Heart rate").font(.caption.weight(.bold)).tracking(1.1).foregroundStyle(muted)
                 HStack(alignment: .center, spacing: 12) {
                     PulsingHeart(
-                        beatsPerMinute: family.viewingRemote ? family.remote?.snapshot?.heart_rate : (monitor.wearableCharging || monitor.staleHeartRateDetected ? nil : (monitor.verifiedHeartRate.map(Double.init) ?? monitor.pulseOximeterRate ?? monitor.customHeartRateCandidate.map(Double.init))),
-                        tint: monitor.staleHeartRateDetected && !family.viewingRemote ? coral : Color(red: 0.93, green: 0.38, blue: 0.42)
+                        beatsPerMinute: mirroringNursery ? remoteBeats : (monitor.wearableCharging || monitor.staleHeartRateDetected ? nil : (monitor.verifiedHeartRate.map(Double.init) ?? monitor.pulseOximeterRate ?? monitor.customHeartRateCandidate.map(Double.init))),
+                        tint: monitor.staleHeartRateDetected && !mirroringNursery ? coral : Color(red: 0.93, green: 0.38, blue: 0.42)
                     )
                     Text(heroHeartRate)
                         .font(.system(size: 58, weight: .bold, design: .rounded))
@@ -2070,16 +2079,16 @@ struct ContentView: View {
                 }
                 .accessibilityElement(children: .combine)
                 TimelineView(.periodic(from: .now, by: 1)) { context in
-                    Text(readingAge(family.viewingRemote ? family.remote?.snapshot.map { Date(timeIntervalSince1970: $0.captured) } : monitor.lastHeartRateUpdate, now: context.date))
+                    Text(readingAge(mirroringNursery ? remoteStamp : monitor.lastHeartRateUpdate, now: context.date))
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(monitor.staleHeartRateDetected && !family.viewingRemote ? coral : accentMint)
+                        .foregroundStyle(monitor.staleHeartRateDetected && !mirroringNursery ? coral : accentMint)
                 }
                 if wifi.remoteFresh {
                     Text("From the nursery iPhone on this Wi‑Fi").font(.caption).foregroundStyle(accentMint)
                 } else if family.viewingRemote {
                     Text("From the nursery iPhone · family sharing").font(.caption).foregroundStyle(accentMint)
                 }
-                if !family.viewingRemote {
+                if !mirroringNursery {
                     Text(liveMeasurementNote).font(.caption).foregroundStyle(muted)
                 }
                 fiveMinuteChart
@@ -2090,7 +2099,7 @@ struct ContentView: View {
                         Text(note.time.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(muted)
                     }
                 }
-                if family.viewingRemote || monitor.profile == .custom || monitor.profile.hasPulseOximeter {
+                if mirroringNursery || monitor.profile == .custom || monitor.profile.hasPulseOximeter {
                     Divider().overlay(muted.opacity(0.25))
                     HStack {
                         Label("Oxygen", systemImage: "lungs.fill").foregroundStyle(accentMint)
@@ -2098,7 +2107,7 @@ struct ContentView: View {
                         Text(oxygenDisplay).font(.title3.bold()).foregroundStyle(accentMint)
                     }
                     TimelineView(.periodic(from: .now, by: 1)) { context in
-                        Text(readingAge(family.viewingRemote ? family.remote?.snapshot.map { Date(timeIntervalSince1970: $0.captured) } : monitor.lastOxygenUpdate, now: context.date)).font(.caption).foregroundStyle(muted)
+                        Text(readingAge(mirroringNursery ? remoteStamp : monitor.lastOxygenUpdate, now: context.date)).font(.caption).foregroundStyle(muted)
                     }
                 }
             }
@@ -2525,9 +2534,9 @@ struct ContentView: View {
             .background(cardFill).clipShape(RoundedRectangle(cornerRadius: 22))
     }
     private func readingAge(_ date: Date?, now: Date) -> String {
-        guard let date else { return family.viewingRemote ? "Waiting for nursery" : "No reading received" }
+        guard let date else { return mirroringNursery ? "Waiting for nursery" : "No reading received" }
         let seconds = Int(now.timeIntervalSince(date))
-        if family.viewingRemote {
+        if mirroringNursery {
             guard seconds >= 0 else { return "Updated just now" }
             return "Updated \(seconds)s ago"
         }
