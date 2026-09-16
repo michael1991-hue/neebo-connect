@@ -1692,9 +1692,9 @@ struct ContentView: View {
             title: displayName,
             heartRate: heartRateDisplay,
             oxygen: oxygenDisplay,
-            connection: monitor.connection.label,
-            signal: BluetoothSignal.label(monitor.signalRSSI),
-            nurseryHint: live ? nurseryHint : "",
+            connection: family.viewingRemote ? (family.remote?.snapshot?.connection ?? "Family sharing") : monitor.connection.label,
+            signal: family.viewingRemote ? "Internet" : BluetoothSignal.label(monitor.signalRSSI),
+            nurseryHint: family.viewingRemote ? "Live from the nursery iPhone" : (live ? nurseryHint : ""),
             monitoring: live || wifi.remoteFresh || family.viewingRemote
         )
     }
@@ -1718,13 +1718,18 @@ struct ContentView: View {
         return "none"
     }
     private func applyShareAlert() {
-        guard wifi.following, wifi.playAlerts, wifi.remoteFresh, let snap = wifi.latest else {
-            monitor.endShareAlert()
+        if wifi.following, wifi.playAlerts, wifi.remoteFresh, let snap = wifi.latest {
+            let alarm = snap.alarm ?? "none"
+            if alarm == "none" { monitor.endShareAlert() }
+            else { monitor.beginShareAlert(sensor: alarm == "sensor") }
             return
         }
-        let alarm = snap.alarm ?? "none"
-        if alarm == "none" { monitor.endShareAlert() }
-        else { monitor.beginShareAlert(sensor: alarm == "sensor") }
+        if family.viewingRemote, let snap = family.remote?.snapshot {
+            if snap.alarm == "none" { monitor.endShareAlert() }
+            else { monitor.beginShareAlert(sensor: snap.alarm == "sensor") }
+            return
+        }
+        monitor.endShareAlert()
     }
     private var avatarTint: Color {
         switch avatarColor {
@@ -1795,7 +1800,7 @@ struct ContentView: View {
             monitor.showAllDevices = false
             syncLiveActivity()
             family.startWatching()
-            UIApplication.shared.isIdleTimerDisabled = wifi.hosting || wifi.following || monitor.connection.isConnected
+            UIApplication.shared.isIdleTimerDisabled = wifi.hosting || wifi.following || monitor.connection.isConnected || family.viewingRemote
         }
         .sheet(isPresented: $showProfile) {
             ProfileSetupView(name: childName, birthDate: birthDate, gender: childGender, avatarSymbol: avatarSymbol, avatarColor: avatarColor) { name, date, gender, symbol, color in
@@ -1813,16 +1818,16 @@ struct ContentView: View {
         }
         .onChange(of: wifi.hosting) { _ in
             publishWiFiShare()
-            UIApplication.shared.isIdleTimerDisabled = wifi.hosting || wifi.following || monitor.connection.isConnected
+            UIApplication.shared.isIdleTimerDisabled = wifi.hosting || wifi.following || monitor.connection.isConnected || family.viewingRemote
         }
         .onChange(of: wifi.following) { on in
             if on { monitor.requestNotificationPermission() }
             applyShareAlert()
-            UIApplication.shared.isIdleTimerDisabled = wifi.hosting || wifi.following || monitor.connection.isConnected
+            UIApplication.shared.isIdleTimerDisabled = wifi.hosting || wifi.following || monitor.connection.isConnected || family.viewingRemote
         }
         .onChange(of: monitor.connection) { _ in
             publishWiFiShare(); syncLiveActivity()
-            UIApplication.shared.isIdleTimerDisabled = wifi.hosting || wifi.following || monitor.connection.isConnected
+            UIApplication.shared.isIdleTimerDisabled = wifi.hosting || wifi.following || monitor.connection.isConnected || family.viewingRemote
         }
         .onChange(of: monitor.verifiedHeartRate) { _ in publishWiFiShare(); syncLiveActivity() }
         .onChange(of: monitor.pulseOximeterOxygen) { _ in publishWiFiShare(); syncLiveActivity() }
@@ -1832,6 +1837,11 @@ struct ContentView: View {
         .onChange(of: monitor.alarmKind) { _ in publishWiFiShare(); syncLiveActivity() }
         .onChange(of: monitor.staleHeartRateDetected) { _ in publishWiFiShare(); syncLiveActivity() }
         .onChange(of: monitor.wearableCharging) { _ in publishWiFiShare() }
+        .onChange(of: family.remoteFetched) { _ in
+            applyShareAlert()
+            syncLiveActivity()
+            UIApplication.shared.isIdleTimerDisabled = wifi.hosting || wifi.following || monitor.connection.isConnected || family.viewingRemote
+        }
         .onChange(of: wifi.latest) { _ in
             applyShareAlert()
             syncLiveActivity()

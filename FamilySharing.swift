@@ -1,6 +1,7 @@
 import SwiftUI
 import Security
 import UserNotifications
+import AVFoundation
 
 struct FamilyAccount: Codable { let token: String; let user_id: String; let email: String }
 struct SharedFamily: Codable, Identifiable { let id: String; let label: String; let owner: String }
@@ -213,7 +214,7 @@ final class FamilyRelay: ObservableObject {
         watchTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.tickWatch()
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                try? await Task.sleep(nanoseconds: 500_000_000)
             }
         }
     }
@@ -224,6 +225,13 @@ final class FamilyRelay: ObservableObject {
             do { try await refreshFamilies() } catch { message = error.localizedDescription }
         }
         await fetchRemote()
+        holdAudio()
+    }
+    private func holdAudio() {
+        guard viewingRemote || publishing else { return }
+        let audio = AVAudioSession.sharedInstance()
+        try? audio.setCategory(.playback, mode: .default, options: [.mixWithOthers, .defaultToSpeaker])
+        try? audio.setActive(true)
     }
     func clearRemote() { remote = nil; remoteFetched = nil }
     func fetchRemote() async {
@@ -240,7 +248,7 @@ final class FamilyRelay: ObservableObject {
     func capture(_ snapshot: FamilySnapshot) {
         guard publishing, let family = ownFamily else { return }
         if uploadBusy { pendingSnapshot = snapshot; return }
-        if snapshot.alarm == lastAlarm, let lastUpload, Date().timeIntervalSince(lastUpload) < 1 { return }
+        if snapshot.alarm == lastAlarm, let lastUpload, Date().timeIntervalSince(lastUpload) < 0.5 { return }
         let token = generation
         uploadBusy = true
         Task {
