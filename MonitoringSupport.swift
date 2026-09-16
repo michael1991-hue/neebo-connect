@@ -79,6 +79,29 @@ struct WearableChargePolicy {
     }
     mutating func reset() { self = Self() }
 }
+
+struct WearableBatteryPolicy {
+    static let warn = 20
+    static let urgent = 10
+    static let clear = 25
+    enum Level: Equatable { case ok, low, urgent }
+    private(set) var level: Level = .ok
+    mutating func observe(percent: Int, charging: Bool) -> Level? {
+        guard (0...100).contains(percent) else { return nil }
+        if charging || percent >= Self.clear {
+            let changed = level != .ok
+            level = .ok
+            return changed ? .ok : nil
+        }
+        let next: Level = percent <= Self.urgent ? .urgent : (percent <= Self.warn ? .low : .ok)
+        guard next != level else { return nil }
+        level = next
+        return next == .ok ? nil : next
+    }
+    mutating func reset() { self = Self() }
+}
+
+enum ProfileAvatarPolicy {
     static let symbols = [
         "star.fill", "heart.fill", "moon.stars.fill", "sparkles",
         "leaf.fill", "hare.fill", "tortoise.fill", "bird.fill",

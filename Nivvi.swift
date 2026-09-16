@@ -277,6 +277,8 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     @Published private(set) var staleHeartRateDetected = false
     @Published private(set) var wearableCharging = false
     private var chargePolicy = WearableChargePolicy()
+    private var batteryPolicy = WearableBatteryPolicy()
+    @Published private(set) var batteryWarning: WearableBatteryPolicy.Level = .ok
     var criticalAlertActive: Bool { alarmActive || staleHeartRateDetected || shareAlertActive }
     @Published private(set) var shareAlertActive = false
     private var shareAlertSensor = false
@@ -723,6 +725,8 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         readQueue = []; pendingRead = nil; measurementCharacteristic = nil
         clearLiveValues(); battery = "—"; lastSample = nil
         chargePolicy.reset()
+        batteryPolicy.reset()
+        batteryWarning = .ok
         applyCharging(false, record: false)
     }
     private func beginRecoveryScan() {
@@ -1040,13 +1044,18 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             readings[i].count += 1; readings[i].hex = hex
         } else { readings.append(Reading(id:key, count:1, hex:hex)) }
         if uuid == "2A19", serviceID == "180F", data.count == 1, data[0] <= 100 {
-            battery = "\(data[0])%"
-            chargePolicy.observeLevel(Int(data[0]))
+            let percent = Int(data[0])
+            battery = "\(percent)%"
+            chargePolicy.observeLevel(percent)
             applyCharging(chargePolicy.isCharging)
+            applyBatteryWarning(percent)
         }
         if uuid == "2A1A", serviceID == "180F", let charging = BluetoothPolicy.batteryCharging(data) {
             chargePolicy.observePowerState(charging: charging)
             applyCharging(chargePolicy.isCharging)
+            if let value = Int(battery.replacingOccurrences(of: "%", with: "")) {
+                applyBatteryWarning(value)
+            }
         }
         if uuid == "FFEA", serviceID == "FFE0", data.count == 2 { counter = "\(Int(data[0]) | (Int(data[1]) << 8)) — possible minutes" }
     }
@@ -1112,6 +1121,27 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         } else if record {
             recordEvent(kind: "connection", title: "Charging ended", detail: "Waiting for a worn reading. Put the band on the child before relying on alerts.")
         }
+    }
+    private func applyBatteryWarning(_ percent: Int) {
+        guard let crossed = batteryPolicy.observe(percent: percent, charging: wearableCharging) else { return }
+        batteryWarning = batteryPolicy.level
+        if crossed == .ok {
+            UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["nivvi-wearable-battery"])
+            UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["nivvi-wearable-battery"])
+            return
+        }
+        let urgent = crossed == .urgent
+        recordEvent(
+            kind: "connection",
+            title: urgent ? "Wearable battery very low" : "Wearable battery low",
+            detail: "The band reported \(percent)%. Charge it before relying on overnight monitoring. This is the device’s own battery figure, not a medical reading."
+        )
+        notify(
+            title: urgent ? "Wearable battery very low" : "Wearable battery low",
+            body: "The band is at \(percent)%. Charge it soon. Heart-rate alerts still depend on a worn, connected device.",
+            identifier: "nivvi-wearable-battery",
+            soundName: "NivviSensor.wav"
+        )
     }
     private func observeStaleHeartRate(_ bpm: Double, source: String) {
         if wearableCharging { return }
@@ -1603,6 +1633,8 @@ struct ContentView: View {
         if monitor.wearableCharging {
             return (monitor.battery == "—" || monitor.battery.isEmpty) ? "Charging" : "Charging · \(monitor.battery)"
         }
+        if monitor.batteryWarning == .urgent { return "Very low · \(monitor.battery)" }
+        if monitor.batteryWarning == .low { return "Low · \(monitor.battery)" }
         return (monitor.battery == "—" || monitor.battery.isEmpty) ? "Unavailable" : monitor.battery
     }
     private var oxygenDisplay: String {
@@ -1645,7 +1677,8 @@ struct ContentView: View {
             oxygen: localO2.map { "\(MetricText.number($0))%" } ?? "No reading",
             connection: monitor.connection.label,
             alarm: shareAlarmKind,
-            charging: monitor.wearableCharging
+            charging: monitor.wearableCharging,
+            battery: monitor.battery
         )
     }
     private var shareAlarmKind: String {
@@ -1876,6 +1909,18 @@ struct ContentView: View {
     private var home: some View {
         VStack(alignment: .leading, spacing: 16) {
             liveHero
+            if monitor.batteryWarning != .ok && !monitor.wearableCharging {
+                HStack(spacing: 10) {
+                    Image(systemName: "battery.25percent")
+                    Text(monitor.batteryWarning == .urgent ? "Band battery very low (\(monitor.battery)). Charge it before overnight use." : "Band battery low (\(monitor.battery)). Charge soon.")
+                        .font(.subheadline.weight(.semibold))
+                }
+                .foregroundStyle(.white)
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(monitor.batteryWarning == .urgent ? coral : Color.orange)
+                .clipShape(RoundedRectangle(cornerRadius: 16))
+            }
             if BluetoothSignal.isWeak(monitor.signalRSSI) || monitor.connection == .reconnecting {
                 Text(nurseryHint)
                     .font(.caption.weight(.semibold))

@@ -10,6 +10,7 @@ struct WiFiSnapshot: Codable, Equatable {
     var captured: TimeInterval
     var alarm: String?
     var charging: Bool?
+    var battery: String?
 }
 
 @MainActor
@@ -43,8 +44,8 @@ final class WiFiRelay: ObservableObject {
         return Date().timeIntervalSince1970 - latest.captured < 20
     }
 
-    func publish(heartRate: String, oxygen: String, connection: String, alarm: String = "none", charging: Bool = false) {
-        let snap = WiFiSnapshot(pin: pin, heartRate: heartRate, oxygen: oxygen, connection: connection, captured: Date().timeIntervalSince1970, alarm: alarm, charging: charging)
+    func publish(heartRate: String, oxygen: String, connection: String, alarm: String = "none", charging: Bool = false, battery: String = "—") {
+        let snap = WiFiSnapshot(pin: pin, heartRate: heartRate, oxygen: oxygen, connection: connection, captured: Date().timeIntervalSince1970, alarm: alarm, charging: charging, battery: battery)
         payload = (try? JSONEncoder().encode(snap)) ?? Data()
         payload.append(10)
         guard hosting else { return }
