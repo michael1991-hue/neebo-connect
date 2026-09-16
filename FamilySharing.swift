@@ -225,15 +225,6 @@ final class FamilyRelay: ObservableObject {
             do { try await refreshFamilies() } catch { message = error.localizedDescription }
         }
         await fetchRemote()
-        holdAudio()
-    }
-    private func holdAudio() {
-        guard viewingRemote || publishing else { return }
-        let audio = AVAudioSession.sharedInstance()
-        if audio.category != .playback {
-            try? audio.setCategory(.playback, mode: .default, options: [.duckOthers, .defaultToSpeaker])
-        }
-        try? audio.setActive(true)
     }
     func clearRemote() { remote = nil; remoteFetched = nil }
     func fetchRemote() async {

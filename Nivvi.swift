@@ -313,6 +313,18 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         guard let kind = alarmKind else { return "A critical heart-rate alert is active." }
         return kind == .low ? "Low heart-rate limit crossed." : "High heart-rate limit crossed."
     }
+    func recentAlerts() -> [SavedEvent] {
+        var log: [SavedEvent] = []
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        for offset in 0..<7 {
+            guard let day = calendar.date(byAdding: .day, value: -offset, to: today) else { continue }
+            if let rows = try? eventArchive.load(day: day) {
+                log.append(contentsOf: rows.filter { $0.kind == "critical" || $0.kind == "alarm" || $0.kind == "connection" })
+            }
+        }
+        return log.sorted { $0.time > $1.time }
+    }
     func recordEvent(kind: String, title: String, detail: String, heartRate: Int? = nil) {
         let event = SavedEvent(time: Date(), kind: kind, title: title, detail: detail, heartRate: heartRate)
         do {
@@ -609,9 +621,8 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     }
     private func configureAlarmAudio() throws {
         let audio = AVAudioSession.sharedInstance()
-        if audio.isOtherAudioPlaying { try? audio.setActive(false, options: [.notifyOthersOnDeactivation]) }
         try audio.setCategory(.playback, mode: .default, options: [.duckOthers, .defaultToSpeaker])
-        try audio.setActive(true, options: [])
+        try audio.setActive(true)
     }
     private func playReliefSound() {
         guard foreground else { return }
@@ -619,18 +630,17 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             guard let url = Bundle.main.url(forResource: "NivviRelief", withExtension: "wav") else { throw CocoaError(.fileNoSuchFile) }
             try configureAlarmAudio()
             siren = try AVAudioPlayer(contentsOf: url); siren?.numberOfLoops = 0; siren?.volume = 0.5
-            siren?.prepareToPlay()
             _ = siren?.play()
             soundStatus = "Playing the gentle recovery chime."
         } catch { soundStatus = "Relief sound could not play: \(error.localizedDescription)" }
     }
     private func startSiren(loop: Bool) {
         let sensorOnly = shareAlertSensor || (staleHeartRateDetected && !alarmActive && !testingSiren)
+        if !foreground && sensorOnly { return }
         do {
             guard let url = Bundle.main.url(forResource: sensorOnly ? "NivviSensor" : "NivviSiren", withExtension: "wav") else { throw CocoaError(.fileNoSuchFile) }
             try configureAlarmAudio()
             siren = try AVAudioPlayer(contentsOf: url); siren?.numberOfLoops = sensorOnly ? 0 : (loop ? -1 : 0); siren?.volume = sensorOnly ? 0.4 : 1
-            siren?.prepareToPlay()
             guard siren?.play() == true else { throw CocoaError(.fileReadUnknown) }
             soundStatus = sensorOnly ? "Gentle sensor-check chime." : "Siren playing as media audio — the Silent switch does not mute this. Turn the volume buttons up. Lock-screen notification pings can still be silent."
         } catch { soundStatus = "Siren could not play: \(error.localizedDescription)" }
@@ -641,10 +651,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
     }
     func beginShareAlert(sensor: Bool) {
-        if shareAlertActive && shareAlertSensor == sensor {
-            if siren?.isPlaying != true { startSiren(loop: !sensor) }
-            return
-        }
+        if shareAlertActive && shareAlertSensor == sensor { return }
         shareAlertSensor = sensor
         shareAlertActive = true
         alarmAcknowledged = false
@@ -654,23 +661,14 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             identifier: "nivvi-wifi-share-alarm",
             soundName: sensor ? "NivviSensor.wav" : "NivviSiren.wav"
         )
-        if !sensor {
-            notify(
-                title: attentionTitle,
-                body: "This heart-rate alert is still active on the nursery iPhone. Open Nivvi.",
-                identifier: "nivvi-wifi-share-alarm-reminder",
-                soundName: "NivviSiren.wav",
-                repeatInterval: 60
-            )
-        }
         startSiren(loop: !sensor)
     }
     func endShareAlert() {
         guard shareAlertActive else { return }
         shareAlertActive = false
         shareAlertSensor = false
-        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["nivvi-wifi-share-alarm", "nivvi-wifi-share-alarm-reminder"])
-        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["nivvi-wifi-share-alarm", "nivvi-wifi-share-alarm-reminder"])
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["nivvi-wifi-share-alarm"])
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["nivvi-wifi-share-alarm"])
         if !alarmActive && !staleHeartRateDetected && !testingSiren { stopSiren() }
     }
     func testRecoverySound() {
@@ -728,16 +726,10 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
                             detail: "Recording continues for usable Bluetooth updates delivered by iOS. A polling-only device may stop supplying data while the app is suspended.")
                 scheduleBackgroundWatchdog()
             }
-            if criticalAlertActive && !alarmAcknowledged {
-                startSiren(loop: alarmActive || (shareAlertActive && !shareAlertSensor))
-                if shareAlertActive {
-                    notify(title: shareAlertSensor ? "Check sensor data" : attentionTitle, body: "Nursery alert still active. Open Nivvi.", identifier: "nivvi-wifi-share-alarm", soundName: shareAlertSensor ? "NivviSensor.wav" : "NivviSiren.wav")
-                } else if alarmActive {
-                    notify(title: attentionTitle, body: "A heart-rate alarm is still active. Open Nivvi to acknowledge it.", identifier: "nivvi-rate-alarm")
-                }
-            } else {
-                stopSiren()
+            if criticalAlertActive, !alarmAcknowledged, alarmActive {
+                notify(title: attentionTitle, body: "A heart-rate alarm is still active. Open Nivvi to acknowledge it.", identifier: "nivvi-rate-alarm")
             }
+            stopSiren()
             // Stop only a user-initiated broad scan. Preserve saved-device recovery.
             if isScanning {
                 scanToken = UUID(); scanDeadline?.invalidate(); manager.stopScan(); connection = .idle
@@ -1209,12 +1201,12 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         alarmKind = alarmEngine.active
         if let event = event {
             alarmAcknowledged = false
-            recordEvent(kind: "critical", title: attentionTitle, detail: "\(event.title). Pulse oximeter reading \(MetricText.number(pulse)) bpm crossed the configured limit for \(alarmSettings.durationSeconds) seconds. Acknowledgement is required; the alarm remains active until a fresh in-range reading.")
+            recordEvent(kind: "critical", title: event.title, detail: "Pulse oximeter reading \(MetricText.number(pulse)) bpm crossed the configured limit for \(alarmSettings.durationSeconds) seconds.", heartRate: Int(pulse.rounded()))
             startSiren(loop: true)
             scheduleAlarmNotifications()
         } else if previous != nil && !alarmActive {
             alarmAcknowledged = false
-            recordEvent(kind: "critical", title: "Heart rate back to normal", detail: "Fresh pulse-oximeter reading \(MetricText.number(pulse)) bpm returned within the configured limits. The alarm self-cleared.")
+            recordEvent(kind: "critical", title: "Heart rate back to normal", detail: "Fresh pulse-oximeter reading \(MetricText.number(pulse)) bpm returned within the configured limits.", heartRate: Int(pulse.rounded()))
             clearAlarmNotifications()
             if !testingSiren { stopSiren() }
             playReliefSound()
@@ -2269,48 +2261,41 @@ struct ContentView: View {
     }
 
     private var alerts: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 14) {
             Text("Alerts").font(.largeTitle.bold()).foregroundStyle(ink)
-            Text("Alerts listed here were recorded in Nivvi. That is not proof a notification was delivered. The looping siren can sound in Silent mode while Nivvi is playing audio. Lock-screen notification sounds still follow Silent/Focus.")
-                .font(.caption).foregroundStyle(muted)
             Picker("Filter", selection: $alertFilter) {
                 Text("All").tag("All")
                 Text("Heart rate").tag("Heart rate")
                 Text("Connection").tag("Connection")
             }.pickerStyle(.segmented)
-            panel {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("NOTIFICATIONS").font(.caption.bold()).foregroundStyle(muted)
-                    Text(monitor.notificationStatus).foregroundStyle(ink)
-                    Text("Permission status only — Nivvi cannot confirm each banner reached the Lock Screen.").font(.caption).foregroundStyle(muted)
-                    Button("Open alert settings") { showSettings = true }.buttonStyle(.bordered)
-                }
-            }
             let items = alertItems
-            if items.isEmpty { panel { Text("No alerts in this filter for the selected days.").foregroundStyle(ink) } }
+            if items.isEmpty { panel { Text("No heart-rate or connection alerts in the last 7 days.") } }
             ForEach(items) { event in
-                let restored = event.title.localizedCaseInsensitiveContains("resumed") || event.title.localizedCaseInsensitiveContains("connected") || event.title == "Heart rate back to normal" || event.title == "Wearable connected"
-                panel {
-                    VStack(alignment: .leading, spacing: 8) {
-                        timestamp(event.time, tint: restored ? teal : (event.kind == "critical" ? coral : lavender))
-                        Text(event.title).font(.headline).foregroundStyle(ink)
-                        Text(event.detail).font(.subheadline).foregroundStyle(muted)
-                        Text("Recorded in Nivvi").font(.caption2).foregroundStyle(muted)
-                        if let bpm = event.heartRate { Text("\(bpm) bpm").font(.title3.bold()).foregroundStyle(coral) }
+                let restored = event.title == "Heart rate back to normal"
+                HStack(alignment: .center, spacing: 12) {
+                    Circle().fill(restored ? teal : coral).frame(width: 10, height: 10)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(restored ? "Back to normal" : event.title).font(.subheadline.weight(.semibold)).foregroundStyle(ink)
+                        Text(event.time.formatted(date: .abbreviated, time: .shortened)).font(.caption.monospacedDigit()).foregroundStyle(muted)
+                    }
+                    Spacer()
+                    if let bpm = event.heartRate {
+                        Text("\(bpm)").font(.title3.bold().monospacedDigit()).foregroundStyle(restored ? teal : coral)
                     }
                 }
+                .padding(12)
+                .background((restored ? teal : coral).opacity(0.14))
+                .clipShape(RoundedRectangle(cornerRadius: 14))
             }
         }
     }
     private var alertItems: [SavedEvent] {
-        let relevant = monitor.events.filter { event in
-            ["critical", "alarm", "connection", "measurement"].contains(event.kind)
-        }
+        let relevant = monitor.recentAlerts()
         switch alertFilter {
         case "Heart rate":
-            return relevant.filter { $0.kind == "critical" || $0.kind == "alarm" || $0.title.localizedCaseInsensitiveContains("heart") || $0.title.localizedCaseInsensitiveContains("sensor") }
+            return relevant.filter { $0.kind == "critical" || $0.kind == "alarm" }
         case "Connection":
-            return relevant.filter { $0.kind == "connection" || $0.title.localizedCaseInsensitiveContains("Bluetooth") || $0.title.localizedCaseInsensitiveContains("connect") }
+            return relevant.filter { $0.kind == "connection" }
         default:
             return relevant
         }
