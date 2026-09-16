@@ -22,6 +22,7 @@ final class WiFiRelay: ObservableObject {
     @Published var pin: String
     @Published var joinPin = ""
     @Published var playAlerts = true
+    @Published var status = "Off"
     @Published var latest: WiFiSnapshot?
     private var listener: NWListener?
     private var browser: NWBrowser?
