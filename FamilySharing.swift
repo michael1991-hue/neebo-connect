@@ -18,6 +18,31 @@ struct FamilySnapshot: Codable {
     var alarm: String
     var connection: String
     var history: [FamilySample] = []
+
+    enum CodingKeys: String, CodingKey {
+        case captured, heart_rate, oxygen, source, alarm, connection, history
+    }
+
+    init(captured: Double, heart_rate: Double?, oxygen: Double?, source: String, alarm: String, connection: String, history: [FamilySample] = []) {
+        self.captured = captured
+        self.heart_rate = heart_rate
+        self.oxygen = oxygen
+        self.source = source
+        self.alarm = alarm
+        self.connection = connection
+        self.history = history
+    }
+
+    init(from decoder: Decoder) throws {
+        let box = try decoder.container(keyedBy: CodingKeys.self)
+        captured = try box.decode(Double.self, forKey: .captured)
+        heart_rate = try box.decodeIfPresent(Double.self, forKey: .heart_rate)
+        oxygen = try box.decodeIfPresent(Double.self, forKey: .oxygen)
+        source = try box.decodeIfPresent(String.self, forKey: .source) ?? ""
+        alarm = try box.decodeIfPresent(String.self, forKey: .alarm) ?? "none"
+        connection = try box.decodeIfPresent(String.self, forKey: .connection) ?? ""
+        history = try box.decodeIfPresent([FamilySample].self, forKey: .history) ?? []
+    }
 }
 struct RemoteReading: Codable { let fresh: Bool; let age: Double?; let snapshot: FamilySnapshot? }
 struct FamilyReply: Codable { var message: String?; var code: String?; var ok: Bool? }
