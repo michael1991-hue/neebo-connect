@@ -58,9 +58,25 @@ final class FamilyRelay: ObservableObject {
     private var pendingSnapshot: FamilySnapshot?
     private var generation = UUID()
     private var deviceToken = UserDefaults.standard.string(forKey: "nivvi.family.apns")
+    private var watchTask: Task<Void, Never>?
     private var ownFamily: SharedFamily? { families.first { $0.owner == account?.user_id } }
     var signedIn: Bool { account != nil }
     var userID: String? { account?.user_id }
+    var viewingRemote: Bool { signedIn && !publishing && familyFresh }
+    var familyFresh: Bool {
+        guard let remote, remote.fresh, let fetched = remoteFetched else { return false }
+        let elapsed = Date().timeIntervalSince(fetched)
+        let age = (remote.age ?? .infinity) + max(0, elapsed)
+        return age <= 30 && elapsed <= 8
+    }
+    var liveHeartRate: String? {
+        guard viewingRemote, let value = remote?.snapshot?.heart_rate else { return nil }
+        return "\(Int(value.rounded())) bpm"
+    }
+    var liveOxygen: String? {
+        guard viewingRemote, let value = remote?.snapshot?.oxygen else { return nil }
+        return "\(Int(value.rounded()))%"
+    }
     var privacyURL: URL? {
         guard let s = Bundle.main.object(forInfoDictionaryKey: "NivviFamilyPrivacyURL") as? String, let u = URL(string: s), u.scheme == "https", u.host != nil else { return nil }
         return u
@@ -161,6 +177,22 @@ final class FamilyRelay: ObservableObject {
         let _: FamilyReply = try await request("families/\(selected)/members/\(user)", method: "DELETE")
         clearRemote(); try await refreshFamilies()
     }
+    func startWatching() {
+        watchTask?.cancel()
+        watchTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.tickWatch()
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+            }
+        }
+    }
+    private func tickWatch() async {
+        guard signedIn, !publishing else { return }
+        if families.isEmpty {
+            do { try await refreshFamilies() } catch { message = error.localizedDescription }
+        }
+        await fetchRemote()
+    }
     func clearRemote() { remote = nil; remoteFetched = nil }
     func fetchRemote() async {
         guard signedIn, let selected else { clearRemote(); return }
@@ -169,12 +201,14 @@ final class FamilyRelay: ObservableObject {
             let value: RemoteReading = try await request("families/\(selected)/latest")
             guard token == generation && self.selected == selected else { return }
             remote = value; remoteFetched = Date()
-        } catch { clearRemote(); message = error.localizedDescription }
+        } catch {
+            message = error.localizedDescription
+        }
     }
     func capture(_ snapshot: FamilySnapshot) {
         guard publishing, let family = ownFamily else { return }
         if uploadBusy { pendingSnapshot = snapshot; return }
-        if snapshot.alarm == lastAlarm, let lastUpload, Date().timeIntervalSince(lastUpload) < 10 { return }
+        if snapshot.alarm == lastAlarm, let lastUpload, Date().timeIntervalSince(lastUpload) < 2 { return }
         let token = generation
         uploadBusy = true
         Task {
@@ -281,16 +315,11 @@ struct FamilySharingView: View {
             Button("Cancel", role: .cancel) { }
         } message: { Text("Deletes the latest online snapshot and invitations. New invitations will be needed to share again.") }
         .task(id: "\(phase)-\(relay.signedIn)") {
-            guard phase == .active, relay.configured, relay.signedIn else { relay.clearRemote(); return }
+            guard phase == .active, relay.configured, relay.signedIn else { return }
             do { try await relay.refreshFamilies() } catch { relay.message = error.localizedDescription }
-            while !Task.isCancelled {
-                await relay.fetchRemote()
-                do { try await Task.sleep(nanoseconds: 10_000_000_000) } catch { break }
-            }
-            relay.clearRemote()
+            await relay.fetchRemote()
         }
-        .onChange(of: relay.selected) { _ in relay.clearRemote(); Task { await relay.fetchRemote() } }
-        .onDisappear { relay.clearRemote() }
+        .onChange(of: relay.selected) { _ in Task { await relay.fetchRemote() } }
     }
     private var wifiShortcut: some View {
         VStack(alignment: .leading, spacing: 10) {

@@ -1556,6 +1556,7 @@ struct HistoryChartsView: View {
 struct ContentView: View {
     @ObservedObject var monitor: Monitor
     @StateObject private var wifi = WiFiRelay.shared
+    @ObservedObject private var family = FamilyRelay.shared
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("nivvi.profile.name") private var childName = ""
@@ -1628,6 +1629,7 @@ struct ContentView: View {
     }
     private var heartRateDisplay: String {
         if wifi.remoteFresh, let remote = wifi.latest { return remote.heartRate }
+        if let remote = family.liveHeartRate { return remote }
         let value = monitor.verifiedHeartRate.map(Double.init) ?? monitor.pulseOximeterRate ?? monitor.customHeartRateCandidate.map(Double.init)
         return value.map { "\(MetricText.number($0)) bpm" } ?? "No reading"
     }
@@ -1641,10 +1643,12 @@ struct ContentView: View {
     }
     private var oxygenDisplay: String {
         if wifi.remoteFresh, let remote = wifi.latest { return remote.oxygen }
+        if let remote = family.liveOxygen { return remote }
         let value = monitor.pulseOximeterOxygen ?? monitor.customOxygenCandidate.map(Double.init)
         return value.map { "\(MetricText.number($0))%" } ?? "No reading"
     }
     private var liveMeasurementNote: String {
+        if family.viewingRemote { return "From the nursery iPhone over the internet" }
         if monitor.wearableCharging { return "Wearable on charge · not a live pulse" }
         if monitor.staleHeartRateDetected { return "Repeated value · check sensor" }
         if monitor.staleHeartRateDetected { return "Stale · last reading is not live" }
@@ -1653,6 +1657,12 @@ struct ContentView: View {
         return monitor.profile == .heartRate ? "Waiting for heart-rate data" : "Waiting for device data"
     }
     private var displayName: String { childName.isEmpty ? "Your child" : childName }
+    private var statusCaption: String {
+        if monitor.wearableCharging { return "Charging · monitoring paused" }
+        if wifi.remoteFresh { return "Shared over Wi‑Fi" }
+        if family.viewingRemote { return family.remote?.snapshot?.connection ?? "Shared over the internet" }
+        return monitor.connection.label
+    }
     private var nurseryHint: String {
         if BluetoothSignal.isWeak(monitor.signalRSSI) { return "Weak signal — keep this iPhone in the room" }
         if monitor.connection == .reconnecting { return "Go back to the child’s room" }
@@ -1667,7 +1677,7 @@ struct ContentView: View {
             connection: monitor.connection.label,
             signal: BluetoothSignal.label(monitor.signalRSSI),
             nurseryHint: live ? nurseryHint : "",
-            monitoring: live || wifi.remoteFresh
+            monitoring: live || wifi.remoteFresh || family.viewingRemote
         )
     }
     private func publishWiFiShare() {
@@ -1766,6 +1776,7 @@ struct ContentView: View {
             if childName.isEmpty { showProfile = true }
             monitor.showAllDevices = false
             syncLiveActivity()
+            family.startWatching()
             UIApplication.shared.isIdleTimerDisabled = wifi.hosting || wifi.following || monitor.connection.isConnected
         }
         .sheet(isPresented: $showProfile) {
@@ -1878,8 +1889,8 @@ struct ContentView: View {
                 }
             }
             HStack(spacing: 10) {
-                Circle().fill(monitor.wearableCharging ? Color.orange : (monitor.connection == .receiving ? teal : (connected ? .orange : .gray))).frame(width: 11, height: 11)
-                Text(monitor.wearableCharging ? "Charging · monitoring paused" : monitor.connection.label).font(.subheadline.weight(.semibold)).foregroundStyle(ink)
+                Circle().fill(monitor.wearableCharging ? Color.orange : (monitor.connection == .receiving || wifi.remoteFresh || family.viewingRemote ? teal : (connected ? .orange : .gray))).frame(width: 11, height: 11)
+                Text(statusCaption).font(.subheadline.weight(.semibold)).foregroundStyle(ink)
                 Spacer()
                 Text("\(mode.rawValue) mode").font(.caption.weight(.bold)).foregroundStyle(ink).padding(.horizontal, 11).padding(.vertical, 6)
                     .background(cardFill).clipShape(Capsule())
@@ -2037,6 +2048,8 @@ struct ContentView: View {
                 }
                 if wifi.remoteFresh {
                     Text("From the nursery iPhone on this Wi‑Fi").font(.caption).foregroundStyle(accentMint)
+                } else if family.viewingRemote {
+                    Text("From the nursery iPhone · family sharing").font(.caption).foregroundStyle(accentMint)
                 }
                 Text(liveMeasurementNote).font(.caption).foregroundStyle(muted)
                 fiveMinuteChart
