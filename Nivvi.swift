@@ -2176,89 +2176,55 @@ struct ContentView: View {
         } }
     }
     private var history: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 16) {
             HStack {
                 Text("History").font(.largeTitle.bold()).foregroundStyle(ink)
                 Spacer()
+                DatePicker("Day", selection: Binding(get: { monitor.selectedHistoryDay }, set: {
+                    historySpan = 1
+                    monitor.selectHistoryDay($0)
+                }), in: ...Date(), displayedComponents: .date)
+                .labelsHidden()
                 Button { showParentNote = true } label: { Image(systemName: "plus") }
                     .buttonStyle(.bordered)
                     .accessibilityLabel("Add note")
             }
-            Picker("Range", selection: $historySpan) {
-                Text("Today").tag(1)
-                Text("Week").tag(7)
-                Text("Month").tag(30)
-            }.pickerStyle(.segmented)
-            .onChange(of: historySpan) { days in
-                if days == 1 { monitor.selectHistoryDay(monitor.selectedHistoryDay) }
-                else { monitor.loadHistorySpan(days: days, endingOn: monitor.selectedHistoryDay) }
-            }
-            HStack {
-                Button("Earlier") { shiftHistory(-1) }
-                Spacer()
-                DatePicker("", selection: Binding(get: { monitor.selectedHistoryDay }, set: { monitor.selectHistoryDay($0) }), in: ...Date(), displayedComponents: .date)
-                    .labelsHidden()
-                Spacer()
-                Button("Later") { shiftHistory(1) }.disabled(Calendar.current.isDateInToday(monitor.selectedHistoryDay) || monitor.selectedHistoryDay >= Calendar.current.startOfDay(for: Date()))
-            }.buttonStyle(.bordered)
-            Picker("Show", selection: $historySection) { Text("Readings").tag(1); Text("Events").tag(0) }.pickerStyle(.segmented)
-            if historySection == 0 {
-                let visibleEvents = eventFilter == "All" ? monitor.events : monitor.events.filter { $0.kind == eventFilter }
-                if !eventFilterKinds.isEmpty {
-                    Picker("Event type", selection: $eventFilter) {
-                        Text("All").tag("All")
-                        ForEach(eventFilterKinds, id: \.self) { Text(eventLabel($0)).tag($0) }
-                    }.pickerStyle(.menu)
-                }
-                if visibleEvents.isEmpty { panel { Text("No events this day.") } }
-                ForEach(Array(visibleEvents.reversed())) { event in
-                    let recovery = event.title == "Heart rate back to normal"
-                    HStack(alignment: .firstTextBaseline) {
-                        Text(event.time.formatted(date: .omitted, time: .shortened)).font(.subheadline.monospacedDigit().weight(.semibold)).foregroundStyle(muted).frame(width: 72, alignment: .leading)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(event.title).font(.subheadline.weight(.semibold)).foregroundStyle(ink)
-                            if event.kind == "note" { Text(event.detail).font(.caption).foregroundStyle(muted) }
-                        }
-                        Spacer()
-                        if let bpm = event.heartRate { Text("\(bpm)").font(.headline.monospacedDigit()).foregroundStyle(recovery ? teal : coral) }
-                    }
-                    .padding(14)
-                    .background(cardFill)
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
-                    .contextMenu {
-                        if event.kind == "note" {
-                            Button("Edit note") { parentNote = event.detail; editingNote = event; showParentNote = true }
-                            Button("Delete note", role: .destructive) { monitor.deleteEvent(event) }
-                        }
-                    }
-                }
-                if let error = monitor.eventError { Text(error).foregroundStyle(coral) }
-            } else if displayedHistory.isEmpty {
+            if displayedHistory.isEmpty {
                 panel { Text("No readings this day.") }
             } else {
                 panel {
                     HistoryChartsView(entries: displayedHistory, day: family.viewingRemote ? Calendar.current.startOfDay(for: Date()) : monitor.selectedHistoryDay, selected: $selectedHistoryReading, coral: coral, teal: accentMint, lavender: stamp, caption: muted, ink: ink)
                 }
-                if let selected = selectedHistoryReading {
-                    HStack {
-                        Text(selected.time.formatted(date: .omitted, time: .standard)).font(.subheadline.monospacedDigit())
-                        Spacer()
-                        Text(selected.heartRateValue.map { "\(MetricText.number($0)) bpm" } ?? "—").foregroundStyle(coral)
-                        Text(selected.oxygenValue.map { "O₂ \(MetricText.number($0))%" } ?? "").foregroundStyle(accentMint)
-                    }.font(.subheadline.weight(.semibold)).foregroundStyle(ink)
-                }
-                ForEach(Array(displayedHistory.suffix(40).reversed())) { sample in
-                    HStack {
-                        Text(sample.time.formatted(date: .omitted, time: .standard)).font(.subheadline.monospacedDigit().weight(.semibold)).foregroundStyle(stamp).frame(width: 88, alignment: .leading)
-                        Text(sample.heartRateValue.map { "\(MetricText.number($0)) bpm" } ?? "—").font(.headline.monospacedDigit()).foregroundStyle(coral)
-                        Spacer()
-                        Text(sample.oxygenValue.map { "O₂ \(MetricText.number($0))%" } ?? "").font(.subheadline.weight(.semibold)).foregroundStyle(accentMint)
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                    ForEach(Array(displayedHistory.suffix(15).reversed())) { sample in
+                        VStack(spacing: 4) {
+                            Text(sample.time.formatted(date: .omitted, time: .shortened)).font(.caption2.monospacedDigit().weight(.semibold)).foregroundStyle(muted)
+                            Text(sample.heartRateValue.map { MetricText.number($0) } ?? "—").font(.title3.bold().monospacedDigit()).foregroundStyle(coral)
+                            Text("bpm").font(.caption2.weight(.semibold)).foregroundStyle(muted)
+                            if let o2 = sample.oxygenValue {
+                                Text("O₂ \(MetricText.number(o2))%").font(.caption2.weight(.semibold)).foregroundStyle(accentMint)
+                            }
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(cardFill)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
                     }
-                    .padding(.horizontal, 14).padding(.vertical, 10)
-                    .background(cardFill)
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
                 }
-                if let error = monitor.historyError { Text(error).foregroundStyle(coral) }
+            }
+            if let error = monitor.historyError { Text(error).foregroundStyle(coral) }
+            DisclosureGroup("Events") {
+                let visibleEvents = monitor.events
+                if visibleEvents.isEmpty { Text("None this day.").font(.caption).foregroundStyle(muted) }
+                ForEach(Array(visibleEvents.reversed())) { event in
+                    HStack {
+                        Text(event.time.formatted(date: .omitted, time: .shortened)).font(.caption.monospacedDigit()).foregroundStyle(muted).frame(width: 64, alignment: .leading)
+                        Text(event.title).font(.caption.weight(.semibold)).foregroundStyle(ink)
+                        Spacer()
+                        if let bpm = event.heartRate { Text("\(bpm)").font(.caption.bold().monospacedDigit()).foregroundStyle(coral) }
+                    }
+                    .padding(.vertical, 4)
+                }
             }
             if !monitor.recordedDays.isEmpty {
                 DisclosureGroup("Export") {
