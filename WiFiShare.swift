@@ -124,7 +124,7 @@ final class WiFiRelay: ObservableObject {
             exactHeartRate: hr,
             exactOxygen: o2
         ))
-        let cut = Date().addingTimeInterval(-300)
+        let cut = Date().addingTimeInterval(-120)
         trail.removeAll { $0.time < cut }
         if trail.count > 400 { trail.removeFirst(trail.count - 400) }
     }

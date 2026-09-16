@@ -295,6 +295,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     private var session = SessionIntent()
     private var foreground = UIApplication.shared.applicationState == .active
     @Published var history: [SavedMeasurement] = []
+    @Published var liveTrace: [SavedMeasurement] = []
     @Published var events: [SavedEvent] = []
     @Published var eventDays: [Date] = []
     @Published var eventError: String?
@@ -347,14 +348,13 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         let hr = hrTime.map { now.timeIntervalSince($0) <= 30 } == true ? (pulseOximeterRate ?? verifiedHeartRate.map(Double.init) ?? customHeartRateCandidate.map(Double.init)) : nil
         let ox = oxTime.map { now.timeIntervalSince($0) <= 30 } == true ? (pulseOximeterOxygen ?? verifiedOxygen.map(Double.init) ?? customOxygenCandidate.map(Double.init)) : nil
         let times = [(hr == nil ? nil : hrTime), (ox == nil ? nil : oxTime)].compactMap { $0 }
-        let day = Calendar.current.startOfDay(for: now)
-        let rows = (try? archive.load(day: day)) ?? history
-        let points = rows.suffix(400).map { FamilySample(t: $0.time.timeIntervalSince1970, hr: $0.heartRateValue, o2: $0.oxygenValue) }
+        let points = liveTrace.suffix(240).map { FamilySample(t: $0.time.timeIntervalSince1970, hr: $0.heartRateValue, o2: $0.oxygenValue) }
         let snapshot = FamilySnapshot(captured: (times.min() ?? now).timeIntervalSince1970, heart_rate: hr, oxygen: ox, source: profile.rawValue, alarm: alarmKind.map { $0 == .high ? "high" : "low" } ?? (staleHeartRateDetected ? "sensor" : "none"), connection: connection.label, history: Array(points))
         Task { @MainActor in FamilyRelay.shared.capture(snapshot) }
     }
     private func saveMeasurement(heartRate: Int?, oxygen: Int?, source: String, exactHeartRate: Double? = nil, exactOxygen: Double? = nil, segment: UUID? = nil) {
         let entry = SavedMeasurement(time: Date(), heartRate: heartRate, oxygen: oxygen, source: source, continuityID: segment ?? continuityID, exactHeartRate: exactHeartRate, exactOxygen: exactOxygen)
+        appendLiveTrace(entry)
         // Oxygen-only packets must not refresh the live-heart-rate freshness timer.
         // A pulse-oximeter can legally report oxygen without a usable pulse.
         if heartRate != nil || exactHeartRate != nil { measurementTime = entry.time }
@@ -368,6 +368,15 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             historyError = nil
             if !foreground { lastBackgroundSave = entry.time }
         } catch { historyError = "History could not be saved: \(error.localizedDescription)" }
+    }
+    private var lastLiveTrace: Date?
+    private func appendLiveTrace(_ entry: SavedMeasurement) {
+        guard entry.heartRateValue != nil || entry.oxygenValue != nil else { return }
+        if let last = lastLiveTrace, entry.time.timeIntervalSince(last) < 0.5 { return }
+        lastLiveTrace = entry.time
+        liveTrace.append(entry)
+        let cut = Date().addingTimeInterval(-120)
+        if liveTrace.first?.time ?? cut < cut { liveTrace.removeAll { $0.time < cut } }
     }
     func selectHistoryDay(_ day: Date) {
         selectedHistoryDay = day
@@ -1678,6 +1687,7 @@ struct ContentView: View {
     }
     private var displayedHistory: [SavedMeasurement] {
         if wifi.remoteFresh, !wifi.trail.isEmpty { return wifi.trail }
+        if !mirroringNursery, !monitor.liveTrace.isEmpty { return monitor.liveTrace }
         if family.viewingRemote, let samples = family.remote?.snapshot?.history, !samples.isEmpty {
             return samples.map {
                 SavedMeasurement(
@@ -1735,7 +1745,7 @@ struct ContentView: View {
             alarm: shareAlarmKind,
             charging: monitor.wearableCharging,
             battery: monitor.battery,
-            history: monitor.history.suffix(40).map { FamilySample(t: $0.time.timeIntervalSince1970, hr: $0.heartRateValue, o2: $0.oxygenValue) }
+            history: monitor.liveTrace.suffix(240).map { FamilySample(t: $0.time.timeIntervalSince1970, hr: $0.heartRateValue, o2: $0.oxygenValue) }
         )
     }
     private var shareAlarmKind: String {
@@ -2031,7 +2041,7 @@ struct ContentView: View {
         monitor.events.filter { $0.kind == "note" }.max { $0.time < $1.time }
     }
     private var fiveMinuteReadings: [SavedMeasurement] {
-        let start = Date().addingTimeInterval(-300)
+        let start = Date().addingTimeInterval(-120)
         return displayedHistory.filter { sample in
             sample.time >= start && (sample.heartRateValue ?? 0) > 0
         }
@@ -2039,13 +2049,13 @@ struct ContentView: View {
     private var fiveMinuteChart: some View {
         let points = HistoryChartPolicy.points(fiveMinuteReadings, metric: .heartRate)
         let values = points.map(\.value)
-        let start = max(Date().addingTimeInterval(-300), (fiveMinuteReadings.map(\.time).min() ?? Date()).addingTimeInterval(-15))
+        let start = max(Date().addingTimeInterval(-120), (fiveMinuteReadings.map(\.time).min() ?? Date()).addingTimeInterval(-4))
         let low = max(40, (values.min() ?? 80) - 8)
         let high = (values.max() ?? 120) + 8
         return VStack(alignment: .leading, spacing: 4) {
-            Text("Last five minutes").font(.caption.weight(.bold)).foregroundStyle(muted)
+            Text("Live").font(.caption.weight(.bold)).foregroundStyle(muted)
             if points.count < 2 {
-                Text("Waiting for a few saved readings. Gaps stay blank.")
+                Text("Waiting for live readings.")
                     .font(.caption).foregroundStyle(muted)
             } else {
                 Chart {
