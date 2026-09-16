@@ -19,7 +19,7 @@
 		<string>iPhoneOS</string>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>41</string>
+	<string>42</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>NSSupportsLiveActivitiesFrequentUpdates</key>
@@ -41,9 +41,9 @@
 		<string>_nivvi-share._tcp</string>
 	</array>
 	<key>NivviFamilyPrivacyURL</key>
-	<string></string>
+	<string>https://nivvi.app/privacy.html</string>
 	<key>NivviFamilyServerURL</key>
-	<string></string>
+	<string>https://family.nivvi.app</string>
 	<key>UIApplicationShortcutItems</key>
 	<array>
 		<dict>
