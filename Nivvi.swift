@@ -518,6 +518,8 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
                                                name: UIApplication.didEnterBackgroundNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(becameActive),
                                                name: UIApplication.didBecomeActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(audioInterrupted),
+                                               name: AVAudioSession.interruptionNotification, object: nil)
         if let data = UserDefaults.standard.data(forKey: "nivvi.alarms"), let saved = try? JSONDecoder().decode(AlarmSettings.self, from: data) { alarmSettings = saved; experimentalCustomAlarms = saved.experimentalCustomEnabled }
         session.deviceID = UserDefaults.standard.string(forKey: "nivvi.session.device").flatMap(UUID.init(uuidString:))
         session.enabled = UserDefaults.standard.bool(forKey: "nivvi.session.enabled")
@@ -535,13 +537,13 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         freshnessTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.expireMeasurements() }
     }
     func requestNotificationPermission() {
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { [weak self] _, _ in self?.refreshNotificationStatus() }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge, .timeSensitive]) { [weak self] _, _ in self?.refreshNotificationStatus() }
     }
     func refreshNotificationStatus() {
         UNUserNotificationCenter.current().getNotificationSettings { [weak self] settings in
             DispatchQueue.main.async {
                 self?.notificationSoundAllowed = settings.authorizationStatus == .authorized && settings.soundSetting == .enabled
-                self?.notificationStatus = settings.authorizationStatus == .authorized && settings.soundSetting == .enabled ? "Notifications and sounds allowed. Silent mode, Focus and volume settings still apply." : "Notification sound is not fully enabled. Check iPhone Settings → Notifications → Nivvi."
+                self?.notificationStatus = settings.authorizationStatus == .authorized && settings.soundSetting == .enabled ? "Notifications allowed. The in-app siren uses media playback so the Silent switch does not mute it while Nivvi can play audio. Lock-screen banners can still be quiet in Silent/Focus. Enable Time Sensitive for Nivvi in iPhone Settings." : "Notification sound is not fully enabled. Check iPhone Settings → Notifications → Nivvi."
             }
         }
     }
@@ -589,29 +591,30 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return name.isEmpty ? "your child" : name
     }
+    private func configureAlarmAudio() throws {
+        let audio = AVAudioSession.sharedInstance()
+        try audio.setCategory(.playback, mode: .default, options: [.duckOthers, .defaultToSpeaker])
+        try audio.setActive(true)
+    }
     private func playReliefSound() {
         guard foreground else { return }
         do {
             guard let url = Bundle.main.url(forResource: "NivviRelief", withExtension: "wav") else { throw CocoaError(.fileNoSuchFile) }
-            let audio = AVAudioSession.sharedInstance()
-            try audio.setCategory(.playback, mode: .default, options: [.duckOthers])
-            try audio.setActive(true)
+            try configureAlarmAudio()
             siren = try AVAudioPlayer(contentsOf: url); siren?.numberOfLoops = 0; siren?.volume = 0.5
             _ = siren?.play()
             soundStatus = "Playing the gentle recovery chime."
         } catch { soundStatus = "Relief sound could not play: \(error.localizedDescription)" }
     }
     private func startSiren(loop: Bool) {
-        guard foreground else { return }
+        let sensorOnly = staleHeartRateDetected && !alarmActive && !testingSiren
+        if !foreground && sensorOnly { return }
         do {
-            let sensorOnly = staleHeartRateDetected && !alarmActive && !testingSiren
             guard let url = Bundle.main.url(forResource: sensorOnly ? "NivviSensor" : "NivviSiren", withExtension: "wav") else { throw CocoaError(.fileNoSuchFile) }
-            let audio = AVAudioSession.sharedInstance()
-            try audio.setCategory(.playback, mode: .default, options: [.duckOthers])
-            try audio.setActive(true)
+            try configureAlarmAudio()
             siren = try AVAudioPlayer(contentsOf: url); siren?.numberOfLoops = sensorOnly ? 0 : (loop ? -1 : 0); siren?.volume = sensorOnly ? 0.4 : 1
             guard siren?.play() == true else { throw CocoaError(.fileReadUnknown) }
-            soundStatus = sensorOnly ? "Gentle sensor-check chime." : "Siren playing at the iPhone’s current media volume."
+            soundStatus = sensorOnly ? "Gentle sensor-check chime." : "Siren playing as media audio — the Silent switch does not mute this. Turn the volume buttons up. Lock-screen notification pings can still be silent."
         } catch { soundStatus = "Siren could not play: \(error.localizedDescription)" }
     }
     private func stopSiren() {
@@ -631,7 +634,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         soundTestTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: false) { [weak self] _ in self?.stopSiren() }
     }
     func testNotification() {
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { [weak self] allowed, _ in
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge, .timeSensitive]) { [weak self] allowed, _ in
             guard allowed else { self?.refreshNotificationStatus(); return }
             DispatchQueue.main.async {
                 self?.notify(title: "Nivvi sound test", body: "TEST ONLY — no device reading triggered this sound.", identifier: "nivvi-sound-test", delay: 10)
@@ -639,7 +642,14 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             }
         }
     }
-    @objc private func enteredBackground() { applicationActive(false) }
+    @objc private func audioInterrupted(_ note: Notification) {
+        guard criticalAlertActive, !alarmAcknowledged else { return }
+        let info = note.userInfo
+        let type = info?[AVAudioSessionInterruptionTypeKey] as? UInt
+        if type == AVAudioSession.InterruptionType.ended.rawValue {
+            startSiren(loop: true)
+        }
+    }
     @objc private func becameActive() { applicationActive(true) }
     func applicationActive(_ isActive: Bool) {
         guard foreground != isActive else { return }
@@ -2083,7 +2093,7 @@ struct ContentView: View {
     private var alerts: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Alerts").font(.largeTitle.bold()).foregroundStyle(ink)
-            Text("Alerts listed here were recorded in Nivvi. That is not proof a notification was delivered. Silent mode and Focus can still hide banners unless a Critical Alerts entitlement is granted — this build does not have one.")
+            Text("Alerts listed here were recorded in Nivvi. That is not proof a notification was delivered. The looping siren can sound in Silent mode while Nivvi is playing audio. Lock-screen notification sounds still follow Silent/Focus.")
                 .font(.caption).foregroundStyle(muted)
             Picker("Filter", selection: $alertFilter) {
                 Text("All").tag("All")
@@ -2273,7 +2283,8 @@ struct ContentView: View {
             Button("Test notification in 10 seconds") { monitor.testNotification() }.buttonStyle(.bordered)
             Text(monitor.soundStatus).font(.caption)
             Text(monitor.notificationStatus).font(.caption)
-            Text("Low alarms fire strictly below the low limit; high alarms fire strictly above the high limit. The alarm self-clears after a fresh in-range reading. Lock-screen sounds depend on iPhone volume, Silent mode, Focus and notification permissions; Critical Alerts approval is not included.").font(.caption).foregroundStyle(muted)
+            Text("Low alarms fire strictly below the low limit; high alarms fire strictly above the high limit. The alarm self-clears after a fresh in-range reading. The looping siren plays as media audio so the Silent switch does not mute it while Nivvi can play sound. Lock-screen notification sounds still follow Silent and Focus — Apple does not let this app override those without Critical Alerts (not granted). Turn media volume up. In iPhone Settings → Notifications → Nivvi, allow Time Sensitive.")
+                .font(.caption).foregroundStyle(muted)
         }.padding(.top, 12) } }
         Group {
         panel { DisclosureGroup("FAQ") { VStack(alignment: .leading, spacing: 12) {
@@ -2372,7 +2383,7 @@ struct ContentView: View {
                 let alarmsEnabled = (monitor.alarmSettings.highEnabled || monitor.alarmSettings.lowEnabled) &&
                     (monitor.profile.hasStandardHeartRate || monitor.profile.hasPulseOximeter || (monitor.profile == .custom && monitor.experimentalCustomAlarms))
                 readinessRow("Rate alerts", alarmsEnabled ? "Configured" : "Off or unavailable", alarmsEnabled)
-                Text("Silent mode and Focus can silence alerts. Critical Alerts are not available in this build. Test your actual phone settings before use.").font(.caption)
+                Text("The in-app siren ignores the Silent switch. Lock-screen banners can still be quiet. Enable Time Sensitive for Nivvi. Critical Alerts are not in this build.").font(.caption)
                 Button("Guided alarm check") { showReadinessTest = true }.buttonStyle(.bordered)
                 Text("History saves every 30 seconds while data arrives. Alarms check incoming usable readings.").font(.caption)
             }.padding(.top, 8)
@@ -2468,7 +2479,7 @@ struct AlarmReadinessView: View {
     private let instructions = [
         "Keep Nivvi open. Start the five-second test and check that you can hear it at your current volume.",
         "Start the notification test, then lock your iPhone. Wait at least ten seconds and check whether you hear it.",
-        "Enable the Silent mode or Focus you normally use. Start the test, lock your phone and check whether you hear it. This app does not have Critical Alerts approval.",
+        "Flip Silent on. Keep Nivvi open and tap Test siren — you should hear it. Then lock the phone and run the notification test: the banner ping can still be muted. Apple does not allow this app to override Silent for lock-screen sounds without Critical Alerts.",
         "Only test when monitoring is not being relied upon. Move the wearable out of range, then return it. Check that Nivvi reports the interruption, reconnects and receives fresh readings."
     ]
     var body: some View {
