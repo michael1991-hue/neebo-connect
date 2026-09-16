@@ -1610,7 +1610,7 @@ struct ContentView: View {
     @State private var tab = 0
     @State private var historyExport: URL?
     @State private var eventsExport: URL?
-    @State private var historySection = 0
+    @State private var historySection = 1
     @State private var eventFilter = "All"
     @State private var parentNote = ""
     @State private var showParentNote = false
@@ -2165,8 +2165,14 @@ struct ContentView: View {
         } }
     }
     private var history: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack { Text("History").font(.largeTitle.bold()).foregroundStyle(ink); Spacer(); Button { showParentNote = true } label: { Label("Add note", systemImage: "plus") }.buttonStyle(.bordered) }
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("History").font(.largeTitle.bold()).foregroundStyle(ink)
+                Spacer()
+                Button { showParentNote = true } label: { Image(systemName: "plus") }
+                    .buttonStyle(.bordered)
+                    .accessibilityLabel("Add note")
+            }
             Picker("Range", selection: $historySpan) {
                 Text("Today").tag(1)
                 Text("Week").tag(7)
@@ -2179,45 +2185,35 @@ struct ContentView: View {
             HStack {
                 Button("Earlier") { shiftHistory(-1) }
                 Spacer()
-                Text(historyRangeLabel).font(.subheadline.weight(.semibold)).foregroundStyle(ink)
+                DatePicker("", selection: Binding(get: { monitor.selectedHistoryDay }, set: { monitor.selectHistoryDay($0) }), in: ...Date(), displayedComponents: .date)
+                    .labelsHidden()
                 Spacer()
                 Button("Later") { shiftHistory(1) }.disabled(Calendar.current.isDateInToday(monitor.selectedHistoryDay) || monitor.selectedHistoryDay >= Calendar.current.startOfDay(for: Date()))
             }.buttonStyle(.bordered)
-            Text("30 calendar days on this iPhone").foregroundStyle(muted)
-            panel { VStack(alignment: .leading, spacing: 12) {
-                DatePicker("Choose a day", selection: Binding(get: { monitor.selectedHistoryDay }, set: { monitor.selectHistoryDay($0) }), in: ...Date(), displayedComponents: .date).datePickerStyle(.compact)
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack { ForEach(monitor.recordedDays, id: \.self) { day in
-                        Button(day.formatted(.dateTime.day().month(.abbreviated))) { monitor.selectHistoryDay(day) }
-                            .buttonStyle(.bordered).tint(Calendar.current.isDate(day, inSameDayAs: monitor.selectedHistoryDay) ? lavender : teal)
-                    } }
-                }
-                Picker("Show", selection: $historySection) { Text("Events").tag(0); Text("Readings").tag(1) }.pickerStyle(.segmented)
-                if historySection == 0 {
+            Picker("Show", selection: $historySection) { Text("Readings").tag(1); Text("Events").tag(0) }.pickerStyle(.segmented)
+            if historySection == 0 {
+                let visibleEvents = eventFilter == "All" ? monitor.events : monitor.events.filter { $0.kind == eventFilter }
+                if !eventFilterKinds.isEmpty {
                     Picker("Event type", selection: $eventFilter) {
                         Text("All").tag("All")
                         ForEach(eventFilterKinds, id: \.self) { Text(eventLabel($0)).tag($0) }
                     }.pickerStyle(.menu)
                 }
-            } }
-            if historySection == 0 {
-                let visibleEvents = eventFilter == "All" ? monitor.events : monitor.events.filter { $0.kind == eventFilter }
-                Text("\(visibleEvents.count) events · recorded as they happen").font(.subheadline)
-                if visibleEvents.isEmpty { panel { Text("No events match this filter for this day.").font(.subheadline) } }
+                if visibleEvents.isEmpty { panel { Text("No events this day.") } }
                 ForEach(Array(visibleEvents.reversed())) { event in
                     let recovery = event.title == "Heart rate back to normal"
-                    let eventTint: Color = recovery ? Color(red: 0.45, green: 0.95, blue: 0.65) : (event.kind == "alarm" || event.kind == "critical" ? coral : lavender)
-                    VStack(alignment: .leading, spacing: 9) {
-                        timestamp(event.time, tint: eventTint)
-                        Label(event.title, systemImage: recovery ? "checkmark.circle.fill" : event.kind == "alarm" || event.kind == "critical" ? "bell.fill" : event.kind == "sleep" ? "moon.zzz.fill" : event.kind == "note" ? "note.text" : "antenna.radiowaves.left.and.right")
-                            .font(.headline).foregroundStyle(recovery ? eventTint : ink)
-                        Text(event.detail).font(.subheadline).foregroundStyle(recovery ? eventTint : muted)
-                        if let bpm = event.heartRate { Text("\(bpm) bpm").font(.title3.bold()).foregroundStyle(eventTint) }
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(event.time.formatted(date: .omitted, time: .shortened)).font(.subheadline.monospacedDigit().weight(.semibold)).foregroundStyle(muted).frame(width: 72, alignment: .leading)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(event.title).font(.subheadline.weight(.semibold)).foregroundStyle(ink)
+                            if event.kind == "note" { Text(event.detail).font(.caption).foregroundStyle(muted) }
+                        }
+                        Spacer()
+                        if let bpm = event.heartRate { Text("\(bpm)").font(.headline.monospacedDigit()).foregroundStyle(recovery ? teal : coral) }
                     }
-                    .padding(18).frame(maxWidth: .infinity, alignment: .leading)
-                    .background(recovery ? Color.green.opacity(0.14) : cardFill)
-                    .clipShape(RoundedRectangle(cornerRadius: 22))
-                    .overlay(RoundedRectangle(cornerRadius: 22).stroke(recovery ? Color.green.opacity(0.55) : .clear, lineWidth: 1))
+                    .padding(14)
+                    .background(cardFill)
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
                     .contextMenu {
                         if event.kind == "note" {
                             Button("Edit note") { parentNote = event.detail; editingNote = event; showParentNote = true }
@@ -2226,36 +2222,33 @@ struct ContentView: View {
                     }
                 }
                 if let error = monitor.eventError { Text(error).foregroundStyle(coral) }
+            } else if displayedHistory.isEmpty {
+                panel { Text("No readings this day.") }
             } else {
-                Text("\(displayedHistory.count) readings on this day").font(.subheadline).foregroundStyle(ink)
-                Text(family.viewingRemote ? "These charts are from the nursery iPhone over family sharing." : "New history snapshots are saved every 30 seconds while data arrives. Alarm checks use eligible incoming heart-rate readings, independently of history snapshots. Older imports keep their original timing.").font(.caption).foregroundStyle(muted)
-                if displayedHistory.isEmpty { panel { Text("No saved readings for this day.") } }
-                else {
-                    panel {
-                        HistoryChartsView(entries: displayedHistory, day: family.viewingRemote ? Calendar.current.startOfDay(for: Date()) : monitor.selectedHistoryDay, selected: $selectedHistoryReading, coral: coral, teal: accentMint, lavender: stamp, caption: muted, ink: ink)
-                    }
-                    Text("Latest 50 readings for this day · export CSV for all entries").font(.caption).foregroundStyle(muted)
-                    ForEach(Array(displayedHistory.suffix(50).reversed())) { sample in
-                        panel { VStack(alignment: .leading, spacing: 9) {
-                            timestamp(sample.time, tint: stamp)
-                            HStack { Text(sample.heartRateValue.map { "\(MetricText.number($0)) bpm" } ?? "HR —").foregroundStyle(coral); Spacer(); Text(sample.oxygenValue.map { "O₂ \(MetricText.number($0))%" } ?? "O₂ —").foregroundStyle(accentMint) }.font(.title3.bold())
-                            Text(sample.source == "experimental-custom" ? "Mapped Bluetooth reading" : "Standard Bluetooth reading").font(.caption.weight(.semibold)).foregroundStyle(muted)
-                        } }
-                    }
+                panel {
+                    HistoryChartsView(entries: displayedHistory, day: family.viewingRemote ? Calendar.current.startOfDay(for: Date()) : monitor.selectedHistoryDay, selected: $selectedHistoryReading, coral: coral, teal: accentMint, lavender: stamp, caption: muted, ink: ink)
+                }
+                if let selected = selectedHistoryReading {
+                    HStack {
+                        Text(selected.time.formatted(date: .omitted, time: .standard)).font(.subheadline.monospacedDigit())
+                        Spacer()
+                        Text(selected.heartRateValue.map { "\(MetricText.number($0)) bpm" } ?? "—").foregroundStyle(coral)
+                        Text(selected.oxygenValue.map { "O₂ \(MetricText.number($0))%" } ?? "").foregroundStyle(accentMint)
+                    }.font(.subheadline.weight(.semibold)).foregroundStyle(ink)
                 }
                 if let error = monitor.historyError { Text(error).foregroundStyle(coral) }
             }
             if !monitor.recordedDays.isEmpty {
-                DisclosureGroup("Export or delete history") {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Button("Prepare readings CSV") { historyExport = monitor.exportHistory() }
-                        if let url = historyExport { ShareLink("Share readings CSV", item: url) }
-                        Button("Prepare events CSV") { eventsExport = monitor.exportEvents() }
-                        if let url = eventsExport { ShareLink("Share events CSV", item: url) }
-                        Button("Prepare report") { reportExport = monitor.exportReport() }
+                DisclosureGroup("Export") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Button("Readings CSV") { historyExport = monitor.exportHistory() }
+                        if let url = historyExport { ShareLink("Share readings", item: url) }
+                        Button("Events CSV") { eventsExport = monitor.exportEvents() }
+                        if let url = eventsExport { ShareLink("Share events", item: url) }
+                        Button("Report") { reportExport = monitor.exportReport() }
                         if let url = reportExport { ShareLink("Share report", item: url) }
                         Button("Delete all history", role: .destructive) { confirmDeleteHistory = true }
-                    }.padding(.top, 10)
+                    }.padding(.top, 8)
                 }
                 .confirmationDialog("Delete all saved readings, events and notes?", isPresented: $confirmDeleteHistory) {
                     Button("Delete", role: .destructive) { monitor.clearHistory(); historyExport = nil; eventsExport = nil }
