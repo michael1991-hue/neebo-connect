@@ -16,7 +16,9 @@ p,ul{margin:12px 0}
 .card{background:white;border:1px solid var(--line);border-radius:18px;padding:24px;margin:20px 0}
 .hero{display:grid;grid-template-columns:1fr 1fr;gap:32px;align-items:center;margin:12px 0 8px}
 .hero-art{width:100%;height:auto;border-radius:24px;box-shadow:0 22px 50px rgba(23,51,47,.22);display:block}
-.phones{display:flex;gap:16px;justify-content:center}
+.btn{display:inline-block;background:var(--teal);color:#fff;font-weight:750;text-decoration:none;padding:12px 20px;border-radius:999px;margin:8px 0 4px}
+.btn:hover{filter:brightness(1.08)}
+.phones{display:flex;gap:16px;justify-content:center;flex-wrap:wrap;margin:8px 0 28px}
 .phones img{width:min(220px,42vw);border-radius:28px;border:8px solid #1d2a27;box-shadow:0 18px 40px rgba(23,51,47,.18);background:#111}
 ol.steps{padding-left:22px}
 ol.steps li{margin:14px 0}
