@@ -2151,23 +2151,32 @@ struct ContentView: View {
         } }
         panel { VStack(alignment: .leading, spacing: 12) {
             Text("Second iPhone on this Wi‑Fi").font(.headline)
-            Text("Bluetooth cannot serve two phones. Leave the nursery iPhone connected to the wearable, then share over Wi‑Fi to the downstairs phone.").font(.caption).foregroundStyle(muted)
+            Text("Use two phones. This one either shares a code or types the other phone’s code — not both.")
+                .font(.caption).foregroundStyle(muted)
+            Text("Nursery iPhone").font(.subheadline.weight(.semibold))
             Toggle("Share from this iPhone", isOn: Binding(get: { wifi.hosting }, set: { wifi.setHosting($0) })).tint(teal)
             if wifi.hosting {
-                Text("Share code \(wifi.pin)").font(.title2.bold().monospacedDigit())
-                Text("Enter the same code on the other iPhone.").font(.caption)
+                Text(wifi.pin).font(.system(size: 40, weight: .bold, design: .rounded)).monospacedDigit()
+                Text("Show this code to the downstairs iPhone. You do not type it here.")
+                    .font(.caption).foregroundStyle(muted)
+                Button("Copy code") { UIPasteboard.general.string = wifi.pin }
             }
+            Divider()
+            Text("Downstairs iPhone").font(.subheadline.weight(.semibold))
+            Text("Type the nursery code, then turn Follow on.")
+                .font(.caption).foregroundStyle(muted)
+            TextField("4-digit code", text: Binding(
+                get: { wifi.joinPin },
+                set: { wifi.setJoinPin($0) }
+            ))
+            .keyboardType(.numberPad)
+            .textInputAutocapitalization(.never)
+            .font(.title.monospacedDigit())
+            .padding(12)
+            .background(Color.white.opacity(mode == .night ? 0.12 : 0.7))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
             Toggle("Follow the nursery iPhone", isOn: Binding(get: { wifi.following }, set: { wifi.setFollowing($0) })).tint(lavender)
-            if wifi.following {
-                HStack {
-                    Text("Code")
-                    TextField("1234", text: $wifi.pin)
-                        .keyboardType(.numberPad)
-                        .textInputAutocapitalization(.never)
-                        .frame(width: 80)
-                }
-                Text("Both phones must be on the same Wi‑Fi. Allow local network access if iOS asks.").font(.caption)
-            }
+            Text("Both on the same Wi‑Fi. Allow local network if iOS asks.").font(.caption).foregroundStyle(muted)
             Text(wifi.status).font(.caption).foregroundStyle(muted)
         } }
         panel { VStack(alignment: .leading, spacing: 12) {

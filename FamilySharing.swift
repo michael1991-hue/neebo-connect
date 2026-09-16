@@ -296,16 +296,13 @@ struct FamilySharingView: View {
         VStack(alignment: .leading, spacing: 10) {
             Toggle("Share from the nursery iPhone", isOn: Binding(get: { wifi.hosting }, set: { wifi.setHosting($0) }))
             if wifi.hosting {
-                Text("Code \(wifi.pin)").font(.title.bold().monospacedDigit())
-                Text("On the downstairs iPhone: Settings → Family sharing → Follow, same code, same Wi‑Fi.")
+                Text(wifi.pin).font(.system(size: 36, weight: .bold, design: .rounded)).monospacedDigit()
+                Text("Do not type on this phone. Open Nivvi on the downstairs iPhone and enter this code.")
             }
+            TextField("4-digit code from nursery", text: Binding(get: { wifi.joinPin }, set: { wifi.setJoinPin($0) }))
+                .keyboardType(.numberPad)
+                .font(.title3.monospacedDigit())
             Toggle("Follow the nursery iPhone", isOn: Binding(get: { wifi.following }, set: { wifi.setFollowing($0) }))
-            if wifi.following {
-                HStack {
-                    Text("Code")
-                    TextField("1234", text: $wifi.pin).keyboardType(.numberPad).frame(width: 80)
-                }
-            }
             Text(wifi.status).font(.caption)
         }
     }

@@ -17,6 +17,7 @@ final class WiFiRelay: ObservableObject {
     @Published var hosting = false
     @Published var following = false
     @Published var pin: String
+    @Published var joinPin = ""
     @Published var status = "Off"
     @Published var latest: WiFiSnapshot?
     private var listener: NWListener?
@@ -52,8 +53,21 @@ final class WiFiRelay: ObservableObject {
         if on { startHost() } else { stopHost() }
     }
 
+    func setJoinPin(_ value: String) {
+        joinPin = String(value.filter(\.isNumber).prefix(4))
+    }
+
     func setFollowing(_ on: Bool) {
-        if on { startViewer() } else { stopViewer() }
+        if on {
+            guard joinPin.count == 4 else {
+                status = "Type the 4-digit code from the nursery iPhone first."
+                following = false
+                return
+            }
+            startViewer()
+        } else {
+            stopViewer()
+        }
     }
 
     private func startHost() {
@@ -157,10 +171,10 @@ final class WiFiRelay: ObservableObject {
                         } else {
                             self.buffer = Data()
                         }
-                        if let snap = try? JSONDecoder().decode(WiFiSnapshot.self, from: line), snap.pin == self.pin {
+                        if let snap = try? JSONDecoder().decode(WiFiSnapshot.self, from: line), snap.pin == self.joinPin {
                             self.latest = snap
                             self.status = "Linked on this Wi‑Fi"
-                        } else if let snap = try? JSONDecoder().decode(WiFiSnapshot.self, from: line), snap.pin != self.pin {
+                        } else if let snap = try? JSONDecoder().decode(WiFiSnapshot.self, from: line), snap.pin != self.joinPin {
                             self.status = "Wrong share code. Match the nursery iPhone."
                         }
                     }
