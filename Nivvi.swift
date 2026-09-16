@@ -1674,6 +1674,7 @@ struct ContentView: View {
         }
         return monitor.history
     }
+    private var displayName: String { childName.isEmpty ? "Your child" : childName }
     private var statusCaption: String {
         if monitor.wearableCharging { return "Charging · monitoring paused" }
         if wifi.remoteFresh { return "Shared over Wi‑Fi" }
