@@ -320,7 +320,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         for offset in 0..<7 {
             guard let day = calendar.date(byAdding: .day, value: -offset, to: today) else { continue }
             if let rows = try? eventArchive.load(day: day) {
-                log.append(contentsOf: rows.filter { $0.kind == "critical" || $0.kind == "alarm" || $0.kind == "connection" })
+                log.append(contentsOf: rows.filter { $0.kind == "critical" || $0.kind == "alarm" || $0.title == "Heart-rate readings paused" || $0.title == "Heart rate back to normal" })
             }
         }
         return log.sorted { $0.time > $1.time }
@@ -527,9 +527,9 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             pulseOximeterStatus = "No fresh oxygen reading received for over 30 seconds."
         }
         if heartRateFreshness.isExpired(at: Date()) {
-            pauseHeartRate("No usable heart-rate reading received for over 30 seconds. Check the wearable and connection; the cause is unknown.")
+            pauseHeartRate("No usable heart-rate reading received for over \(Int(HeartRateFreshness.timeout)) seconds. Check the wearable and connection; the cause is unknown.")
         }
-        guard let time = measurementTime, Date().timeIntervalSince(time) > 30 else { return }
+        guard let time = measurementTime, Date().timeIntervalSince(time) > HeartRateFreshness.timeout else { return }
         clearLiveValues(resetFreshness: false)
     }
     private var manager: CBCentralManager!
@@ -2206,14 +2206,17 @@ struct ContentView: View {
             }
             if let error = monitor.historyError { Text(error).foregroundStyle(coral) }
             DisclosureGroup("Events") {
-                let visibleEvents = monitor.events
-                if visibleEvents.isEmpty { Text("None this day.").font(.caption).foregroundStyle(muted) }
+                let visibleEvents = monitor.events.filter { event in
+                    event.kind == "critical" || event.kind == "alarm" || event.title == "Heart-rate readings paused" || event.title == "Heart rate back to normal" || event.title.localizedCaseInsensitiveContains("needs your attention")
+                }
+                if visibleEvents.isEmpty { Text("No heart-rate alerts this day.").font(.caption).foregroundStyle(muted) }
                 ForEach(Array(visibleEvents.reversed())) { event in
+                    let restored = event.title == "Heart rate back to normal"
                     HStack {
                         Text(event.time.formatted(date: .omitted, time: .shortened)).font(.caption.monospacedDigit()).foregroundStyle(muted).frame(width: 64, alignment: .leading)
-                        Text(event.title).font(.caption.weight(.semibold)).foregroundStyle(ink)
+                        Text(event.title).font(.caption.weight(.semibold)).foregroundStyle(restored ? teal : coral)
                         Spacer()
-                        if let bpm = event.heartRate { Text("\(bpm)").font(.caption.bold().monospacedDigit()).foregroundStyle(coral) }
+                        if let bpm = event.heartRate { Text("\(bpm)").font(.caption.bold().monospacedDigit()).foregroundStyle(restored ? teal : coral) }
                     }
                     .padding(.vertical, 4)
                 }

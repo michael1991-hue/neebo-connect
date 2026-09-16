@@ -2,7 +2,7 @@ import Foundation
 
 // Heart-rate freshness is independent of battery, oxygen and other BLE traffic.
 struct HeartRateFreshness {
-    static let timeout: TimeInterval = 30
+    static let timeout: TimeInterval = 120
     private(set) var lastValid: Date?
     private(set) var pausedSince: Date?
     func isExpired(at now: Date) -> Bool {
