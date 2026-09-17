@@ -472,9 +472,9 @@ final class FamilyRelay: ObservableObject {
             }
         }
     }
-    private func applySocket(_ message: URLSessionWebSocketTask.Message) {
+    private func applySocket(_ frame: URLSessionWebSocketTask.Message) {
         let data: Data?
-        switch message {
+        switch frame {
         case .data(let value): data = value
         case .string(let value): data = value.data(using: .utf8)
         @unknown default: data = nil
@@ -484,7 +484,7 @@ final class FamilyRelay: ObservableObject {
         if type == "ping" { return }
         if type == "revoked" {
             dropSocket(); clearRemote()
-            message = "Family access ended."
+            self.message = "Family access ended."
             return
         }
         var payload = data
