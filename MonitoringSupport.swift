@@ -23,6 +23,57 @@ struct HeartRateFreshness {
     mutating func reset() { self = Self() }
 }
 
+enum FamilyLinkState: String {
+    case idle, live, hostStale, sensorDisconnected, viewerOffline
+}
+
+struct FamilyLiveEvent: Equatable {
+    var type: String
+    var streamID: String
+    var seq: Int
+    var captured: Double
+    var heartRate: Double?
+    var heartRateAt: Double?
+    var oxygen: Double?
+    var oxygenAt: Double?
+    var alarm: String
+    var connection: String
+    var serverReceived: Double?
+}
+
+enum FamilyLivePolicy {
+    static let metricWindow: TimeInterval = 30
+    static func accept(currentStream: String?, lastSeq: Int, incoming: FamilyLiveEvent) -> FamilyLiveEvent? {
+        if incoming.type == "revoked" { return incoming }
+        if incoming.seq < 1 { return nil }
+        if incoming.streamID == currentStream && incoming.seq <= lastSeq { return nil }
+        return incoming
+    }
+    static func metricFresh(at now: Date, stamped: Double?, hasValue: Bool) -> Bool {
+        guard hasValue, let stamped else { return false }
+        let age = now.timeIntervalSince1970 - stamped
+        return age >= -5 && age <= metricWindow
+    }
+    static func link(following: Bool, socketConnected: Bool, lastEvent: Date?, hostConnection: String, heartFresh: Bool, sensorAlarm: Bool, now: Date) -> FamilyLinkState {
+        guard following else { return .idle }
+        if sensorAlarm || hostConnection == "idle" || hostConnection == "bluetoothOff" { return .sensorDisconnected }
+        let eventAge = lastEvent.map { now.timeIntervalSince($0) } ?? .infinity
+        if !socketConnected && eventAge > 4 { return .viewerOffline }
+        if !heartFresh { return .hostStale }
+        return .live
+    }
+    static func shouldSoundAlarm(catchup: Bool, previous: String, next: String) -> Bool {
+        !catchup && previous != next && next != "none"
+    }
+    static func shouldSoundRecovery(catchup: Bool, previous: String, next: String, hasHeartRate: Bool) -> Bool {
+        !catchup && hasHeartRate && previous != "none" && next == "none"
+    }
+    static func reconnectDelay(attempt: Int) -> TimeInterval {
+        guard attempt > 1 else { return 0 }
+        return min(30, pow(2, Double(attempt - 2)))
+    }
+}
+
 // Five minutes of unchanged received values is a heuristic, not proof of
 // sensor failure. Rounding, averaging and cached reads can also repeat values.
 struct StaleHeartRateDetector {
@@ -169,7 +220,10 @@ enum HistoryChartPolicy {
             }
             flush()
         }
-        return result.sorted { $0.entry.time < $1.entry.time }
+        var seen = Set<UUID>()
+        return result
+            .sorted { $0.entry.time < $1.entry.time }
+            .filter { seen.insert($0.id).inserted }
     }
     static func nearest(_ entries: [SavedMeasurement], at date: Date, metric: HistoryMetric) -> SavedMeasurement? {
         entries.filter { metric.value($0) != nil && abs($0.time.timeIntervalSince(date)) <= 30 }
@@ -237,6 +291,10 @@ extension SavedMeasurement {
             UInt8(truncatingIfNeeded: b >> 8),
             UInt8(truncatingIfNeeded: b)
         ))
+    }
+    static func uniquelyIdentified(_ entries: [SavedMeasurement]) -> [SavedMeasurement] {
+        var seen = Set<UUID>()
+        return entries.filter { $0.time.timeIntervalSince1970.isFinite && seen.insert($0.id).inserted }
     }
 }
 

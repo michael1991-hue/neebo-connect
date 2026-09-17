@@ -2,6 +2,7 @@ import SwiftUI
 import Security
 import UserNotifications
 import AVFoundation
+import Network
 
 struct FamilyAccount: Codable { let token: String; let user_id: String; let email: String }
 struct SharedFamily: Codable, Identifiable { let id: String; let label: String; let owner: String }
@@ -15,23 +16,34 @@ struct FamilySnapshot: Codable {
     var captured: Double
     var heart_rate: Double?
     var oxygen: Double?
+    var heart_rate_at: Double?
+    var oxygen_at: Double?
     var source: String
     var alarm: String
     var connection: String
     var history: [FamilySample] = []
+    var stream_id: String?
+    var seq: Int?
+    var kind: String?
+    var server_received: Double?
 
     enum CodingKeys: String, CodingKey {
-        case captured, heart_rate, oxygen, source, alarm, connection, history
+        case captured, heart_rate, oxygen, heart_rate_at, oxygen_at, source, alarm, connection, history, stream_id, seq, kind, server_received
     }
 
-    init(captured: Double, heart_rate: Double?, oxygen: Double?, source: String, alarm: String, connection: String, history: [FamilySample] = []) {
+    init(captured: Double, heart_rate: Double?, oxygen: Double?, source: String, alarm: String, connection: String, history: [FamilySample] = [], heart_rate_at: Double? = nil, oxygen_at: Double? = nil, stream_id: String? = nil, seq: Int? = nil, kind: String? = "live") {
         self.captured = captured
         self.heart_rate = heart_rate
         self.oxygen = oxygen
+        self.heart_rate_at = heart_rate_at
+        self.oxygen_at = oxygen_at
         self.source = source
         self.alarm = alarm
         self.connection = connection
         self.history = history
+        self.stream_id = stream_id
+        self.seq = seq
+        self.kind = kind
     }
 
     init(from decoder: Decoder) throws {
@@ -39,14 +51,26 @@ struct FamilySnapshot: Codable {
         captured = try box.decode(Double.self, forKey: .captured)
         heart_rate = try box.decodeIfPresent(Double.self, forKey: .heart_rate)
         oxygen = try box.decodeIfPresent(Double.self, forKey: .oxygen)
+        heart_rate_at = try box.decodeIfPresent(Double.self, forKey: .heart_rate_at)
+        oxygen_at = try box.decodeIfPresent(Double.self, forKey: .oxygen_at)
         source = try box.decodeIfPresent(String.self, forKey: .source) ?? ""
         alarm = try box.decodeIfPresent(String.self, forKey: .alarm) ?? "none"
         connection = try box.decodeIfPresent(String.self, forKey: .connection) ?? ""
         history = try box.decodeIfPresent([FamilySample].self, forKey: .history) ?? []
+        stream_id = try box.decodeIfPresent(String.self, forKey: .stream_id)
+        seq = try box.decodeIfPresent(Int.self, forKey: .seq)
+        kind = try box.decodeIfPresent(String.self, forKey: .kind)
+        server_received = try box.decodeIfPresent(Double.self, forKey: .server_received)
     }
 }
-struct RemoteReading: Codable { let fresh: Bool; let age: Double?; let snapshot: FamilySnapshot? }
-struct FamilyReply: Codable { var message: String?; var code: String?; var ok: Bool? }
+struct RemoteReading: Codable {
+    let fresh: Bool
+    let age: Double?
+    let snapshot: FamilySnapshot?
+    var heart_rate_fresh: Bool?
+    var oxygen_fresh: Bool?
+}
+struct FamilyReply: Codable { var message: String?; var code: String?; var ok: Bool?; var seq: Int?; var server_received: Double? }
 
 enum FamilyKeychain {
     static let service = "com.michael1991.nivvi.family"
@@ -83,30 +107,69 @@ final class FamilyRelay: ObservableObject {
     @Published var message = ""
     @Published var busy = false
     @Published private(set) var publishing = false
-    @Published var invitation: String?
+    @Published private(set) var invitation: String?
+    @Published private(set) var socketConnected = false
+    @Published private(set) var lastLatency: TimeInterval?
+    @Published private(set) var trail: [SavedMeasurement] = []
+    @Published private(set) var alarmCatchup = true
     private var lastUpload: Date?
+    private var lastHistoryUpload: Date?
     private var lastAlarm = "none"
+    private var appliedAlarm = "none"
     private var uploadBusy = false
     private var pendingSnapshot: FamilySnapshot?
     private var generation = UUID()
     private var deviceToken = UserDefaults.standard.string(forKey: "nivvi.family.apns")
     private var watchTask: Task<Void, Never>?
+    private var socket: URLSessionWebSocketTask?
+    private var socketFamily: String?
+    private var lastSeq = 0
+    private var currentStream: String?
+    private var publishStream = UUID().uuidString
+    private var uploadSeq = 0
+    private var lastEventAt: Date?
+    private var pathMonitor: NWPathMonitor?
+    private var reconnectAttempt = 0
+    private var reconnectTask: Task<Void, Never>?
+    private var watching = false
     private var ownFamily: SharedFamily? { families.first { $0.owner == account?.user_id } }
     var signedIn: Bool { account != nil }
     var userID: String? { account?.user_id }
-    var viewingRemote: Bool { signedIn && familyFresh && selected != ownFamily?.id }
-    var familyFresh: Bool {
-        guard let remote, remote.fresh || remote.snapshot?.heart_rate != nil, let fetched = remoteFetched else { return false }
-        let elapsed = Date().timeIntervalSince(fetched)
-        let age = (remote.age ?? .infinity) + max(0, elapsed)
-        return age <= 30 && elapsed <= 8
+    var followingFamily: Bool { signedIn && selected != nil && selected != ownFamily?.id }
+    var familyHeartFresh: Bool {
+        FamilyLivePolicy.metricFresh(at: Date(), stamped: remote?.snapshot?.heart_rate_at ?? remote?.snapshot?.captured, hasValue: remote?.snapshot?.heart_rate != nil)
+    }
+    var familyOxygenFresh: Bool {
+        FamilyLivePolicy.metricFresh(at: Date(), stamped: remote?.snapshot?.oxygen_at ?? remote?.snapshot?.captured, hasValue: remote?.snapshot?.oxygen != nil)
+    }
+    var familyFresh: Bool { familyHeartFresh }
+    var viewingRemote: Bool { followingFamily }
+    var linkState: FamilyLinkState {
+        FamilyLivePolicy.link(
+            following: followingFamily,
+            socketConnected: socketConnected,
+            lastEvent: lastEventAt ?? remoteFetched,
+            hostConnection: remote?.snapshot?.connection ?? "",
+            heartFresh: familyHeartFresh,
+            sensorAlarm: remote?.snapshot?.alarm == "sensor",
+            now: Date()
+        )
+    }
+    var statusLine: String {
+        switch linkState {
+        case .live: return "From the nursery iPhone · live"
+        case .hostStale: return "Nursery reading is stale · not live"
+        case .sensorDisconnected: return "Nursery sensor disconnected"
+        case .viewerOffline: return "This phone lost the family link · not live"
+        case .idle: return "Family sharing"
+        }
     }
     var liveHeartRate: String? {
-        guard viewingRemote, let value = remote?.snapshot?.heart_rate else { return nil }
+        guard followingFamily, familyHeartFresh, let value = remote?.snapshot?.heart_rate else { return nil }
         return "\(Int(value.rounded())) bpm"
     }
     var liveOxygen: String? {
-        guard viewingRemote, let value = remote?.snapshot?.oxygen else { return nil }
+        guard followingFamily, familyOxygenFresh, let value = remote?.snapshot?.oxygen else { return nil }
         return "\(Int(value.rounded()))%"
     }
     var privacyURL: URL? {
@@ -119,10 +182,10 @@ final class FamilyRelay: ObservableObject {
     }
     var configured: Bool { server != nil && privacyURL != nil }
 
-    private func request<T: Decodable>(_ path: String, method: String = "GET", body: Data? = nil, authenticated: Bool = true) async throws -> T {
+    private func request<T: Decodable>(_ path: String, method: String = "GET", body: Data? = nil, authenticated: Bool = true, timeout: TimeInterval = 45) async throws -> T {
         guard configured, let server else { throw FamilyError.message("Family sharing needs the Nivvi online service to be configured.") }
         var req = URLRequest(url: server.appendingPathComponent(path))
-        req.httpMethod = method; req.timeoutInterval = 45
+        req.httpMethod = method; req.timeoutInterval = timeout
         req.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let current = account?.token
@@ -135,7 +198,7 @@ final class FamilyRelay: ObservableObject {
         guard let response = response as? HTTPURLResponse else { throw FamilyError.message("Sharing service unavailable.") }
         guard (200..<300).contains(response.statusCode) else {
             if response.statusCode == 401 && authenticated && account?.token == current {
-                publishing = false; account = nil; generation = UUID(); clearRemote()
+                publishing = false; account = nil; generation = UUID(); dropSocket(); clearRemote()
                 families = []; members = []; invitation = nil; pendingSnapshot = nil
                 try? FamilyKeychain.save(nil)
             }
@@ -174,7 +237,11 @@ final class FamilyRelay: ObservableObject {
     func enable(label: String) async throws {
         let _: SharedFamily = try await request("families", method: "POST", body: body(["label": label]))
         try await refreshFamilies()
-        publishing = true; lastUpload = nil
+        publishing = true
+        lastUpload = nil
+        lastHistoryUpload = nil
+        publishStream = UUID().uuidString
+        uploadSeq = 0
         message = "Sharing enabled on this phone. Keep it near the wearable and connected to the internet."
     }
     func stop() async throws {
@@ -210,38 +277,91 @@ final class FamilyRelay: ObservableObject {
         clearRemote(); try await refreshFamilies()
     }
     func startWatching() {
-        watchTask?.cancel()
+        if watching { return }
+        watching = true
+        pathMonitor?.cancel()
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            Task { @MainActor in
+                guard let self, path.status == .satisfied else { return }
+                self.reconnectAttempt = 0
+                self.reconnectTask?.cancel()
+                self.reconnectTask = nil
+                self.reconnectSocket()
+            }
+        }
+        monitor.start(queue: DispatchQueue.global(qos: .utility))
+        pathMonitor = monitor
         watchTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.tickWatch()
-                try? await Task.sleep(nanoseconds: 500_000_000)
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
         }
     }
+    func resumeForeground() {
+        guard watching, followingFamily else { return }
+        reconnectAttempt = 0
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        reconnectSocket()
+    }
     private func tickWatch() async {
-        guard signedIn else { return }
-        if publishing && selected == ownFamily?.id { return }
+        guard signedIn else { dropSocket(); return }
+        if publishing && selected == ownFamily?.id {
+            dropSocket()
+            return
+        }
         if families.isEmpty {
             do { try await refreshFamilies() } catch { message = error.localizedDescription }
         }
-        await fetchRemote()
+        if followingFamily {
+            if socket == nil { scheduleReconnect() }
+            if !socketConnected { await fetchRemote() }
+        } else {
+            dropSocket()
+        }
     }
-    func clearRemote() { remote = nil; remoteFetched = nil }
+    func clearRemote() {
+        remote = nil
+        remoteFetched = nil
+        lastEventAt = nil
+        lastLatency = nil
+        trail = []
+        lastSeq = 0
+        currentStream = nil
+        appliedAlarm = "none"
+        alarmCatchup = true
+    }
     func fetchRemote() async {
         guard signedIn, let selected else { clearRemote(); return }
+        if socketConnected && remote != nil { return }
         let token = generation
         do {
             let value: RemoteReading = try await request("families/\(selected)/latest")
             guard token == generation && self.selected == selected else { return }
-            remote = value; remoteFetched = Date()
+            if let snap = value.snapshot {
+                applyRemote(snap, catchup: true, serverReceived: snap.server_received)
+            } else {
+                remote = value
+                remoteFetched = Date()
+            }
         } catch {
             message = error.localizedDescription
         }
     }
     func capture(_ snapshot: FamilySnapshot) {
         guard publishing, let family = ownFamily else { return }
-        if uploadBusy { pendingSnapshot = snapshot; return }
-        if snapshot.alarm == lastAlarm, let lastUpload, Date().timeIntervalSince(lastUpload) < 0.5 { return }
+        var next = snapshot
+        if next.seq == nil {
+            uploadSeq += 1
+            next.seq = uploadSeq
+            next.stream_id = publishStream
+            next.kind = "live"
+        }
+        let includeHistory = lastHistoryUpload == nil || Date().timeIntervalSince(lastHistoryUpload!) >= 15
+        if !includeHistory { next.history = [] }
+        if uploadBusy { pendingSnapshot = next; return }
         let token = generation
         uploadBusy = true
         Task {
@@ -251,10 +371,23 @@ final class FamilyRelay: ObservableObject {
             }
             guard publishing && token == generation else { return }
             do {
-                let _: FamilyReply = try await request("families/\(family.id)/latest", method: "PUT", body: JSONEncoder().encode(snapshot))
+                let reply: FamilyReply = try await request("families/\(family.id)/latest", method: "PUT", body: JSONEncoder().encode(next), timeout: 8)
                 guard token == generation else { return }
-                lastUpload = Date(); lastAlarm = snapshot.alarm
-            } catch { message = "Remote update unavailable: " + error.localizedDescription }
+                lastUpload = Date()
+                lastAlarm = next.alarm
+                if let received = reply.server_received {
+                    lastLatency = received - next.captured
+                }
+                if includeHistory { lastHistoryUpload = Date() }
+            } catch {
+                let text = error.localizedDescription
+                if text.contains("(409)") {
+                    uploadSeq += 1
+                    pendingSnapshot?.seq = uploadSeq
+                    pendingSnapshot?.stream_id = publishStream
+                }
+                message = "Remote update unavailable: " + text
+            }
         }
     }
     func saveDeviceToken(_ token: String) { deviceToken = token }
@@ -271,8 +404,159 @@ final class FamilyRelay: ObservableObject {
         do { let _: FamilyReply = try await request("devices", method: "PUT", body: body(["token": token])); message = "This phone is registered for family notifications." }
         catch { message = error.localizedDescription }
     }
+    private func socketURL(family: String) -> URL? {
+        guard let server, let token = account?.token else { return nil }
+        var parts = URLComponents(url: server.appendingPathComponent("families/\(family)/live"), resolvingAgainstBaseURL: false)
+        parts?.scheme = server.scheme == "http" ? "ws" : "wss"
+        parts?.queryItems = [URLQueryItem(name: "token", value: token)]
+        return parts?.url
+    }
+    private func connectSocket() {
+        guard followingFamily, let selected, let url = socketURL(family: selected), let token = account?.token else { return }
+        if socket != nil, socketFamily == selected { return }
+        dropSocket(resetBackoff: false)
+        var req = URLRequest(url: url)
+        req.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
+        req.timeoutInterval = 30
+        let task = URLSession.shared.webSocketTask(with: req)
+        socket = task
+        socketFamily = selected
+        task.resume()
+        listenSocket()
+    }
+    private func reconnectSocket() {
+        guard followingFamily else { return }
+        dropSocket(resetBackoff: false)
+        connectSocket()
+    }
+    private func dropSocket(resetBackoff: Bool = true) {
+        socket?.cancel(with: .goingAway, reason: nil)
+        socket = nil
+        socketFamily = nil
+        socketConnected = false
+        if resetBackoff {
+            reconnectAttempt = 0
+            reconnectTask?.cancel()
+            reconnectTask = nil
+        }
+    }
+    private func scheduleReconnect() {
+        guard followingFamily, socket == nil, reconnectTask == nil else { return }
+        reconnectAttempt += 1
+        let delay = FamilyLivePolicy.reconnectDelay(attempt: reconnectAttempt)
+        reconnectTask = Task { [weak self] in
+            if delay > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
+            await MainActor.run {
+                guard let self, !Task.isCancelled else { return }
+                self.reconnectTask = nil
+                self.connectSocket()
+            }
+        }
+    }
+    private func listenSocket() {
+        socket?.receive { [weak self] result in
+            Task { @MainActor in
+                guard let self else { return }
+                switch result {
+                case .failure:
+                    self.dropSocket(resetBackoff: false)
+                    self.scheduleReconnect()
+                case .success(let message):
+                    self.socketConnected = true
+                    self.reconnectAttempt = 0
+                    self.applySocket(message)
+                    self.listenSocket()
+                }
+            }
+        }
+    }
+    private func applySocket(_ message: URLSessionWebSocketTask.Message) {
+        let data: Data?
+        switch message {
+        case .data(let value): data = value
+        case .string(let value): data = value.data(using: .utf8)
+        @unknown default: data = nil
+        }
+        guard let data, let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        let type = raw["type"] as? String ?? ""
+        if type == "ping" { return }
+        if type == "revoked" {
+            dropSocket(); clearRemote()
+            message = "Family access ended."
+            return
+        }
+        var payload = data
+        if type == "snapshot", let nested = raw["snapshot"] as? [String: Any], let nestedData = try? JSONSerialization.data(withJSONObject: nested) {
+            payload = nestedData
+        }
+        guard let snap = try? JSONDecoder().decode(FamilySnapshot.self, from: payload) else { return }
+        let event = FamilyLiveEvent(
+            type: type.isEmpty ? "live" : type,
+            streamID: snap.stream_id ?? "",
+            seq: snap.seq ?? 0,
+            captured: snap.captured,
+            heartRate: snap.heart_rate,
+            heartRateAt: snap.heart_rate_at,
+            oxygen: snap.oxygen,
+            oxygenAt: snap.oxygen_at,
+            alarm: snap.alarm,
+            connection: snap.connection,
+            serverReceived: snap.server_received
+        )
+        let catchup = type == "snapshot"
+        if event.seq > 0, FamilyLivePolicy.accept(currentStream: currentStream, lastSeq: lastSeq, incoming: event) == nil { return }
+        applyRemote(snap, catchup: catchup, serverReceived: snap.server_received)
+    }
+    private func applyRemote(_ snap: FamilySnapshot, catchup: Bool, serverReceived: Double?) {
+        if let stream = snap.stream_id, stream != currentStream {
+            currentStream = stream
+            lastSeq = 0
+            trail = []
+        }
+        if catchup, trail.isEmpty, !snap.history.isEmpty {
+            trail = SavedMeasurement.uniquelyIdentified(snap.history.map {
+                SavedMeasurement.mapped(time: Date(timeIntervalSince1970: $0.t), heartRate: $0.hr, oxygen: $0.o2, source: "family-share")
+            })
+        }
+        if let seq = snap.seq { lastSeq = seq }
+        lastEventAt = Date()
+        remoteFetched = Date()
+        alarmCatchup = catchup
+        if let received = serverReceived {
+            lastLatency = Date().timeIntervalSince1970 - received
+        }
+        var merged = snap
+        if snap.history.isEmpty, let existing = remote?.snapshot?.history {
+            merged.history = existing
+        }
+        remote = RemoteReading(
+            fresh: FamilyLivePolicy.metricFresh(at: Date(), stamped: snap.heart_rate_at ?? snap.captured, hasValue: snap.heart_rate != nil),
+            age: snap.heart_rate_at.map { Date().timeIntervalSince1970 - $0 },
+            snapshot: merged,
+            heart_rate_fresh: FamilyLivePolicy.metricFresh(at: Date(), stamped: snap.heart_rate_at ?? snap.captured, hasValue: snap.heart_rate != nil),
+            oxygen_fresh: FamilyLivePolicy.metricFresh(at: Date(), stamped: snap.oxygen_at ?? snap.captured, hasValue: snap.oxygen != nil)
+        )
+        if let hr = snap.heart_rate {
+            let stamp = Date(timeIntervalSince1970: snap.heart_rate_at ?? snap.captured)
+            let point = SavedMeasurement.mapped(time: stamp, heartRate: hr, oxygen: snap.oxygen, source: "family-share")
+            if trail.last?.id != point.id {
+                trail.append(point)
+            }
+            let cut = Date().addingTimeInterval(-120)
+            trail.removeAll { $0.time < cut }
+            if trail.count > 400 { trail.removeFirst(trail.count - 400) }
+        }
+        let nextAlarm = snap.alarm
+        if FamilyLivePolicy.shouldSoundAlarm(catchup: catchup, previous: appliedAlarm, next: nextAlarm)
+            || FamilyLivePolicy.shouldSoundRecovery(catchup: catchup, previous: appliedAlarm, next: nextAlarm, hasHeartRate: snap.heart_rate != nil) {
+            alarmCatchup = false
+        }
+        appliedAlarm = nextAlarm
+    }
     func signOut(delete: Bool = false) async throws {
-        publishing = false; generation = UUID(); clearRemote()
+        publishing = false; generation = UUID(); dropSocket(); clearRemote()
         if delete {
             let _: FamilyReply = try await request("account", method: "DELETE")
         } else {
@@ -398,20 +682,21 @@ struct FamilySharingView: View {
             Picker("Family", selection: $relay.selected) {
                 ForEach(relay.families) { family in Text(family.label).tag(Optional(family.id)) }
             }
-            TimelineView(.periodic(from: .now, by: 1)) { context in
-                let elapsed = relay.remoteFetched.map { context.date.timeIntervalSince($0) } ?? .infinity
-                let age = (relay.remote?.age ?? .infinity) + max(0, elapsed)
-                let fresh = relay.remote?.fresh == true && age <= 30 && elapsed <= 30
-                Text(fresh ? "Recent remote update" : "No fresh remote reading").font(.headline).foregroundStyle(fresh ? .green : .orange)
+            TimelineView(.periodic(from: .now, by: 1)) { _ in
+                Text(relay.statusLine).font(.headline).foregroundStyle(relay.linkState == .live ? .green : .orange)
                 if let snapshot = relay.remote?.snapshot {
                     HStack {
-                        metric("Heart rate", fresh ? snapshot.heart_rate : nil, "bpm")
-                        metric("Oxygen", fresh ? snapshot.oxygen : nil, "%")
+                        metric("Heart rate", relay.familyHeartFresh ? snapshot.heart_rate : nil, "bpm")
+                        metric("Oxygen", relay.familyOxygenFresh ? snapshot.oxygen : nil, "%")
                     }
-                    Text("Recorded \(Date(timeIntervalSince1970: snapshot.captured).formatted(date: .abbreviated, time: .standard))").font(.caption.bold())
+                    Text("Heart rate \(relay.familyHeartFresh ? "fresh" : "stale") · oxygen \(relay.familyOxygenFresh ? "fresh" : "stale")").font(.caption)
+                    Text("Recorded \(Date(timeIntervalSince1970: snapshot.heart_rate_at ?? snapshot.captured).formatted(date: .abbreviated, time: .standard))").font(.caption.bold())
                     Text(snapshot.connection).font(.caption)
-                    Text("Source: \(snapshot.source)").font(.caption)
-                    if fresh && snapshot.alarm != "none" { Text(snapshot.alarm == "sensor" ? "Check sensor data" : "Shared monitor needs attention").foregroundStyle(.orange) }
+                    Text("Source: \(snapshot.source) · seq \(snapshot.seq.map(String.init) ?? "—")").font(.caption)
+                    if let delay = relay.lastLatency {
+                        Text(String(format: "Last hop %.2fs after the server", delay)).font(.caption)
+                    }
+                    if relay.linkState == .live && snapshot.alarm != "none" { Text(snapshot.alarm == "sensor" ? "Check sensor data" : "Shared monitor needs attention").foregroundStyle(.orange) }
                 }
             }
             Button("Refresh now") { Task { await relay.fetchRemote() } }

@@ -113,13 +113,15 @@ final class WiFiRelay: ObservableObject {
         let hr = Self.number(snap.heartRate)
         let o2 = Self.number(snap.oxygen)
         guard hr != nil || o2 != nil else { return }
-        if let last = trail.last, abs(last.time.timeIntervalSince1970 - snap.captured) < 0.4 { return }
-        trail.append(SavedMeasurement.mapped(
+        let point = SavedMeasurement.mapped(
             time: Date(timeIntervalSince1970: snap.captured),
             heartRate: hr,
             oxygen: o2,
             source: "wifi-share"
-        ))
+        )
+        if trail.last?.id == point.id { return }
+        if let last = trail.last, abs(last.time.timeIntervalSince1970 - snap.captured) < 0.4 { return }
+        trail.append(point)
         let cut = Date().addingTimeInterval(-120)
         trail.removeAll { $0.time < cut }
         if trail.count > 400 { trail.removeFirst(trail.count - 400) }

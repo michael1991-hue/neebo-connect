@@ -363,9 +363,18 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         let oxTime = lastOxygenUpdate
         let hr = hrTime.map { now.timeIntervalSince($0) <= 30 } == true ? (pulseOximeterRate ?? verifiedHeartRate.map(Double.init) ?? customHeartRateCandidate.map(Double.init)) : nil
         let ox = oxTime.map { now.timeIntervalSince($0) <= 30 } == true ? (pulseOximeterOxygen ?? verifiedOxygen.map(Double.init) ?? customOxygenCandidate.map(Double.init)) : nil
-        let times = [(hr == nil ? nil : hrTime), (ox == nil ? nil : oxTime)].compactMap { $0 }
         let points = liveTrace.suffix(240).map { FamilySample(t: $0.time.timeIntervalSince1970, hr: $0.heartRateValue, o2: $0.oxygenValue) }
-        let snapshot = FamilySnapshot(captured: (times.min() ?? now).timeIntervalSince1970, heart_rate: hr, oxygen: ox, source: profile.rawValue, alarm: alarmKind.map { $0 == .high ? "high" : "low" } ?? (staleHeartRateDetected ? "sensor" : "none"), connection: connection.label, history: Array(points))
+        let snapshot = FamilySnapshot(
+            captured: now.timeIntervalSince1970,
+            heart_rate: hr,
+            oxygen: ox,
+            source: profile.rawValue,
+            alarm: alarmKind.map { $0 == .high ? "high" : "low" } ?? (staleHeartRateDetected ? "sensor" : "none"),
+            connection: connection.label,
+            history: Array(points),
+            heart_rate_at: hr == nil ? nil : hrTime?.timeIntervalSince1970,
+            oxygen_at: ox == nil ? nil : oxTime?.timeIntervalSince1970
+        )
         Task { @MainActor in FamilyRelay.shared.capture(snapshot) }
     }
     private func saveMeasurement(heartRate: Int?, oxygen: Int?, source: String, exactHeartRate: Double? = nil, exactOxygen: Double? = nil, segment: UUID? = nil) {
@@ -1496,7 +1505,8 @@ struct HistoryChartsView: View {
     @State private var hours = 1
     @State private var windowEnd: Date?
     private var domain: ClosedRange<Date> {
-        HistoryChartPolicy.window(day: day, hours: hours, endingAt: windowEnd ?? entries.last?.time ?? day)
+        let window = HistoryChartPolicy.window(day: day, hours: hours, endingAt: windowEnd ?? entries.last?.time ?? day)
+        return HistoryChartPolicy.xScale(from: window.lowerBound, to: window.upperBound)
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1701,15 +1711,21 @@ struct ContentView: View {
         return monitor.profile == .heartRate ? "Waiting for heart-rate data" : "Waiting for device data"
     }
     private var displayedHistory: [SavedMeasurement] {
-        if family.viewingRemote, let samples = family.remote?.snapshot?.history, !samples.isEmpty {
-            return samples.map {
-                SavedMeasurement.mapped(
-                    time: Date(timeIntervalSince1970: $0.t),
-                    heartRate: $0.hr,
-                    oxygen: $0.o2,
-                    source: "family-share"
-                )
+        if family.viewingRemote {
+            if let samples = family.remote?.snapshot?.history, !samples.isEmpty {
+                return SavedMeasurement.uniquelyIdentified(samples.map {
+                    SavedMeasurement.mapped(time: Date(timeIntervalSince1970: $0.t), heartRate: $0.hr, oxygen: $0.o2, source: "family-share")
+                })
             }
+            if !family.trail.isEmpty { return SavedMeasurement.uniquelyIdentified(family.trail) }
+        }
+        if wifi.remoteFresh {
+            if let samples = wifi.latest?.history, !samples.isEmpty {
+                return SavedMeasurement.uniquelyIdentified(samples.map {
+                    SavedMeasurement.mapped(time: Date(timeIntervalSince1970: $0.t), heartRate: $0.hr, oxygen: $0.o2, source: "wifi-share")
+                })
+            }
+            if !wifi.trail.isEmpty { return SavedMeasurement.uniquelyIdentified(wifi.trail) }
         }
         return monitor.history
     }
@@ -1717,7 +1733,9 @@ struct ContentView: View {
     private var mirroringNursery: Bool { wifi.remoteFresh || family.viewingRemote }
     private var remoteStamp: Date? {
         if wifi.remoteFresh, let captured = wifi.latest?.captured { return Date(timeIntervalSince1970: captured) }
-        if family.viewingRemote, let captured = family.remote?.snapshot?.captured { return Date(timeIntervalSince1970: captured) }
+        if family.viewingRemote, let stamped = family.remote?.snapshot?.heart_rate_at ?? family.remote?.snapshot?.captured {
+            return Date(timeIntervalSince1970: stamped)
+        }
         return nil
     }
     private var remoteBeats: Double? {
@@ -1726,7 +1744,7 @@ struct ContentView: View {
     private var statusCaption: String {
         if monitor.wearableCharging { return "Charging · monitoring paused" }
         if wifi.remoteFresh { return "Shared over Wi‑Fi" }
-        if family.viewingRemote { return family.remote?.snapshot?.connection ?? "Shared over the internet" }
+        if family.viewingRemote { return family.statusLine }
         return monitor.connection.label
     }
     private var nurseryHint: String {
@@ -1742,7 +1760,7 @@ struct ContentView: View {
             oxygen: oxygenDisplay,
             connection: family.viewingRemote ? (family.remote?.snapshot?.connection ?? "Family sharing") : monitor.connection.label,
             signal: family.viewingRemote ? "Internet" : BluetoothSignal.label(monitor.signalRSSI),
-            nurseryHint: family.viewingRemote ? "Live from the nursery iPhone" : (live ? nurseryHint : ""),
+            nurseryHint: family.viewingRemote ? family.statusLine : (live ? nurseryHint : ""),
             monitoring: live || wifi.remoteFresh || family.viewingRemote
         )
     }
@@ -1774,6 +1792,10 @@ struct ContentView: View {
             return
         }
         if family.viewingRemote, let snap = family.remote?.snapshot {
+            if family.alarmCatchup {
+                if snap.alarm == "none" { monitor.endShareAlert() }
+                return
+            }
             if snap.alarm == "none" { monitor.endShareAlert() }
             else { monitor.beginShareAlert(sensor: snap.alarm == "sensor") }
             return
@@ -1850,6 +1872,9 @@ struct ContentView: View {
             syncLiveActivity()
             family.startWatching()
             UIApplication.shared.isIdleTimerDisabled = wifi.hosting || wifi.following || monitor.connection.isConnected || family.viewingRemote
+        }
+        .onChange(of: scenePhase) { phase in
+            if phase == .active { family.resumeForeground() }
         }
         .sheet(isPresented: $showProfile) {
             ProfileSetupView(name: childName, birthDate: birthDate, gender: childGender, avatarSymbol: avatarSymbol, avatarColor: avatarColor) { name, date, gender, symbol, color in
@@ -2056,6 +2081,7 @@ struct ContentView: View {
         let start = Date().addingTimeInterval(-120)
         let source: [SavedMeasurement] = {
             if wifi.remoteFresh, !wifi.trail.isEmpty { return wifi.trail }
+            if family.viewingRemote, !family.trail.isEmpty { return family.trail }
             if family.viewingRemote, let samples = family.remote?.snapshot?.history, !samples.isEmpty {
                 return samples.map {
                     SavedMeasurement.mapped(
@@ -2072,6 +2098,20 @@ struct ContentView: View {
             sample.time >= start && (sample.heartRateValue ?? 0) > 0
         }
     }
+    private var liveChartCaption: String {
+        if family.viewingRemote {
+            switch family.linkState {
+            case .live: return "Live"
+            case .hostStale: return "Stale · not live"
+            case .sensorDisconnected: return "Sensor disconnected"
+            case .viewerOffline: return "Offline · not live"
+            case .idle: return "Family share"
+            }
+        }
+        if wifi.following { return wifi.remoteFresh ? "Live · Wi‑Fi" : "Wi‑Fi stale · not live" }
+        if monitor.wearableCharging || monitor.staleHeartRateDetected { return "Not live" }
+        return "Live"
+    }
     private var fiveMinuteChart: some View {
         let points = HistoryChartPolicy.points(fiveMinuteReadings, metric: .heartRate)
         let now = Date()
@@ -2079,7 +2119,7 @@ struct ContentView: View {
         let xDomain = HistoryChartPolicy.xScale(from: max(now.addingTimeInterval(-120), earliest.addingTimeInterval(-4)), to: max(now, earliest.addingTimeInterval(1)))
         let yDomain = HistoryChartPolicy.yScale(values: points.map(\.value), floor: 40, ceiling: 220, pad: 8, fallback: 80)
         return VStack(alignment: .leading, spacing: 4) {
-            Text("Live").font(.caption.weight(.bold)).foregroundStyle(muted)
+            Text(liveChartCaption).font(.caption.weight(.bold)).foregroundStyle(muted)
             if points.count < 2 {
                 Text("Waiting for live readings.")
                     .font(.caption).foregroundStyle(muted)
@@ -2133,12 +2173,12 @@ struct ContentView: View {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     Text(readingAge(mirroringNursery ? remoteStamp : monitor.lastHeartRateUpdate, now: context.date))
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(monitor.staleHeartRateDetected && !mirroringNursery ? coral : accentMint)
+                        .foregroundStyle((family.viewingRemote && family.linkState != .live) || (monitor.staleHeartRateDetected && !mirroringNursery) ? coral : accentMint)
                 }
                 if wifi.remoteFresh {
                     Text("From the nursery iPhone on this Wi‑Fi").font(.caption).foregroundStyle(accentMint)
                 } else if family.viewingRemote {
-                    Text("From the nursery iPhone · family sharing").font(.caption).foregroundStyle(accentMint)
+                    Text(family.statusLine).font(.caption).foregroundStyle(family.linkState == .live ? accentMint : coral)
                 }
                 if !mirroringNursery {
                     Text(liveMeasurementNote).font(.caption).foregroundStyle(muted)
@@ -2206,7 +2246,7 @@ struct ContentView: View {
                 panel { Text("No readings this day.") }
             } else {
                 panel {
-                    HistoryChartsView(entries: displayedHistory, day: family.viewingRemote ? Calendar.current.startOfDay(for: Date()) : monitor.selectedHistoryDay, selected: $selectedHistoryReading, coral: coral, teal: accentMint, lavender: stamp, caption: muted, ink: ink)
+                    HistoryChartsView(entries: displayedHistory, day: (family.viewingRemote || wifi.remoteFresh) ? Calendar.current.startOfDay(for: Date()) : monitor.selectedHistoryDay, selected: $selectedHistoryReading, coral: coral, teal: accentMint, lavender: stamp, caption: muted, ink: ink)
                 }
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
                     ForEach(Array(displayedHistory.suffix(15).reversed())) { sample in

@@ -17,12 +17,75 @@ from pathlib import Path
 
 import httpx
 import jwt
-from fastapi import FastAPI, HTTPException, Request, Depends
+from fastapi import FastAPI, HTTPException, Request, Depends, WebSocket
 from pydantic import BaseModel, Field
 
 DB = os.environ.get("NIVVI_DATABASE", "/data/nivvi.sqlite")
 TEST = os.environ.get("NIVVI_TESTING") == "1"
 OUTBOX = []  # Tests only; production never stores verification messages here.
+
+
+class LiveHub:
+    def __init__(self):
+        self.loop = None
+        self.clients = []
+
+    def bind(self, loop):
+        self.loop = loop
+
+    def add(self, family, user_id, queue):
+        self.clients.append((family, user_id, queue))
+
+    def remove(self, queue):
+        self.clients = [item for item in self.clients if item[2] is not queue]
+
+    def emit(self, family, payload):
+        def push():
+            for fam, _uid, queue in list(self.clients):
+                if fam != family:
+                    continue
+                if queue.full():
+                    try:
+                        queue.get_nowait()
+                    except Exception:
+                        pass
+                try:
+                    queue.put_nowait(payload)
+                except Exception:
+                    pass
+        if self.loop is not None:
+            self.loop.call_soon_threadsafe(push)
+        else:
+            push()
+
+    def drop_user(self, user_id, family=None):
+        def push():
+            for fam, uid, queue in list(self.clients):
+                if uid == user_id and (family is None or fam == family):
+                    try:
+                        queue.put_nowait({"type": "revoked"})
+                    except Exception:
+                        pass
+        if self.loop is not None:
+            self.loop.call_soon_threadsafe(push)
+        else:
+            push()
+
+    def drop_family(self, family):
+        def push():
+            for fam, _uid, queue in list(self.clients):
+                if fam == family:
+                    try:
+                        queue.put_nowait({"type": "revoked"})
+                    except Exception:
+                        pass
+        if self.loop is not None:
+            self.loop.call_soon_threadsafe(push)
+        else:
+            push()
+
+
+HUB = LiveHub()
 
 
 @contextmanager
@@ -169,10 +232,15 @@ class Snapshot(BaseModel):
     captured: float
     heart_rate: float | None = Field(default=None, ge=1, le=65535)
     oxygen: float | None = Field(default=None, ge=0, le=100)
+    heart_rate_at: float | None = None
+    oxygen_at: float | None = None
     source: str = Field(max_length=80)
     alarm: str = Field(default="none", pattern="^(none|high|low|sensor)$")
     connection: str = Field(max_length=80)
     history: list[HistoryPoint] = Field(default_factory=list, max_length=500)
+    stream_id: str | None = Field(default=None, max_length=80)
+    seq: int | None = Field(default=None, ge=1)
+    kind: str = Field(default="live", max_length=20)
 
 
 class Device(BaseModel):
@@ -186,6 +254,7 @@ async def lifespan(app):
             if not os.environ.get(key):
                 raise RuntimeError(f"Missing required configuration: {key}")
     initialize()
+    HUB.bind(asyncio.get_running_loop())
     worker = asyncio.create_task(push_worker())
     yield
     worker.cancel()
@@ -316,6 +385,7 @@ def stop_sharing(family: str, user=Depends(require_user)):
     with db() as c:
         owner(c, family, user)
         c.execute("DELETE FROM families WHERE id=?", (family,))
+    HUB.drop_family(family)
     return {"ok": True}
 
 
@@ -357,33 +427,62 @@ def revoke(family: str, member_id: str, user=Depends(require_user)):
             owner(c, family, user)
         c.execute("DELETE FROM members WHERE family=? AND user_id=?", (family, member_id))
         c.execute("DELETE FROM invites WHERE family=? AND email IN(SELECT email FROM users WHERE id=?)", (family, member_id))
+    HUB.drop_user(member_id, family)
     return {"ok": True}
+
+
+def merge_snapshot(old, body: Snapshot, received):
+    payload = body.model_dump()
+    if payload.get("heart_rate") is None:
+        payload["heart_rate"] = old.get("heart_rate")
+        payload["heart_rate_at"] = old.get("heart_rate_at") or old.get("captured")
+    else:
+        payload["heart_rate_at"] = payload.get("heart_rate_at") or payload["captured"]
+    if payload.get("oxygen") is None:
+        payload["oxygen"] = old.get("oxygen")
+        payload["oxygen_at"] = old.get("oxygen_at") or old.get("captured")
+    else:
+        payload["oxygen_at"] = payload.get("oxygen_at") or payload["captured"]
+    if not payload.get("history") and old.get("history"):
+        payload["history"] = old["history"]
+    payload["server_received"] = received
+    payload["seq"] = body.seq or int(old.get("seq") or 0) + 1
+    payload["stream_id"] = body.stream_id or old.get("stream_id")
+    return payload
 
 
 @app.put("/families/{family}/latest")
 def publish(family: str, body: Snapshot, user=Depends(require_user)):
     now = time.time()
-    if not now-30 <= body.captured <= now+5:
+    if not now - 30 <= body.captured <= now + 5:
         raise HTTPException(400, "Only fresh snapshots can be shared; check the phone clock")
-    throttle("publish:" + user["id"], 180, 60)
+    throttle("publish:" + user["id"], 240, 60)
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
         owner(c, family, user)
         previous = c.execute("SELECT payload FROM latest WHERE family=?", (family,)).fetchone()
         old = json.loads(previous[0]) if previous else {}
-        if old.get("captured", 0) > body.captured:
+        old_seq = int(old.get("seq") or 0)
+        if body.stream_id and old.get("stream_id") == body.stream_id and body.seq is not None and body.seq <= old_seq:
+            raise HTTPException(409, "An older snapshot cannot replace a newer one")
+        if body.seq is None and old.get("captured", 0) > body.captured:
             raise HTTPException(409, "An older snapshot cannot replace a newer one")
         if body.heart_rate is None and body.alarm == "none" and old.get("alarm") in ("high", "low"):
             body.alarm = old["alarm"]
-        c.execute("INSERT OR REPLACE INTO latest VALUES(?,?,?)", (family, body.model_dump_json(), now))
+        payload = merge_snapshot(old, body, now)
+        payload["alarm"] = body.alarm
+        c.execute("INSERT OR REPLACE INTO latest VALUES(?,?,?)", (family, json.dumps(payload), now))
         if body.alarm != old.get("alarm", "none"):
-            # A missing reading cannot generate a recovery push.
             recovery = body.alarm == "none" and body.heart_rate is not None and old.get("alarm") in ("high", "low")
             restored = body.alarm == "none" and body.heart_rate is not None and old.get("alarm") == "sensor"
             if recovery or restored or body.alarm != "none":
                 c.execute("DELETE FROM pushes WHERE family=?", (family,))
                 c.execute("INSERT INTO pushes(id,family,kind,created) VALUES(?,?,?,?)", (secrets.token_hex(16), family, "recovery" if recovery else "sensor-restored" if restored else "sensor" if body.alarm == "sensor" else "attention", now))
-    return {"ok": True}
+    live = {key: value for key, value in payload.items() if key != "history"}
+    live["type"] = "live"
+    live["kind"] = "live"
+    HUB.emit(family, live)
+    return {"ok": True, "seq": payload["seq"], "server_received": now}
 
 
 @app.get("/families/{family}/latest")
@@ -393,10 +492,68 @@ def latest(family: str, user=Depends(require_user)):
         member(c, family, user)
         row = c.execute("SELECT * FROM latest WHERE family=?", (family,)).fetchone()
     if not row:
-        return {"fresh": False, "age": None, "snapshot": None}
+        return {"fresh": False, "age": None, "heart_rate_fresh": False, "oxygen_fresh": False, "snapshot": None}
     data = json.loads(row["payload"])
-    age = now - data["captured"]
-    return {"fresh": 0 <= age <= 30, "age": max(0, age), "snapshot": data if age <= 86400 else None}
+    hr_at = data.get("heart_rate_at") or data.get("captured")
+    o2_at = data.get("oxygen_at") or data.get("captured")
+    hr_age = now - hr_at if hr_at is not None else None
+    o2_age = now - o2_at if o2_at is not None else None
+    hr_fresh = data.get("heart_rate") is not None and hr_age is not None and -5 <= hr_age <= 30
+    o2_fresh = data.get("oxygen") is not None and o2_age is not None and -5 <= o2_age <= 30
+    age = hr_age if hr_age is not None else now - data["captured"]
+    return {
+        "fresh": hr_fresh,
+        "age": max(0, age) if age is not None else None,
+        "heart_rate_fresh": hr_fresh,
+        "oxygen_fresh": o2_fresh,
+        "snapshot": data if age is not None and age <= 86400 else None,
+    }
+
+
+@app.websocket("/families/{family}/live")
+async def live_socket(ws: WebSocket, family: str):
+    await ws.accept()
+    token = (ws.headers.get("authorization") or "").removeprefix("Bearer ").strip() or ws.query_params.get("token", "")
+    with db() as c:
+        row = c.execute(
+            "SELECT users.* FROM sessions JOIN users ON users.id=sessions.user_id WHERE token=? AND expires>? AND verified=1",
+            (digest(token), time.time()),
+        ).fetchone()
+    if row is None:
+        await ws.send_json({"type": "revoked"})
+        await ws.close(code=4401)
+        return
+    user = dict(row)
+    with db() as c:
+        allowed = c.execute(
+            "SELECT 1 FROM families WHERE id=? AND (owner=? OR EXISTS(SELECT 1 FROM members WHERE family=families.id AND user_id=?))",
+            (family, user["id"], user["id"]),
+        ).fetchone()
+    if not allowed:
+        await ws.send_json({"type": "revoked"})
+        await ws.close(code=4403)
+        return
+    queue = asyncio.Queue(maxsize=8)
+    HUB.add(family, user["id"], queue)
+    with db() as c:
+        stored = c.execute("SELECT payload FROM latest WHERE family=?", (family,)).fetchone()
+    snapshot = json.loads(stored[0]) if stored else None
+    await ws.send_json({"type": "snapshot", "kind": "snapshot", **(snapshot or {}), "snapshot": snapshot})
+    try:
+        while True:
+            try:
+                payload = await asyncio.wait_for(queue.get(), timeout=25)
+            except asyncio.TimeoutError:
+                await ws.send_json({"type": "ping"})
+                continue
+            await ws.send_json(payload)
+            if payload.get("type") == "revoked":
+                await ws.close(code=4403)
+                break
+    except Exception:
+        pass
+    finally:
+        HUB.remove(queue)
 
 
 @app.put("/devices")
