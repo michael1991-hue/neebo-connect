@@ -1519,10 +1519,10 @@ struct HistoryChartsView: View {
                     .font(.caption.bold()).foregroundStyle(lavender).monospacedDigit()
             }
             Label("Heart rate", systemImage: "heart.fill").foregroundStyle(coral).font(.headline)
-            metricChart(.heartRate, tint: coral).frame(height: 140)
+            metricChart(.heartRate, tint: coral).frame(minHeight: 80)
             if entries.contains(where: { $0.oxygenValue != nil }) {
                 Label("Oxygen", systemImage: "lungs.fill").foregroundStyle(teal).font(.headline)
-                metricChart(.oxygen, tint: teal).frame(height: 100)
+                metricChart(.oxygen, tint: teal).frame(minHeight: 80)
             }
         }
         .onChange(of: hours) { _ in selected = nil; windowEnd = nil }
@@ -1536,48 +1536,64 @@ struct HistoryChartsView: View {
     private func metricChart(_ metric: HistoryMetric, tint: Color) -> some View {
         let visible = entries.filter { domain.contains($0.time) }
         let points = HistoryChartPolicy.points(visible, metric: metric)
-        let values = points.map(\.value)
-        let pad = metric == .heartRate ? 8.0 : 3.0
-        let floor = metric == .oxygen ? 70.0 : 40.0
-        let ceiling = metric == .oxygen ? 100.0 : 220.0
-        let fallback = metric == .oxygen ? 90.0 : 80.0
-        let low = max(floor, (values.min() ?? fallback) - pad)
-        let high = min(ceiling, (values.max() ?? (fallback + 20)) + pad)
-        return Chart {
-            ForEach(points) { point in
-                LineMark(x: .value("Time", point.entry.time), y: .value("Value", point.value), series: .value("Continuous segment", point.series))
-                    .foregroundStyle(tint)
-                PointMark(x: .value("Time", point.entry.time), y: .value("Value", point.value))
-                    .symbolSize(8).foregroundStyle(tint)
-            }
-            if let entry = selected, let value = metric.value(entry), domain.contains(entry.time) {
-                RuleMark(x: .value("Selected time", entry.time)).foregroundStyle(lavender.opacity(0.6))
-                PointMark(x: .value("Selected time", entry.time), y: .value("Selected value", value)).foregroundStyle(lavender).symbolSize(45)
+        let yDomain = HistoryChartPolicy.yScale(
+            values: points.map(\.value),
+            floor: metric == .oxygen ? 70 : 40,
+            ceiling: metric == .oxygen ? 100 : 220,
+            pad: metric == .heartRate ? 8 : 3,
+            fallback: metric == .oxygen ? 90 : 80
+        )
+        return Group {
+            if points.count < 2 {
+                Text("Not enough readings in this window.")
+                    .font(.caption).foregroundStyle(caption)
+                    .frame(maxWidth: .infinity, minHeight: 80, alignment: .leading)
+            } else {
+                Chart {
+                    ForEach(points) { point in
+                        LineMark(x: .value("Time", point.entry.time), y: .value("Value", point.value), series: .value("Continuous segment", point.series))
+                            .foregroundStyle(tint)
+                    }
+                    if let entry = selected, let value = metric.value(entry), domain.contains(entry.time) {
+                        RuleMark(x: .value("Selected time", entry.time)).foregroundStyle(lavender.opacity(0.6))
+                        PointMark(x: .value("Selected time", entry.time), y: .value("Selected value", value)).foregroundStyle(lavender).symbolSize(45)
+                    }
+                }
+                .chartXScale(domain: domain)
+                .chartYScale(domain: yDomain)
+                .chartXAxis {
+                    AxisMarks(values: .automatic(desiredCount: 4)) { _ in
+                        AxisGridLine().foregroundStyle(caption.opacity(0.35))
+                        AxisValueLabel().foregroundStyle(caption)
+                    }
+                }
+                .chartYAxis {
+                    AxisMarks(values: .automatic(desiredCount: 4)) { _ in
+                        AxisGridLine().foregroundStyle(caption.opacity(0.35))
+                        AxisValueLabel().foregroundStyle(caption)
+                    }
+                }
+                .chartOverlay { proxy in
+                    GeometryReader { geometry in
+                        Rectangle().fill(.clear).contentShape(Rectangle())
+                            .gesture(
+                                DragGesture(minimumDistance: 8)
+                                    .onChanged { value in pick(at: value.location, proxy: proxy, geometry: geometry, visible: visible, metric: metric) }
+                            )
+                            .simultaneousGesture(
+                                SpatialTapGesture()
+                                    .onEnded { event in pick(at: event.location, proxy: proxy, geometry: geometry, visible: visible, metric: metric) }
+                            )
+                    }
+                }
             }
         }
-        .chartXScale(domain: domain)
-        .chartYScale(domain: low...max(low + 1, high))
-        .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: 4)) { _ in
-                AxisGridLine().foregroundStyle(caption.opacity(0.35))
-                AxisValueLabel().foregroundStyle(caption)
-            }
-        }
-        .chartYAxis {
-            AxisMarks(values: .automatic(desiredCount: 4)) { _ in
-                AxisGridLine().foregroundStyle(caption.opacity(0.35))
-                AxisValueLabel().foregroundStyle(caption)
-            }
-        }
-        .chartOverlay { proxy in
-            GeometryReader { geometry in
-                Rectangle().fill(.clear).contentShape(Rectangle()).gesture(DragGesture(minimumDistance: 0).onChanged { value in
-                    let frame = geometry[proxy.plotAreaFrame]
-                    guard frame.contains(value.location), let date: Date = proxy.value(atX: value.location.x - frame.minX) else { selected = nil; return }
-                    selected = HistoryChartPolicy.nearest(visible, at: date, metric: metric)
-                })
-            }
-        }
+    }
+    private func pick(at location: CGPoint, proxy: ChartProxy, geometry: GeometryProxy, visible: [SavedMeasurement], metric: HistoryMetric) {
+        let frame = geometry[proxy.plotAreaFrame]
+        guard frame.contains(location), let date: Date = proxy.value(atX: location.x - frame.minX) else { return }
+        let next = HistoryChartPolicy.nearest(visible, at: date, metric: metric)
+        if selected?.id != next?.id { selected = next }
     }
 }
 
@@ -1687,13 +1703,11 @@ struct ContentView: View {
     private var displayedHistory: [SavedMeasurement] {
         if family.viewingRemote, let samples = family.remote?.snapshot?.history, !samples.isEmpty {
             return samples.map {
-                SavedMeasurement(
+                SavedMeasurement.mapped(
                     time: Date(timeIntervalSince1970: $0.t),
-                    heartRate: $0.hr.map { Int($0.rounded()) },
-                    oxygen: $0.o2.map { Int($0.rounded()) },
-                    source: "family-share",
-                    exactHeartRate: $0.hr,
-                    exactOxygen: $0.o2
+                    heartRate: $0.hr,
+                    oxygen: $0.o2,
+                    source: "family-share"
                 )
             }
         }
@@ -2044,7 +2058,12 @@ struct ContentView: View {
             if wifi.remoteFresh, !wifi.trail.isEmpty { return wifi.trail }
             if family.viewingRemote, let samples = family.remote?.snapshot?.history, !samples.isEmpty {
                 return samples.map {
-                    SavedMeasurement(time: Date(timeIntervalSince1970: $0.t), heartRate: $0.hr.map { Int($0.rounded()) }, oxygen: $0.o2.map { Int($0.rounded()) }, source: "family-share", exactHeartRate: $0.hr, exactOxygen: $0.o2)
+                    SavedMeasurement.mapped(
+                        time: Date(timeIntervalSince1970: $0.t),
+                        heartRate: $0.hr,
+                        oxygen: $0.o2,
+                        source: "family-share"
+                    )
                 }
             }
             return monitor.liveTrace
@@ -2055,10 +2074,10 @@ struct ContentView: View {
     }
     private var fiveMinuteChart: some View {
         let points = HistoryChartPolicy.points(fiveMinuteReadings, metric: .heartRate)
-        let values = points.map(\.value)
-        let start = max(Date().addingTimeInterval(-120), (fiveMinuteReadings.map(\.time).min() ?? Date()).addingTimeInterval(-4))
-        let low = max(40, (values.min() ?? 80) - 8)
-        let high = (values.max() ?? 120) + 8
+        let now = Date()
+        let earliest = fiveMinuteReadings.map(\.time).min() ?? now.addingTimeInterval(-120)
+        let xDomain = HistoryChartPolicy.xScale(from: max(now.addingTimeInterval(-120), earliest.addingTimeInterval(-4)), to: max(now, earliest.addingTimeInterval(1)))
+        let yDomain = HistoryChartPolicy.yScale(values: points.map(\.value), floor: 40, ceiling: 220, pad: 8, fallback: 80)
         return VStack(alignment: .leading, spacing: 4) {
             Text("Live").font(.caption.weight(.bold)).foregroundStyle(muted)
             if points.count < 2 {
@@ -2069,12 +2088,10 @@ struct ContentView: View {
                     ForEach(points) { point in
                         LineMark(x: .value("Time", point.entry.time), y: .value("bpm", point.value), series: .value("Continuous segment", point.series))
                             .foregroundStyle(coral)
-                        PointMark(x: .value("Time", point.entry.time), y: .value("bpm", point.value))
-                            .symbolSize(8).foregroundStyle(coral)
                     }
                 }
-                .chartXScale(domain: start...Date())
-                .chartYScale(domain: low...high)
+                .chartXScale(domain: xDomain)
+                .chartYScale(domain: yDomain)
                 .chartXAxis {
                     AxisMarks(values: .automatic(desiredCount: 3)) { _ in
                         AxisGridLine().foregroundStyle(muted.opacity(0.25))
@@ -2088,7 +2105,7 @@ struct ContentView: View {
                     }
                 }
                 .frame(height: 78)
-                .accessibilityLabel("Heart-rate chart for the last five minutes")
+                .accessibilityLabel("Heart-rate chart for the last two minutes")
             }
         }
     }

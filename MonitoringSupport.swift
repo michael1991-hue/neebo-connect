@@ -132,7 +132,10 @@ enum BluetoothSignal {
 }
 
 enum HistoryMetric { case heartRate, oxygen
-    func value(_ entry: SavedMeasurement) -> Double? { self == .heartRate ? entry.heartRateValue : entry.oxygenValue }
+    func value(_ entry: SavedMeasurement) -> Double? {
+        guard let value = self == .heartRate ? entry.heartRateValue : entry.oxygenValue, value.isFinite else { return nil }
+        return value
+    }
 }
 struct HistoryChartPoint: Identifiable {
     var id: UUID { entry.id }
@@ -179,6 +182,61 @@ enum HistoryChartPolicy {
         let duration = min(Double(hours) * 3600, finish.timeIntervalSince(start))
         let boundedEnd = min(finish, max(start.addingTimeInterval(duration), end))
         return boundedEnd.addingTimeInterval(-duration)...boundedEnd
+    }
+    static func yScale(values: [Double], floor: Double, ceiling: Double, pad: Double, fallback: Double) -> ClosedRange<Double> {
+        let finite = values.filter(\.isFinite)
+        let low = max(floor, (finite.min() ?? fallback) - pad)
+        var high = min(ceiling, (finite.max() ?? (fallback + 20)) + pad)
+        if !low.isFinite { return floor...(floor + 1) }
+        if !high.isFinite || high <= low { high = low + 1 }
+        return low...high
+    }
+    static func xScale(from: Date, to: Date, minimumSpan: TimeInterval = 1) -> ClosedRange<Date> {
+        let start = min(from, to)
+        var end = max(from, to)
+        if end.timeIntervalSince(start) < minimumSpan { end = start.addingTimeInterval(minimumSpan) }
+        return start...end
+    }
+}
+
+extension SavedMeasurement {
+    static func mapped(time: Date, heartRate: Double?, oxygen: Double?, source: String) -> SavedMeasurement {
+        SavedMeasurement(
+            id: stableID(time: time, source: source, heartRate: heartRate, oxygen: oxygen),
+            time: time,
+            heartRate: heartRate.map { Int($0.rounded()) },
+            oxygen: oxygen.map { Int($0.rounded()) },
+            source: source,
+            exactHeartRate: heartRate,
+            exactOxygen: oxygen
+        )
+    }
+    static func stableID(time: Date, source: String, heartRate: Double?, oxygen: Double?) -> UUID {
+        let millis = UInt64(bitPattern: Int64((time.timeIntervalSince1970 * 1000).rounded()))
+        var sourceHash: UInt64 = 5381
+        for byte in source.utf8 { sourceHash = (sourceHash &* 33) &+ UInt64(byte) }
+        let hrBits = heartRate?.bitPattern ?? 0
+        let o2Bits = oxygen?.bitPattern ?? 0
+        let a = millis ^ sourceHash
+        let b = hrBits ^ o2Bits &* 16777619
+        return UUID(uuid: (
+            UInt8(truncatingIfNeeded: a >> 56),
+            UInt8(truncatingIfNeeded: a >> 48),
+            UInt8(truncatingIfNeeded: a >> 40),
+            UInt8(truncatingIfNeeded: a >> 32),
+            UInt8(truncatingIfNeeded: a >> 24),
+            UInt8(truncatingIfNeeded: a >> 16),
+            UInt8((UInt8(truncatingIfNeeded: a >> 8) & 0x0f) | 0x40),
+            UInt8(truncatingIfNeeded: a),
+            UInt8((UInt8(truncatingIfNeeded: b >> 56) & 0x3f) | 0x80),
+            UInt8(truncatingIfNeeded: b >> 48),
+            UInt8(truncatingIfNeeded: b >> 40),
+            UInt8(truncatingIfNeeded: b >> 32),
+            UInt8(truncatingIfNeeded: b >> 24),
+            UInt8(truncatingIfNeeded: b >> 16),
+            UInt8(truncatingIfNeeded: b >> 8),
+            UInt8(truncatingIfNeeded: b)
+        ))
     }
 }
 
@@ -366,8 +424,14 @@ final class DailyHistoryStore {
         var result: [SavedMeasurement] = []
         for offset in stride(from: 0, to: entries.count, by: bucketSize) {
             let bucket = Array(entries[offset..<min(offset + bucketSize, entries.count)])
-            let hr = bucket.filter { $0.heartRateValue != nil }, oxygen = bucket.filter { $0.oxygenValue != nil }
-            let chosen = [hr.min { $0.heartRateValue! < $1.heartRateValue! }, hr.max { $0.heartRateValue! < $1.heartRateValue! }, oxygen.min { $0.oxygenValue! < $1.oxygenValue! }, oxygen.max { $0.oxygenValue! < $1.oxygenValue! }].compactMap { $0 }
+            let hr = bucket.filter { ($0.heartRateValue ?? .nan).isFinite }
+            let oxygen = bucket.filter { ($0.oxygenValue ?? .nan).isFinite }
+            let chosen = [
+                hr.min { ($0.heartRateValue ?? 0) < ($1.heartRateValue ?? 0) },
+                hr.max { ($0.heartRateValue ?? 0) < ($1.heartRateValue ?? 0) },
+                oxygen.min { ($0.oxygenValue ?? 0) < ($1.oxygenValue ?? 0) },
+                oxygen.max { ($0.oxygenValue ?? 0) < ($1.oxygenValue ?? 0) }
+            ].compactMap { $0 }
             var seen = Set<UUID>()
             result.append(contentsOf: chosen.sorted { $0.time < $1.time }.filter { seen.insert($0.id).inserted })
         }
