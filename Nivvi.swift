@@ -1713,8 +1713,9 @@ struct ContentView: View {
     private var mode: NivviMode { manualMode ?? automaticMode }
     private var ink: Color { mode == .night ? .white : Color(red: 0.10, green: 0.14, blue: 0.18) }
     private var muted: Color { mode == .night ? Color.white.opacity(0.82) : Color(red: 0.22, green: 0.28, blue: 0.30) }
-    private var cardFill: Color { mode == .night ? Color.white.opacity(0.14) : Color.white }
+    private var cardFill: Color { mode == .night ? Color(red: 0.07, green: 0.16, blue: 0.26) : Color.white }
     private var accentMint: Color { mode == .night ? teal : Color(red: 0.02, green: 0.42, blue: 0.40) }
+    private var switchOn: Color { teal }
     private var stamp: Color { mode == .night ? lavender : Color(red: 0.32, green: 0.28, blue: 0.58) }
     private var connected: Bool { monitor.connection.isConnected }
     private var favouriteIDs: Set<String> { Set(favoriteDeviceIDs.split(separator: ",").map(String.init)) }
@@ -1759,15 +1760,6 @@ struct ContentView: View {
         if let remote = family.liveOxygen { return remote }
         let value = monitor.pulseOximeterOxygen ?? monitor.customOxygenCandidate.map(Double.init)
         return value.map { "\(MetricText.number($0))%" } ?? "No reading"
-    }
-    private var liveMeasurementNote: String {
-        if family.viewingRemote { return "From the nursery iPhone over the internet" }
-        if monitor.wearableCharging { return "Wearable on charge · not a live pulse" }
-        if monitor.staleHeartRateDetected { return "Repeated value · check sensor" }
-        if monitor.staleHeartRateDetected { return "Stale · last reading is not live" }
-        if monitor.verifiedHeartRate != nil || monitor.pulseOximeterRate != nil || monitor.pulseOximeterOxygen != nil { return "Standard Bluetooth value" }
-        if monitor.customHeartRateCandidate != nil || monitor.customOxygenCandidate != nil { return "Bluetooth value received" }
-        return monitor.profile == .heartRate ? "Waiting for heart-rate data" : "Waiting for device data"
     }
     private var displayedHistory: [SavedMeasurement] {
         var rows = monitor.history
@@ -1914,11 +1906,13 @@ struct ContentView: View {
                 .coordinateSpace(name: "nivvi-sky")
                 bottomBar
             }
+            .zIndex(1)
         }
         .preferredColorScheme(mode == .night ? .dark : .light)
         .sheet(isPresented: $showSettings) {
             NavigationStack {
                 ScrollView { settings.padding(20) }
+                    .background((mode == .night ? Color(red: 0.02, green: 0.13, blue: 0.23) : Color(red: 0.93, green: 0.95, blue: 0.94)).ignoresSafeArea())
                     .navigationTitle("Settings")
                     .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showSettings = false } } }
             }
@@ -2040,28 +2034,21 @@ struct ContentView: View {
         }
     }
 
+    @ViewBuilder
     private var header: some View {
+        if tab == 0 { liveHeader } else { compactHeader }
+    }
+
+    private var liveHeader: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                ZStack {
-                    Circle().fill(avatarTint.opacity(0.35)).frame(width: 52, height: 52)
-                    Image(systemName: avatarSymbolName).font(.title2.weight(.semibold)).foregroundStyle(avatarTint)
-                }
-                .accessibilityLabel("Child avatar")
+                avatarBadge(size: 52, symbolSize: .title2)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(Calendar.current.component(.hour, from: Date()) >= 12 && mode == .day ? "Hello," : mode.greeting).font(.subheadline.weight(.semibold)).foregroundStyle(muted)
                     Text(displayName).font(.system(size: 34, weight: .bold, design: .rounded)).foregroundStyle(ink)
                 }
                 Spacer()
-                Button { showSettings = true } label: {
-                    Image(systemName: "gearshape.fill").font(.title3).foregroundStyle(ink)
-                        .frame(width: 48, height: 48).background(cardFill).clipShape(Circle())
-                }
-                .accessibilityLabel("Settings")
-                Button { manualMode = manualMode == nil ? (mode == .night ? .day : .night) : nil } label: {
-                    Image(systemName: mode.symbol).font(.title3).foregroundStyle(mode == .night ? lavender : Color(red: 0.95, green: 0.72, blue: 0.18))
-                        .frame(width: 48, height: 48).background(cardFill).clipShape(Circle())
-                }
+                headerButtons
             }
             HStack(spacing: 10) {
                 Circle().fill(monitor.wearableCharging ? Color.orange : (monitor.connection == .receiving || wifi.remoteFresh || family.viewingRemote ? teal : (connected ? .orange : .gray))).frame(width: 11, height: 11)
@@ -2072,6 +2059,48 @@ struct ContentView: View {
             }
             if !ageText.isEmpty { Text(childGender == "Prefer not to say" ? ageText : "\(ageText) · \(childGender)").font(.caption).foregroundStyle(muted) }
         }.padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 8)
+    }
+
+    private var compactHeader: some View {
+        HStack(spacing: 12) {
+            avatarBadge(size: 36, symbolSize: .subheadline)
+            Text(compactTitle).font(.title2.bold()).foregroundStyle(ink)
+            Spacer(minLength: 8)
+            headerButtons
+        }
+        .padding(.horizontal, 20).padding(.top, 8).padding(.bottom, 6)
+    }
+
+    private var compactTitle: String {
+        switch tab {
+        case 1: return "History"
+        case 2: return "Alerts"
+        case 3: return "Device"
+        default: return displayName
+        }
+    }
+
+    private var headerButtons: some View {
+        HStack(spacing: 8) {
+            Button { showSettings = true } label: {
+                Image(systemName: "gearshape.fill").font(.title3).foregroundStyle(ink)
+                    .frame(width: 44, height: 44).background(cardFill).clipShape(Circle())
+            }
+            .accessibilityLabel("Settings")
+            Button { manualMode = manualMode == nil ? (mode == .night ? .day : .night) : nil } label: {
+                Image(systemName: mode.symbol).font(.title3).foregroundStyle(mode == .night ? lavender : Color(red: 0.95, green: 0.72, blue: 0.18))
+                    .frame(width: 44, height: 44).background(cardFill).clipShape(Circle())
+            }
+            .accessibilityLabel("Day or night mode")
+        }
+    }
+
+    private func avatarBadge(size: CGFloat, symbolSize: Font) -> some View {
+        ZStack {
+            Circle().fill(avatarTint.opacity(0.35)).frame(width: size, height: size)
+            Image(systemName: avatarSymbolName).font(symbolSize).fontWeight(.semibold).foregroundStyle(avatarTint)
+        }
+        .accessibilityLabel("Child avatar")
     }
 
     private var alarmBanner: some View {
@@ -2143,7 +2172,6 @@ struct ContentView: View {
                 } }
             }
             if !mirroringNursery { readinessPanel }
-            if !mirroringNursery && !monitor.status.isEmpty { Text(monitor.status).font(.caption).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true) }
         }
     }
 
@@ -2253,9 +2281,6 @@ struct ContentView: View {
                 } else if family.viewingRemote {
                     Text(family.statusLine).font(.caption).foregroundStyle(family.linkState == .live ? accentMint : coral)
                 }
-                if !mirroringNursery {
-                    Text(liveMeasurementNote).font(.caption).foregroundStyle(muted)
-                }
                 fiveMinuteChart
                 if let note = latestNote {
                     VStack(alignment: .leading, spacing: 2) {
@@ -2302,15 +2327,14 @@ struct ContentView: View {
         } }
     }
     private var history: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("History").font(.largeTitle.bold()).foregroundStyle(ink)
-                Spacer()
                 DatePicker("Day", selection: Binding(get: { monitor.selectedHistoryDay }, set: {
                     historySpan = 1
                     monitor.selectHistoryDay($0)
                 }), in: ...Date(), displayedComponents: .date)
                 .labelsHidden()
+                Spacer()
                 Button { showParentNote = true } label: { Image(systemName: "plus") }
                     .buttonStyle(.bordered)
                     .accessibilityLabel("Add note")
@@ -2334,7 +2358,7 @@ struct ContentView: View {
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
                     ForEach(Array(displayedHistory.suffix(15).reversed())) { sample in
                         VStack(spacing: 4) {
-                            Text(sample.time.formatted(date: .omitted, time: .shortened)).font(.caption2.monospacedDigit().weight(.semibold)).foregroundStyle(muted)
+                            Text(readingClock(sample.time)).font(.caption2.monospacedDigit().weight(.semibold)).foregroundStyle(muted)
                             Text(sample.heartRateValue.map { MetricText.number($0) } ?? "—").font(.title3.bold().monospacedDigit()).foregroundStyle(coral)
                             Text("bpm").font(.caption2.weight(.semibold)).foregroundStyle(muted)
                             if let o2 = sample.oxygenValue {
@@ -2385,15 +2409,17 @@ struct ContentView: View {
     }
     private func timestamp(_ time: Date, tint: Color) -> some View {
         HStack(alignment: .firstTextBaseline) {
-            Text(time.formatted(date: .omitted, time: .standard)).font(.system(size: 24, weight: .bold, design: .rounded)).monospacedDigit().foregroundStyle(tint)
+            Text(readingClock(time)).font(.system(size: 24, weight: .bold, design: .rounded)).monospacedDigit().foregroundStyle(tint)
             Spacer()
             Text(time.formatted(date: .abbreviated, time: .omitted)).font(.caption.weight(.bold)).foregroundStyle(muted)
         }
     }
+    private func readingClock(_ time: Date) -> String {
+        time.formatted(Date.FormatStyle().hour().minute().second())
+    }
 
     private var alerts: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Alerts").font(.largeTitle.bold()).foregroundStyle(ink)
+        VStack(alignment: .leading, spacing: 12) {
             Picker("Filter", selection: $alertFilter) {
                 Text("All").tag("All")
                 Text("Heart rate").tag("Heart rate")
@@ -2418,7 +2444,12 @@ struct ContentView: View {
             if let bpm = event.heartRate { Text("\(bpm) bpm").font(.title3.bold()).foregroundStyle(tint) }
         }
         .padding(18).frame(maxWidth: .infinity, alignment: .leading)
-        .background(restored ? Color.green.opacity(0.16) : cardFill)
+        .background(
+            ZStack {
+                cardFill
+                if restored { Color.green.opacity(mode == .night ? 0.22 : 0.16) }
+            }
+        )
         .clipShape(RoundedRectangle(cornerRadius: 22))
         .overlay(RoundedRectangle(cornerRadius: 22).stroke(restored ? Color.green.opacity(0.55) : coral.opacity(0.28), lineWidth: 1))
     }
@@ -2426,7 +2457,7 @@ struct ContentView: View {
         let lost = event.title.localizedCaseInsensitiveContains("lost") || event.title.localizedCaseInsensitiveContains("unavailable") || event.title.localizedCaseInsensitiveContains("disconnected")
         let tint: Color = lost ? coral : teal
         return HStack(alignment: .center, spacing: 12) {
-            Image(systemName: lost ? "wifi.slash" : "antenna.radiowaves.left.and.right")
+            Image(systemName: lost ? "antenna.radiowaves.left.and.right.slash" : "wave.3.right")
                 .foregroundStyle(tint)
             VStack(alignment: .leading, spacing: 2) {
                 Text(event.title).font(.subheadline.weight(.semibold)).foregroundStyle(ink)
@@ -2452,7 +2483,6 @@ struct ContentView: View {
     }
     private var device: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("Device").font(.largeTitle.bold())
             panel { HStack(spacing: 14) { Image(systemName: "wave.3.right.circle.fill").font(.largeTitle).foregroundStyle(teal); VStack(alignment: .leading) { Text("Bluetooth heart-rate device").font(.headline); Text(monitor.connection.label).foregroundStyle(connected ? accentMint : muted); if monitor.connection.isConnected { Text("Signal: \(BluetoothSignal.label(monitor.signalRSSI))").font(.caption).foregroundStyle(muted) } }; Spacer() } }
             panel {
                 VStack(alignment: .leading, spacing: 8) {
@@ -2531,13 +2561,13 @@ struct ContentView: View {
         } }
         panel { VStack(alignment: .leading, spacing: 10) {
             Text("Sky").font(.headline)
-            Toggle("Animated wallpaper", isOn: $atmosphereEnabled).tint(teal)
+            Toggle("Animated wallpaper", isOn: $atmosphereEnabled).tint(switchOn)
             Text("Soft stars at night and distant birds by day. Follows Day/Night at the top of Home. Reduce Motion turns the animation off. It pauses when Nivvi is in the background; monitoring is unchanged.")
                 .font(.caption).foregroundStyle(muted)
         } }
         panel { DisclosureGroup("Second iPhone on this Wi‑Fi") {
             VStack(alignment: .leading, spacing: 10) {
-                Toggle("Share from this iPhone", isOn: Binding(get: { wifi.hosting }, set: { wifi.setHosting($0) })).tint(teal)
+                Toggle("Share from this iPhone", isOn: Binding(get: { wifi.hosting }, set: { wifi.setHosting($0) })).tint(switchOn)
                 if wifi.hosting {
                     Text(wifi.pin).font(.system(size: 34, weight: .bold, design: .rounded)).monospacedDigit()
                     Button("Copy code") { UIPasteboard.general.string = wifi.pin }
@@ -2545,8 +2575,8 @@ struct ContentView: View {
                 TextField("Downstairs code", text: Binding(get: { wifi.joinPin }, set: { wifi.setJoinPin($0) }))
                     .keyboardType(.numberPad)
                     .font(.title3.monospacedDigit())
-                Toggle("Follow the nursery iPhone", isOn: Binding(get: { wifi.following }, set: { wifi.setFollowing($0) })).tint(lavender)
-                Toggle("Play nursery alerts here", isOn: $wifi.playAlerts).tint(coral)
+                Toggle("Follow the nursery iPhone", isOn: Binding(get: { wifi.following }, set: { wifi.setFollowing($0) })).tint(switchOn)
+                Toggle("Play nursery alerts here", isOn: $wifi.playAlerts).tint(switchOn)
                 Text(wifi.status).font(.caption).foregroundStyle(muted)
             }.padding(.top, 8)
         } }
@@ -2565,16 +2595,16 @@ struct ContentView: View {
             DisclosureGroup("Adjust limits") { VStack(alignment: .leading, spacing: 12) {
             if monitor.profile == .custom {
                 Text("Mapped readings require independent checking before enabling alarms.").font(.caption)
-                Toggle("Enable alarms for mapped readings", isOn: $monitor.experimentalCustomAlarms).tint(lavender)
+                Toggle("Enable alarms for mapped readings", isOn: $monitor.experimentalCustomAlarms).tint(switchOn)
             }
-            Toggle("High limit alarm", isOn: $monitor.alarmSettings.highEnabled).tint(coral)
+            Toggle("High limit alarm", isOn: $monitor.alarmSettings.highEnabled).tint(switchOn)
                 .onChange(of: monitor.alarmSettings.highEnabled) { enabled in if enabled { monitor.requestNotificationPermission() } }
             HStack {
                 Text("High limit (bpm)")
                 TextField("Enter limit", value: $monitor.alarmSettings.highThreshold, format: .number)
                     .keyboardType(.numberPad).multilineTextAlignment(.trailing).focused($editingLimit)
             }
-            Toggle("Low limit alarm", isOn: $monitor.alarmSettings.lowEnabled).tint(coral)
+            Toggle("Low limit alarm", isOn: $monitor.alarmSettings.lowEnabled).tint(switchOn)
                 .onChange(of: monitor.alarmSettings.lowEnabled) { enabled in if enabled { monitor.requestNotificationPermission() } }
             HStack {
                 Text("Low limit (bpm)")
@@ -2588,7 +2618,10 @@ struct ContentView: View {
                 Text("Changes save automatically.").font(.caption).foregroundStyle(.secondary)
             }.padding(.top, 12) }
         } }
-        panel { DisclosureGroup("Sounds and notifications") { VStack(alignment: .leading, spacing: 12) {
+        panel { VStack(alignment: .leading, spacing: 12) {
+            Text("Sounds and notifications").font(.headline)
+            Text("Siren plays in the app even on Silent. Lock-screen banners can still be quiet in Silent or Focus. Allow Time Sensitive for Nivvi.")
+                .font(.caption).foregroundStyle(muted)
             Button(monitor.testingSiren ? "Stop test siren" : "Test siren for 5 seconds") { monitor.testSiren() }
                 .buttonStyle(.borderedProminent).tint(coral).disabled(monitor.criticalAlertActive)
             Button("Preview recovery chime") { monitor.testRecoverySound() }
@@ -2596,9 +2629,11 @@ struct ContentView: View {
             Button("Test notification in 10 seconds") { monitor.testNotification() }.buttonStyle(.bordered)
             Text(monitor.soundStatus).font(.caption)
             Text(monitor.notificationStatus).font(.caption)
-            Text("Low alarms fire strictly below the low limit; high alarms fire strictly above the high limit. The alarm self-clears after a fresh in-range reading. The looping siren plays as media audio so the Silent switch does not mute it while Nivvi can play sound. Lock-screen notification sounds still follow Silent and Focus — Apple does not let this app override those without Critical Alerts (not granted). Turn media volume up. In iPhone Settings → Notifications → Nivvi, allow Time Sensitive.")
-                .font(.caption).foregroundStyle(muted)
-        }.padding(.top, 12) } }
+            DisclosureGroup("How alerts work") {
+                Text("Low alarms fire strictly below the low limit; high alarms fire strictly above the high limit after the dwell time you set. The alarm self-clears after a fresh in-range reading. The looping siren plays as media audio so the Silent switch does not mute it while Nivvi can play sound. Lock-screen notification sounds still follow Silent and Focus — Apple does not let this app override those without Critical Alerts (not granted). Turn media volume up. In iPhone Settings → Notifications → Nivvi, allow Time Sensitive.")
+                    .font(.caption).foregroundStyle(muted).padding(.top, 8)
+            }
+        } }
         Group {
         panel { DisclosureGroup("FAQ") { VStack(alignment: .leading, spacing: 12) {
             DisclosureGroup("Why does it say connected but waiting?") {
@@ -2682,30 +2717,52 @@ struct ContentView: View {
         return "Updated \(seconds)s ago"
     }
     private var readinessPanel: some View {
-        panel { DisclosureGroup("Monitoring readiness") {
-            VStack(alignment: .leading, spacing: 10) {
-                readinessRow("Bluetooth", monitor.bluetoothReady ? "On" : "Unavailable", monitor.bluetoothReady)
-                readinessRow("Device", connected ? "Connected" : "Not connected", connected)
-                Text("Background: " + monitor.backgroundDeliverySummary).font(.caption.bold())
-                if let time = monitor.lastBackgroundSave {
-                    Text("Last background history save: \(time.formatted(date: .omitted, time: .standard))").font(.caption)
+        panel {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                let summary = readinessSummary(at: context.date)
+                DisclosureGroup {
+                    VStack(alignment: .leading, spacing: 10) {
+                        readinessRow("Bluetooth", monitor.bluetoothReady ? "On" : "Unavailable", monitor.bluetoothReady)
+                        readinessRow("Device", connected ? "Connected" : "Not connected", connected)
+                        Text("Background: " + monitor.backgroundDeliverySummary).font(.caption.bold())
+                        if let time = monitor.lastBackgroundSave {
+                            Text("Last background history save: \(time.formatted(date: .omitted, time: .standard))").font(.caption)
+                        }
+                        Text("Switch apps or lock the phone normally. Swiping Nivvi away stops background monitoring until reopened. Polling-only devices may not supply readings while iOS suspends the app.").font(.caption)
+                        let fresh = connected && heartRateDisplay != "No reading" && !monitor.staleHeartRateDetected &&
+                            monitor.lastHeartRateUpdate.map { (0...30).contains(context.date.timeIntervalSince($0)) } == true
+                        readinessRow("Heart rate", fresh ? "Fresh data arriving" : "Check readings", fresh)
+                        readinessRow("Notifications", monitor.notificationSoundAllowed ? "Sound permitted" : "Check permission", monitor.notificationSoundAllowed)
+                        let alarmsEnabled = (monitor.alarmSettings.highEnabled || monitor.alarmSettings.lowEnabled) &&
+                            (monitor.profile.hasStandardHeartRate || monitor.profile.hasPulseOximeter || (monitor.profile == .custom && monitor.experimentalCustomAlarms))
+                        readinessRow("Rate alerts", alarmsEnabled ? "Configured" : "Off or unavailable", alarmsEnabled)
+                        Text("The in-app siren ignores the Silent switch. Lock-screen banners can still be quiet. Enable Time Sensitive for Nivvi. Critical Alerts are not in this build.").font(.caption)
+                        Button("Guided alarm check") { showReadinessTest = true }.buttonStyle(.bordered)
+                        Text("History saves every 30 seconds while data arrives. Alarms check incoming usable readings.").font(.caption)
+                    }.padding(.top, 8)
+                } label: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Monitoring readiness").font(.headline)
+                        Text(summary.text)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(summary.ready ? accentMint : coral)
+                    }
                 }
-                Text("Switch apps or lock the phone normally. Swiping Nivvi away stops background monitoring until reopened. Polling-only devices may not supply readings while iOS suspends the app.").font(.caption)
-                TimelineView(.periodic(from: .now, by: 1)) { context in
-                    let fresh = connected && heartRateDisplay != "No reading" && !monitor.staleHeartRateDetected &&
-                        monitor.lastHeartRateUpdate.map { (0...30).contains(context.date.timeIntervalSince($0)) } == true
-                    readinessRow("Heart rate", fresh ? "Fresh data arriving" : "Check readings", fresh)
-                }
-                readinessRow("Notifications", monitor.notificationSoundAllowed ? "Sound permitted" : "Check permission", monitor.notificationSoundAllowed)
-                let alarmsEnabled = (monitor.alarmSettings.highEnabled || monitor.alarmSettings.lowEnabled) &&
-                    (monitor.profile.hasStandardHeartRate || monitor.profile.hasPulseOximeter || (monitor.profile == .custom && monitor.experimentalCustomAlarms))
-                readinessRow("Rate alerts", alarmsEnabled ? "Configured" : "Off or unavailable", alarmsEnabled)
-                Text("The in-app siren ignores the Silent switch. Lock-screen banners can still be quiet. Enable Time Sensitive for Nivvi. Critical Alerts are not in this build.").font(.caption)
-                Button("Guided alarm check") { showReadinessTest = true }.buttonStyle(.bordered)
-                Text("History saves every 30 seconds while data arrives. Alarms check incoming usable readings.").font(.caption)
-            }.padding(.top, 8)
-        } }
+            }
+        }
         .sheet(isPresented: $showReadinessTest) { AlarmReadinessView(monitor: monitor) }
+    }
+    private func readinessSummary(at now: Date) -> (text: String, ready: Bool) {
+        if !monitor.bluetoothReady { return ("Check Bluetooth", false) }
+        if !connected { return ("Check connection", false) }
+        if !monitor.notificationSoundAllowed { return ("Check notification settings", false) }
+        let alarmsEnabled = (monitor.alarmSettings.highEnabled || monitor.alarmSettings.lowEnabled) &&
+            (monitor.profile.hasStandardHeartRate || monitor.profile.hasPulseOximeter || (monitor.profile == .custom && monitor.experimentalCustomAlarms))
+        if !alarmsEnabled { return ("Alerts off", false) }
+        let fresh = heartRateDisplay != "No reading" && !monitor.staleHeartRateDetected &&
+            monitor.lastHeartRateUpdate.map { (0...30).contains(now.timeIntervalSince($0)) } == true
+        if !fresh { return ("Check readings", false) }
+        return ("Alerts ready", true)
     }
     private func readinessRow(_ title: String, _ detail: String, _ ready: Bool) -> some View {
         HStack { Image(systemName: ready ? "checkmark.circle.fill" : "exclamationmark.circle").foregroundStyle(ready ? teal : coral)
