@@ -4,8 +4,10 @@ import ActivityKit
 enum NivviLiveActivityBridge {
     private static var lastPush = Date.distantPast
     static var lastTitle = "Nivvi"
+    static var preferLocalBluetooth = false
 
     static func syncShare(heartRate: String, oxygen: String, linked: Bool, status: String) {
+        guard !preferLocalBluetooth else { return }
         sync(
             title: lastTitle,
             heartRate: heartRate,

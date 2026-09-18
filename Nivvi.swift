@@ -1946,12 +1946,17 @@ struct ContentView: View {
     }
     private func syncLiveActivity() {
         let ble = monitor.connection.isConnected || monitor.connection == .reconnecting
-        let wifiLive = wifi.following
-        let familyLive = family.viewingRemote
+        NivviLiveActivityBridge.preferLocalBluetooth = ble
+        let wifiLive = wifi.following && !ble
+        let familyLive = family.viewingRemote && !ble
         let connection: String
         let signal: String
         let hint: String
-        if wifiLive {
+        if ble {
+            connection = monitor.connection.label
+            signal = BluetoothSignal.label(monitor.signalRSSI)
+            hint = nurseryHint
+        } else if wifiLive {
             connection = wifi.remoteFresh ? "Shared over Wi‑Fi" : wifi.status
             signal = "Wi-Fi"
             hint = wifi.remoteFresh ? "" : wifi.status
@@ -1962,7 +1967,7 @@ struct ContentView: View {
         } else {
             connection = monitor.connection.label
             signal = BluetoothSignal.label(monitor.signalRSSI)
-            hint = ble ? nurseryHint : ""
+            hint = ""
         }
         NivviLiveActivityBridge.sync(
             title: displayName,
@@ -1971,7 +1976,7 @@ struct ContentView: View {
             connection: connection,
             signal: signal,
             nurseryHint: hint,
-            monitoring: ble || wifiLive || familyLive
+            monitoring: ble || wifi.following || family.viewingRemote
         )
     }
     private func publishWiFiShare() {
