@@ -319,6 +319,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         didSet { UserDefaults.standard.set(selectedRelief.rawValue, forKey: "nivvi.sound.relief") }
     }
     @Published var experimentalCustomAlarms = false { didSet { alarmSettings.experimentalCustomEnabled = experimentalCustomAlarms } }
+    @Published var testingSiren = false
     @Published private(set) var lowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
     private var backgroundTask = UIBackgroundTaskIdentifier.invalid
     private var alarmEngine = RateAlarmEngine()
