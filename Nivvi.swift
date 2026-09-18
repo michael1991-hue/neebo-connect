@@ -422,6 +422,23 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             acknowledged: alarmAcknowledged
         )
         Task { @MainActor in FamilyRelay.shared.capture(snapshot) }
+        pushLocalShare()
+    }
+    private func pushLocalShare() {
+        guard WiFiRelay.shared.hosting else { return }
+        let hr = pulseOximeterRate ?? verifiedHeartRate.map(Double.init) ?? customHeartRateCandidate.map(Double.init)
+        let ox = pulseOximeterOxygen ?? verifiedOxygen.map(Double.init) ?? customOxygenCandidate.map(Double.init)
+        WiFiRelay.shared.publish(
+            heartRate: hr.map { "\(MetricText.number($0)) bpm" } ?? "No reading",
+            oxygen: ox.map { "\(MetricText.number($0))%" } ?? "No reading",
+            connection: connection.label,
+            alarm: alarmKind.map { $0 == .high ? "high" : "low" } ?? (staleHeartRateDetected ? "sensor" : "none"),
+            charging: wearableCharging,
+            battery: battery,
+            history: [],
+            acknowledged: alarmAcknowledged
+        )
+    }
     }
     private func saveMeasurement(heartRate: Int?, oxygen: Int?, source: String, exactHeartRate: Double? = nil, exactOxygen: Double? = nil, segment: UUID? = nil) {
         let entry = SavedMeasurement(time: Date(), heartRate: heartRate, oxygen: oxygen, source: source, continuityID: segment ?? continuityID, exactHeartRate: exactHeartRate, exactOxygen: exactOxygen)
@@ -610,6 +627,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         cancelConnectionLossNotice()
         connection = .receiving
         status = "Receiving fresh heart-rate readings."
+        pushLocalShare()
     }
     private func expireMeasurements() {
         defer { publishFamilySnapshot() }
@@ -1192,6 +1210,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
                 else { alarmEngine.interrupt() }
             } else { measurementTime = nil; alarmEngine.interrupt() }
             if let percent = candidate.battery { applyBatteryPercent(percent, fromStandard: false) }
+            if candidate.oxygen != nil { pushLocalShare() }
         }
         if serviceID == "1822", uuid == "2A5E" || uuid == "2A5F" { receivePulseOximetry(data, characteristic: uuid) }
         if let i = readings.firstIndex(where: { $0.id == key }) {
@@ -1877,7 +1896,7 @@ struct ContentView: View {
             alarm: shareAlarmKind,
             charging: monitor.wearableCharging,
             battery: monitor.battery,
-            history: monitor.liveTrace.suffix(240).map { FamilySample(t: $0.time.timeIntervalSince1970, hr: $0.heartRateValue, o2: $0.oxygenValue) },
+            history: [],
             acknowledged: monitor.alarmAcknowledged
         )
     }

@@ -45,6 +45,7 @@ final class WiFiRelay: ObservableObject {
     private var lastBattery = "—"
     private var lastHistory: [FamilySample] = []
     private var lastAcknowledged = false
+    private var lastHistorySent: Date?
 
     init() {
         if let saved = UserDefaults.standard.string(forKey: "nivvi.wifi.pin"), saved.count == 4 {
@@ -155,7 +156,9 @@ final class WiFiRelay: ObservableObject {
     }
 
     private func emit() {
-        let snap = WiFiSnapshot(pin: pin, heartRate: lastHR, oxygen: lastO2, connection: lastConnection, captured: Date().timeIntervalSince1970, alarm: lastAlarm, charging: lastCharging, battery: lastBattery, history: lastHistory, acknowledged: lastAcknowledged)
+        let sendHistory = lastHistorySent.map { Date().timeIntervalSince($0) >= 15 } ?? !lastHistory.isEmpty
+        let snap = WiFiSnapshot(pin: pin, heartRate: lastHR, oxygen: lastO2, connection: lastConnection, captured: Date().timeIntervalSince1970, alarm: lastAlarm, charging: lastCharging, battery: lastBattery, history: sendHistory ? lastHistory : nil, acknowledged: lastAcknowledged)
+        if sendHistory { lastHistorySent = Date() }
         payload = (try? JSONEncoder().encode(snap)) ?? Data()
         payload.append(10)
         flush()
