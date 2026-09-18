@@ -923,8 +923,10 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     }
 
     func refreshFiles() {
-        files = ((try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? [])
+        let logs = ((try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? [])
             .filter { $0.pathExtension == "jsonl" }.sorted { $0.lastPathComponent > $1.lastPathComponent }
+        files = Array(logs.prefix(1))
+        for stale in logs.dropFirst(1) { try? FileManager.default.removeItem(at: stale) }
     }
     func log(_ event: [String: String]) {
         if let end = captureEndsAt, Date() >= end { closeCaptureLog() }
@@ -2519,8 +2521,7 @@ struct ContentView: View {
         }
     }
     private var device: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            panel { HStack(spacing: 14) { Image(systemName: "wave.3.right.circle.fill").font(.largeTitle).foregroundStyle(teal); VStack(alignment: .leading) { Text("Bluetooth heart-rate device").font(.headline); Text(monitor.connection.label).foregroundStyle(connected ? accentMint : muted); if monitor.connection.isConnected { Text("Signal: \(BluetoothSignal.label(monitor.signalRSSI))").font(.caption).foregroundStyle(muted) } }; Spacer() } }
+        VStack(alignment: .leading, spacing: 16) {
             panel {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("CONNECTED MONITOR").font(.caption.bold()).foregroundStyle(muted)
@@ -2531,50 +2532,39 @@ struct ContentView: View {
                             .frame(width: 8, height: 8)
                         Text(monitor.connection.label).foregroundStyle(connected ? accentMint : muted)
                     }
+                    if monitor.connection.isConnected {
+                        Text("Signal: \(BluetoothSignal.label(monitor.signalRSSI))").font(.caption).foregroundStyle(muted)
+                    }
                     Text(monitor.profile.readingSummary).font(.subheadline)
                 }
             }
             HStack(spacing: 14) { metric("Battery", batteryLabel); metric("Mode", mode.rawValue) }
             Button { monitor.active ? monitor.stop() : monitor.scan() } label: { Text(monitor.active ? "Disconnect" : (monitor.isScanning ? "Scanning…" : "Scan for devices")).font(.headline).frame(maxWidth: .infinity).padding(17) }.buttonStyle(.borderedProminent).tint(coral).disabled(monitor.isScanning)
-            ForEach(sortedDevices, id: \.identifier) { p in
-                HStack(spacing: 10) {
-                    Button { captureRequest = CaptureRequest(peripheral: p) } label: {
-                        HStack { VStack(alignment: .leading) { Text(monitor.deviceNames[p.identifier] ?? p.name ?? "Unnamed Bluetooth device").font(.headline); Text(BluetoothPolicy.isCandidate(names: [], services: monitor.deviceServices[p.identifier] ?? []) ? "Measurement service advertised · tap to inspect" : "Compatibility checked after connection").font(.caption); if let rssi = monitor.deviceRSSI[p.identifier] { Text("Signal: \(BluetoothSignal.label(rssi))").font(.caption).foregroundStyle(muted) } }; Spacer(); Image(systemName: "chevron.right") }.frame(maxWidth: .infinity, alignment: .leading).padding(14)
-                    }.buttonStyle(.bordered).disabled(monitor.active)
-                    Button { toggleFavourite(p) } label: { Image(systemName: isFavourite(p) ? "star.fill" : "star").foregroundStyle(isFavourite(p) ? .yellow : muted).padding(12) }.accessibilityLabel(isFavourite(p) ? "Remove favourite device" : "Favourite device")
-                }
-            }
-            Text("Choose your Bluetooth heart-rate device. Star a device to keep it at the top of the list. Supported formats: standard Heart Rate Service and Pulse Oximeter Service. Seeing a Bluetooth device does not mean its measurements are accessible. Mapped formats should be checked independently. Close other Bluetooth apps before connecting. Nivvi cannot boost radio power; stay close if the signal is weak. On iOS 17 or later, the phone will also auto-reconnect when the wearable is in range.").font(.caption).foregroundStyle(muted)
-            Toggle("My device isn’t listed — show all Bluetooth devices", isOn: $monitor.showAllDevices)
-                .disabled(monitor.active || monitor.isScanning)
-            Text("Off by default. On shows every nearby Bluetooth gadget (headphones, TVs, watches). Nivvi still only displays HR/SpO₂ after the packet format is recognised.")
-                .font(.caption).foregroundStyle(muted)
-            panel { VStack(alignment: .leading, spacing: 10) {
-                Text("CONNECTION STATUS").font(.caption.bold())
-                Text(monitor.status).fixedSize(horizontal: false, vertical: true)
-                Text("\(monitor.readings.reduce(0) { $0 + $1.count }) packets received").font(.headline)
-                Text(monitor.measurementStatus).font(.caption)
-                if monitor.profile.hasPulseOximeter { Text(monitor.pulseOximeterStatus).font(.caption) }
-                if let time = monitor.lastSample { Text("Last packet: \(time.formatted(date: .omitted, time: .standard))").font(.caption) }
-            } }
-            DisclosureGroup("Which devices work?") {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Devices must expose the standard Bluetooth Heart Rate or Pulse Oximeter service, or a mapped format supported by Nivvi. Heart-rate support alone does not provide oxygen readings.")
-                    Text("Apple Watch needs a Watch/HealthKit integration. Oura needs an Oura integration. These are not connected in this build, and seeing their Bluetooth names does not make their measurements available.")
-                    Text("Base-station and proprietary monitors may require manufacturer documentation or an API. Unrecognised formats remain undecoded.")
-                    Text("Pulse-oximeter continuous readings can use the configured rate alarms. Spot-checks are saved as events and never start live alarms. Oxygen is displayed and recorded; oxygen alarms are not implemented.")
-                }.font(.caption).foregroundStyle(muted)
-            }
-            DisclosureGroup("Connection details") {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(Array(monitor.diagnostics.enumerated()), id: \.offset) { _, line in Text(line).font(.caption.monospaced()).textSelection(.enabled) }
-                    ForEach(monitor.readings) { r in
-                        Text("\(r.id) · \(r.count) packets\n\(r.hex)").font(.caption.monospaced()).textSelection(.enabled)
+            if !monitor.active {
+                ForEach(sortedDevices, id: \.identifier) { p in
+                    HStack(spacing: 10) {
+                        Button { captureRequest = CaptureRequest(peripheral: p) } label: {
+                            HStack { VStack(alignment: .leading) { Text(monitor.deviceNames[p.identifier] ?? p.name ?? "Unnamed Bluetooth device").font(.headline); Text("Tap to connect").font(.caption).foregroundStyle(muted); if let rssi = monitor.deviceRSSI[p.identifier] { Text("Signal: \(BluetoothSignal.label(rssi))").font(.caption).foregroundStyle(muted) } }; Spacer(); Image(systemName: "chevron.right") }.frame(maxWidth: .infinity, alignment: .leading).padding(14)
+                        }.buttonStyle(.bordered).disabled(monitor.active)
+                        Button { toggleFavourite(p) } label: { Image(systemName: isFavourite(p) ? "star.fill" : "star").foregroundStyle(isFavourite(p) ? .yellow : muted).padding(12) }.accessibilityLabel(isFavourite(p) ? "Remove favourite device" : "Favourite device")
                     }
-                }.frame(maxWidth: .infinity, alignment: .leading)
+                }
+                Toggle("Show all nearby Bluetooth devices", isOn: $monitor.showAllDevices)
+                    .disabled(monitor.isScanning)
+                Text("Leave this off unless your band does not appear in the list.")
+                    .font(.caption).foregroundStyle(muted)
             }
-            ForEach(monitor.files, id: \.self) { url in
-                ShareLink(item: url) { Label("Share capture log", systemImage: "square.and.arrow.up") }
+            DisclosureGroup("Diagnostics") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(monitor.status).font(.caption).fixedSize(horizontal: false, vertical: true)
+                    Text(monitor.measurementStatus).font(.caption).foregroundStyle(muted)
+                    if let time = monitor.lastSample {
+                        Text("Last packet \(time.formatted(date: .omitted, time: .standard))").font(.caption).foregroundStyle(muted)
+                    }
+                    if let url = monitor.files.first {
+                        ShareLink(item: url) { Label("Share capture log", systemImage: "square.and.arrow.up") }
+                    }
+                }.padding(.top, 8)
             }
         }
     }
