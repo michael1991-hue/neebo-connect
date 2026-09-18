@@ -345,6 +345,14 @@ final class WiFiRelay: ObservableObject {
         lastPacketAt = nil
         buffer = Data()
         if wantFollow { status = reason }
+        if wantFollow {
+            NivviLiveActivityBridge.syncShare(
+                heartRate: latest?.heartRate ?? "No reading",
+                oxygen: latest?.oxygen ?? "No reading",
+                linked: false,
+                status: reason
+            )
+        }
     }
 
     private func reconnectViewer() {
@@ -433,6 +441,7 @@ final class WiFiRelay: ObservableObject {
                             self.nextReconnectAt = nil
                             self.rememberRemote(connection)
                             self.status = "Linked on this Wi‑Fi"
+                            NivviLiveActivityBridge.syncShare(heartRate: snap.heartRate, oxygen: snap.oxygen, linked: true, status: self.status)
                         } else if let snap = try? JSONDecoder().decode(WiFiSnapshot.self, from: line), snap.pin != self.joinPin {
                             self.status = "Wrong share code. Match the nursery iPhone."
                         }

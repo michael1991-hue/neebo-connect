@@ -1945,15 +1945,33 @@ struct ContentView: View {
         return "Leave this iPhone in the room"
     }
     private func syncLiveActivity() {
-        let live = monitor.connection.isConnected || monitor.connection == .reconnecting
+        let ble = monitor.connection.isConnected || monitor.connection == .reconnecting
+        let wifiLive = wifi.following
+        let familyLive = family.viewingRemote
+        let connection: String
+        let signal: String
+        let hint: String
+        if wifiLive {
+            connection = wifi.remoteFresh ? "Shared over Wi‑Fi" : wifi.status
+            signal = "Wi-Fi"
+            hint = wifi.remoteFresh ? "" : wifi.status
+        } else if familyLive {
+            connection = family.remote?.snapshot?.connection ?? "Family sharing"
+            signal = "Internet"
+            hint = family.statusLine
+        } else {
+            connection = monitor.connection.label
+            signal = BluetoothSignal.label(monitor.signalRSSI)
+            hint = ble ? nurseryHint : ""
+        }
         NivviLiveActivityBridge.sync(
             title: displayName,
             heartRate: heartRateDisplay,
             oxygen: oxygenDisplay,
-            connection: family.viewingRemote ? (family.remote?.snapshot?.connection ?? "Family sharing") : monitor.connection.label,
-            signal: family.viewingRemote ? "Internet" : BluetoothSignal.label(monitor.signalRSSI),
-            nurseryHint: family.viewingRemote ? family.statusLine : (live ? nurseryHint : ""),
-            monitoring: live || wifi.remoteFresh || family.viewingRemote
+            connection: connection,
+            signal: signal,
+            nurseryHint: hint,
+            monitoring: ble || wifiLive || familyLive
         )
     }
     private func publishWiFiShare() {
@@ -2140,6 +2158,7 @@ struct ContentView: View {
             if on { monitor.requestNotificationPermission() }
             applyShareAlert()
             monitor.refreshBackgroundHold()
+            syncLiveActivity()
             UIApplication.shared.isIdleTimerDisabled = wifi.hosting || wifi.following || monitor.connection.isConnected || family.viewingRemote
         }
         .onChange(of: monitor.connection) { _ in
