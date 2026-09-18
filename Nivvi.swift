@@ -635,6 +635,23 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         connection = .receiving
         status = "Receiving fresh heart-rate readings."
         pushLocalShare()
+        pushLockScreen()
+    }
+    private func pushLockScreen() {
+        let ble = connection.isConnected || connection == .reconnecting
+        guard ble else { return }
+        NivviLiveActivityBridge.preferLocalBluetooth = true
+        let hr = pulseOximeterRate ?? verifiedHeartRate.map(Double.init) ?? customHeartRateCandidate.map(Double.init)
+        let ox = pulseOximeterOxygen ?? verifiedOxygen.map(Double.init) ?? customOxygenCandidate.map(Double.init)
+        NivviLiveActivityBridge.sync(
+            title: UserDefaults.standard.string(forKey: "nivvi.profile.name").flatMap { $0.isEmpty ? nil : $0 } ?? "Nivvi",
+            heartRate: hr.map { "\(MetricText.number($0)) bpm" } ?? "No reading",
+            oxygen: ox.map { "\(MetricText.number($0))%" } ?? "No reading",
+            connection: connection.label,
+            signal: BluetoothSignal.label(signalRSSI),
+            nurseryHint: "",
+            monitoring: true
+        )
     }
     private func expireMeasurements() {
         defer { publishFamilySnapshot() }

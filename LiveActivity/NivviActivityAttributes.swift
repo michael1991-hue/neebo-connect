@@ -8,6 +8,7 @@ struct NivviActivityAttributes: ActivityAttributes {
         var connection: String
         var signal: String
         var nurseryHint: String
+        var captured: TimeInterval = 0
     }
     var title: String
 }

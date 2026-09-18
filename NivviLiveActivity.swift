@@ -28,7 +28,8 @@ enum NivviLiveActivityBridge {
             oxygen: oxygen,
             connection: connection,
             signal: signal,
-            nurseryHint: nurseryHint
+            nurseryHint: nurseryHint,
+            captured: Date().timeIntervalSince1970
         )
         if !monitoring {
             Task { @MainActor in
@@ -43,11 +44,11 @@ enum NivviLiveActivityBridge {
             return
         }
         if let activity = Activity<NivviActivityAttributes>.activities.first {
-            if Date().timeIntervalSince(lastPush) < 1 { return }
+            if Date().timeIntervalSince(lastPush) < 0.4 { return }
             lastPush = Date()
             Task {
                 if #available(iOS 16.2, *) {
-                    await activity.update(ActivityContent(state: state, staleDate: Date().addingTimeInterval(45)))
+                    await activity.update(ActivityContent(state: state, staleDate: Date().addingTimeInterval(30)))
                 } else {
                     await activity.update(using: state)
                 }
@@ -58,10 +59,14 @@ enum NivviLiveActivityBridge {
         let attributes = NivviActivityAttributes(title: title)
         do {
             if #available(iOS 16.2, *) {
-                _ = try Activity.request(attributes: attributes, content: ActivityContent(state: state, staleDate: Date().addingTimeInterval(45)))
+                _ = try Activity.request(attributes: attributes, content: ActivityContent(state: state, staleDate: Date().addingTimeInterval(30)), pushType: .token)
             } else {
                 _ = try Activity.request(attributes: attributes, contentState: state)
             }
-        } catch { }
+        } catch {
+            if #available(iOS 16.2, *) {
+                _ = try? Activity.request(attributes: attributes, content: ActivityContent(state: state, staleDate: Date().addingTimeInterval(30)))
+            }
+        }
     }
 }
