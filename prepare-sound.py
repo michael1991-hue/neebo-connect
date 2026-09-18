@@ -97,6 +97,7 @@ for name, (freqs, amp, speed) in sirens.items():
 for name, args in reliefs.items():
     write_relief(sounds_dir / name, *args)
 write_sensor(sounds_dir / "NivviSensor.wav")
+write_wav(sounds_dir / "NivviHold.wav", struct.pack("<h", 0) * int(rate * 2))
 
 for wav in sounds_dir.glob("*.wav"):
     target = payload / wav.name

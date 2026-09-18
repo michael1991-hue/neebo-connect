@@ -27,7 +27,7 @@ assert privacy.get("NSPrivacyTracking") is False, "Unexpected tracking declarati
 assert privacy.get("NSPrivacyAccessedAPITypes"), "Missing required-reason API declarations"
 for sound in (
     "NivviSiren.wav", "NivviSirenUrgent.wav", "NivviSirenPulse.wav", "NivviSirenDeep.wav", "NivviSirenHigh.wav",
-    "NivviSensor.wav",
+    "NivviSensor.wav", "NivviHold.wav",
     "NivviRelief.wav", "NivviReliefWarm.wav", "NivviReliefBright.wav", "NivviReliefPiano.wav", "NivviReliefHush.wav",
 ):
     assert (app / sound).stat().st_size > 44, f"Missing sound: {sound}"

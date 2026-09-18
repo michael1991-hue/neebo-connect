@@ -322,6 +322,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     @Published var testingSiren = false
     private var alarmEngine = RateAlarmEngine()
     private var siren: AVAudioPlayer?
+    private var holdPlayer: AVAudioPlayer?
     private var soundTestTimer: Timer?
     private var retryTimer: Timer?
     private var retrySeconds: TimeInterval = 2
@@ -774,6 +775,29 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     private func stopSiren() {
         soundTestTimer?.invalidate(); soundTestTimer = nil; testingSiren = false
         siren?.stop(); siren = nil
+        refreshBackgroundHold()
+    }
+    func refreshBackgroundHold() {
+        let need = session.enabled || WiFiRelay.shared.hosting || WiFiRelay.shared.following
+            || FamilyRelay.shared.publishing || FamilyRelay.shared.viewingRemote
+        if !need || testingSiren || (criticalAlertActive && !alarmAcknowledged) {
+            holdPlayer?.stop(); holdPlayer = nil
+            return
+        }
+        startMonitoringHold()
+    }
+    private func startMonitoringHold() {
+        if holdPlayer?.isPlaying == true { return }
+        do {
+            try configureAlarmAudio()
+            guard let url = Bundle.main.url(forResource: "NivviHold", withExtension: "wav") else { return }
+            holdPlayer = try AVAudioPlayer(contentsOf: url)
+            holdPlayer?.numberOfLoops = -1
+            holdPlayer?.volume = 0
+            _ = holdPlayer?.play()
+        } catch {
+            holdPlayer = nil
+        }
     }
     func beginShareAlert(sensor: Bool) {
         if shareAlertActive && shareAlertSensor == sensor {
@@ -859,24 +883,28 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             if session.enabled && manager.state == .poweredOn { resumeSession() }
             requestCustomFallback()
             WiFiRelay.shared.revive()
+            refreshBackgroundHold()
         } else {
             backgroundReadingCount = 0
             if session.enabled {
                 backgroundEnteredAt = Date()
                 recordEvent(kind: "measurement", title: "Background monitoring started",
-                            detail: "Recording continues for usable Bluetooth updates delivered by iOS. A polling-only device may stop supplying data while the app is suspended.")
+                            detail: "Recording continues while Nivvi stays in the app switcher. Swiping Nivvi away stops monitoring until you open it again.")
                 scheduleBackgroundWatchdog()
             }
             if criticalAlertActive, !alarmAcknowledged, alarmActive {
                 notify(title: attentionTitle, body: "A heart-rate alarm is still active. Open Nivvi to acknowledge it.", identifier: "nivvi-rate-alarm")
+                startSiren(loop: true)
+            } else {
+                refreshBackgroundHold()
             }
-            stopSiren()
-            // Stop only a user-initiated broad scan. Preserve saved-device recovery.
-            if isScanning {
+            // Stop only a user-initiated browse. Keep a saved-device recovery scan.
+            if isScanning && !session.enabled {
                 scanToken = UUID(); scanDeadline?.invalidate(); manager.stopScan(); connection = .idle
             }
             if retryTimer != nil { beginRecoveryScan() }
             requestCustomFallback()
+            WiFiRelay.shared.revive()
         }
     }
     private func saveSession() {
@@ -1059,6 +1087,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             file = try FileHandle(forWritingTo: url); recording = url
         } catch { status = "Cannot create recording: \(error.localizedDescription)"; return }
         session.start(p.identifier); saveSession(); sampling.reset()
+        refreshBackgroundHold()
         lastBackgroundReading = nil; lastBackgroundSave = nil; backgroundReadingCount = 0; retryScan = false
         recordEvent(kind: "connection", title: "Session started", detail: "Connecting to the selected wearable.")
         peripheral = p; p.delegate = self; connection = .connecting
@@ -1433,6 +1462,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         if let p = peripheral, p.state != .disconnected && manager.state == .poweredOn {
             connection = .stopping; status = "Disconnecting…"; manager.cancelPeripheralConnection(p)
         } else { finish("Disconnected. Automatic reconnection is off.") }
+        refreshBackgroundHold()
     }
     private func finish(_ message: String) {
         resetTransport(clearBattery: true); closeCaptureLog()
@@ -2064,11 +2094,13 @@ struct ContentView: View {
         }
         .onChange(of: wifi.hosting) { _ in
             publishWiFiShare()
+            monitor.refreshBackgroundHold()
             UIApplication.shared.isIdleTimerDisabled = wifi.hosting || wifi.following || monitor.connection.isConnected || family.viewingRemote
         }
         .onChange(of: wifi.following) { on in
             if on { monitor.requestNotificationPermission() }
             applyShareAlert()
+            monitor.refreshBackgroundHold()
             UIApplication.shared.isIdleTimerDisabled = wifi.hosting || wifi.following || monitor.connection.isConnected || family.viewingRemote
         }
         .onChange(of: monitor.connection) { _ in
@@ -2849,7 +2881,7 @@ struct ContentView: View {
                         if let time = monitor.lastBackgroundSave {
                             Text("Last background history save: \(time.formatted(date: .omitted, time: .standard))").font(.caption)
                         }
-                        Text("Switch apps or lock the phone normally. Swiping Nivvi away stops background monitoring until reopened. Polling-only devices may not supply readings while iOS suspends the app.").font(.caption)
+                        Text("Leave Nivvi in the app switcher (lock the phone or use another app). Swiping Nivvi away stops background monitoring until you open it again.").font(.caption)
                         let fresh = connected && heartRateDisplay != "No reading" && !monitor.staleHeartRateDetected &&
                             monitor.lastHeartRateUpdate.map { (0...30).contains(context.date.timeIntervalSince($0)) } == true
                         readinessRow("Heart rate", fresh ? "Fresh data arriving" : "Check readings", fresh)
