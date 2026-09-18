@@ -184,6 +184,13 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         pollTimer = timer
     }
     private func requestCustomFallback() {
+        if let started = transportPolicy.lastAttempt, pendingRead != nil, Date().timeIntervalSince(started) > 3 {
+            pendingRead = nil
+            readNext()
+        }
+        if measurementNotificationsEnabled, let last = lastCustomMeasurement, Date().timeIntervalSince(last) < 4 {
+            return
+        }
         guard let p = peripheral, owns(p), let c = measurementCharacteristic,
               pendingRead == nil, c.properties.contains(.read),
               transportPolicy.shouldRead(at: Date(), lastMeasurement: lastCustomMeasurement) else { return }
@@ -396,10 +403,11 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     private var historyURL: URL { folder.appendingPathComponent("measurements.json") }
     private func publishFamilySnapshot() {
         let now = Date()
-        let hrTime = lastHeartRateUpdate
-        let oxTime = lastOxygenUpdate
-        let hr = hrTime.map { now.timeIntervalSince($0) <= 30 } == true ? (pulseOximeterRate ?? verifiedHeartRate.map(Double.init) ?? customHeartRateCandidate.map(Double.init)) : nil
-        let ox = oxTime.map { now.timeIntervalSince($0) <= 30 } == true ? (pulseOximeterOxygen ?? verifiedOxygen.map(Double.init) ?? customOxygenCandidate.map(Double.init)) : nil
+        let hrFresh = lastHeartRateUpdate.map { now.timeIntervalSince($0) <= 30 } == true
+            || lastCustomMeasurement.map { now.timeIntervalSince($0) <= 8 } == true
+        let oxFresh = lastOxygenUpdate.map { now.timeIntervalSince($0) <= 30 } == true
+        let hr = hrFresh ? (pulseOximeterRate ?? verifiedHeartRate.map(Double.init) ?? customHeartRateCandidate.map(Double.init)) : nil
+        let ox = oxFresh ? (pulseOximeterOxygen ?? verifiedOxygen.map(Double.init) ?? customOxygenCandidate.map(Double.init)) : nil
         let points = liveTrace.suffix(240).map { FamilySample(t: $0.time.timeIntervalSince1970, hr: $0.heartRateValue, o2: $0.oxygenValue) }
         let snapshot = FamilySnapshot(
             captured: now.timeIntervalSince1970,
@@ -409,8 +417,8 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             alarm: alarmKind.map { $0 == .high ? "high" : "low" } ?? (staleHeartRateDetected ? "sensor" : "none"),
             connection: connection.label,
             history: Array(points),
-            heart_rate_at: hr == nil ? nil : hrTime?.timeIntervalSince1970,
-            oxygen_at: ox == nil ? nil : oxTime?.timeIntervalSince1970,
+            heart_rate_at: hr == nil ? nil : (lastHeartRateUpdate ?? lastCustomMeasurement)?.timeIntervalSince1970,
+            oxygen_at: ox == nil ? nil : lastOxygenUpdate?.timeIntervalSince1970,
             acknowledged: alarmAcknowledged
         )
         Task { @MainActor in FamilyRelay.shared.capture(snapshot) }
