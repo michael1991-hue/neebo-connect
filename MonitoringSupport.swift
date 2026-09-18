@@ -23,6 +23,23 @@ struct HeartRateFreshness {
     mutating func reset() { self = Self() }
 }
 
+// BLE radio can drop for a second without a real measurement gap. Do not notify
+// until the last usable heart rate is this old (or 45s after a disconnect with
+// no reading yet).
+enum ConnectionLossPolicy {
+    static let silence: TimeInterval = 45
+    static let minimumDelay: TimeInterval = 0.5
+    static func notifyDelay(lastReading: Date?, now: Date) -> TimeInterval {
+        let start = lastReading ?? now
+        let elapsed = max(0, now.timeIntervalSince(start))
+        return max(minimumDelay, silence - elapsed)
+    }
+    static func shouldNotify(lastReading: Date?, now: Date) -> Bool {
+        guard let last = lastReading else { return true }
+        return now.timeIntervalSince(last) >= silence || now < last
+    }
+}
+
 enum FamilyLinkState: String {
     case idle, live, hostStale, sensorDisconnected, viewerOffline
 }

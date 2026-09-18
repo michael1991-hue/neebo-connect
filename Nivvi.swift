@@ -557,6 +557,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             sampling.reset()
             recordEvent(kind: "measurement", title: "Heart-rate readings resumed", detail: "Usable heart-rate data received again. \(Int(interval)) seconds between usable readings; this does not identify the cause of the gap.")
         }
+        cancelConnectionLossNotice()
         connection = .receiving
         status = "Receiving fresh heart-rate readings."
     }
@@ -640,6 +641,15 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)) { [weak self] error in
             if let error = error { DispatchQueue.main.async { self?.notificationStatus = "Notification failed: \(error.localizedDescription)" } }
         }
+    }
+    private func scheduleConnectionLossNotice(lastReading: Date?) {
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["nivvi-connection"])
+        let delay = ConnectionLossPolicy.notifyDelay(lastReading: lastReading, now: Date())
+        notify(title: "Nivvi connection lost", body: "No live measurements. Reconnecting to the wearable automatically.", identifier: "nivvi-connection", delay: delay, sirenSound: false)
+    }
+    private func cancelConnectionLossNotice() {
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["nivvi-connection"])
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["nivvi-connection"])
     }
     private func scheduleAlarmNotifications(title: String? = nil, body: String? = nil) {
         let sensorOnly = staleHeartRateDetected && !alarmActive
@@ -1001,9 +1011,10 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         guard p === peripheral else { return }
         if !session.shouldReconnect(p.identifier) { finish("Disconnected. Automatic reconnection is off."); return }
         note("Connection lost: \(error?.localizedDescription ?? "out of range or device stopped")")
+        let lastReading = lastHeartRateUpdate
         resetTransport(); connection = .reconnecting
         recordEvent(kind: "connection", title: "Connection lost", detail: "Measurements unavailable. Automatically reconnecting to the wearable.")
-        notify(title: "Nivvi connection lost", body: "No live measurements. Reconnecting to the wearable automatically.", identifier: "nivvi-connection", sirenSound: false)
+        scheduleConnectionLossNotice(lastReading: lastReading)
         if central.state == .poweredOn { resumeSession() }
         else { connection = .bluetoothOff }
     }
@@ -1315,13 +1326,14 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         if session.enabled { recordEvent(kind: "connection", title: "Session disconnected", detail: "Disconnected by the user. Automatic reconnection is off.") }
         session.stop(); saveSession(); cancelBackgroundWatchdog(); retryScan = false; backgroundEnteredAt = nil
         scanToken = UUID(); scanDeadline?.invalidate(); manager.stopScan()
-        resetTransport(); closeCaptureLog(); alarmEngine.reset(); alarmKind = nil; staleHeartRate.reset(); staleHeartRateDetected = false; alarmAcknowledged = false; clearAlarmNotifications(); stopSiren()
+        resetTransport(); closeCaptureLog(); alarmEngine.reset(); alarmKind = nil; staleHeartRate.reset(); staleHeartRateDetected = false; alarmAcknowledged = false; clearAlarmNotifications(); cancelConnectionLossNotice(); stopSiren()
         if let p = peripheral, p.state != .disconnected && manager.state == .poweredOn {
             connection = .stopping; status = "Disconnecting…"; manager.cancelPeripheralConnection(p)
         } else { finish("Disconnected. Automatic reconnection is off.") }
     }
     private func finish(_ message: String) {
         resetTransport(); closeCaptureLog()
+        cancelConnectionLossNotice()
         connection = .idle; peripheral = nil; status = message
         measurementStatus = "Session ended. Saved readings are in History."
     }

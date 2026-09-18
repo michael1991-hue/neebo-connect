@@ -255,6 +255,16 @@ check(freshness.isExpired(at: now), "backward clock change does not keep future-
 freshness.reset()
 check(freshness.lastValid == nil && freshness.pausedSince == nil, "new session cannot reuse old pulse freshness")
 
+check(ConnectionLossPolicy.silence == 45, "connection-lost banner waits forty-five seconds without a reading")
+check(ConnectionLossPolicy.notifyDelay(lastReading: now, now: now) == 45, "fresh reading delays the banner the full silence window")
+check(ConnectionLossPolicy.notifyDelay(lastReading: now.addingTimeInterval(-20), now: now) == 25, "partial gap uses remaining silence")
+check(ConnectionLossPolicy.notifyDelay(lastReading: now.addingTimeInterval(-45), now: now) == 0.5, "elapsed silence still uses a positive trigger")
+check(ConnectionLossPolicy.notifyDelay(lastReading: now.addingTimeInterval(-90), now: now) == 0.5, "already-stale reading does not wait again")
+check(ConnectionLossPolicy.notifyDelay(lastReading: nil, now: now) == 45, "no reading yet still waits the silence window from disconnect")
+check(!ConnectionLossPolicy.shouldNotify(lastReading: now.addingTimeInterval(-44), now: now), "forty-four seconds is still a radio blip")
+check(ConnectionLossPolicy.shouldNotify(lastReading: now.addingTimeInterval(-45), now: now), "forty-five seconds without a reading can notify")
+check(ConnectionLossPolicy.shouldNotify(lastReading: nil, now: now), "disconnect with no stored reading is eligible after the delay")
+
 var stale = StaleHeartRateDetector()
 let staleOrigin = Date(timeIntervalSince1970: 1_790_000_000)
 let staleHold = StaleHeartRateDetector.duration
