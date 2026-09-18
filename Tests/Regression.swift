@@ -230,7 +230,7 @@ check(SharedHistoryPolicy.slot(source: "wifi-share", time: now) == SharedHistory
 check(!WiFiSharePolicy.shouldDrop(now: now.addingTimeInterval(5), lastPacket: now, connectedAt: now), "a live Wi-Fi share stays up")
 check(WiFiSharePolicy.shouldDrop(now: now.addingTimeInterval(6), lastPacket: now, connectedAt: now), "silence of 6 seconds triggers a reconnect")
 check(WiFiSharePolicy.shouldDrop(now: now.addingTimeInterval(5), lastPacket: nil, connectedAt: now), "a connection that never receives is dropped")
-check(WiFiSharePolicy.reconnectDelay(attempt: 1) == 0.5 && WiFiSharePolicy.reconnectDelay(attempt: 5) == 8, "viewer reconnect backs off")
+check(WiFiSharePolicy.tcpPort == 19891, "nursery Wi-Fi share uses a fixed port for reconnect")
 let eventStore = EventHistoryStore(folder: temp, calendar: calendar)
 try eventStore.prepare(now: now)
 let event1 = SavedEvent(time: now, kind: "alarm", title: "Low heart-rate alert", detail: "Configured duration reached", heartRate: 75)

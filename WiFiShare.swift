@@ -214,6 +214,7 @@ final class WiFiRelay: ObservableObject {
     private func parameters() -> NWParameters {
         let parameters = NWParameters.tcp
         parameters.includePeerToPeer = true
+        parameters.prohibitedInterfaceTypes = [.cellular]
         let tcp = NWProtocolTCP.Options()
         tcp.enableKeepalive = true
         tcp.keepaliveIdle = 5
@@ -238,7 +239,7 @@ final class WiFiRelay: ObservableObject {
         stopViewer()
         stopHost(clearWant: false)
         do {
-            let listener = try NWListener(using: parameters())
+            let listener = try NWListener(using: parameters(), on: NWEndpoint.Port(rawValue: WiFiSharePolicy.tcpPort) ?? 19891)
             listener.service = NWListener.Service(name: "Nivvi", type: Self.type)
             listener.stateUpdateHandler = { [weak self] state in
                 DispatchQueue.main.async {
@@ -349,20 +350,39 @@ final class WiFiRelay: ObservableObject {
     private func reconnectViewer() {
         guard wantFollow, viewer == nil else { return }
         if let next = nextReconnectAt, Date() < next { return }
-        let endpoint: NWEndpoint?
-        if endpoints.isEmpty {
-            endpoint = knownEndpoint
-        } else {
-            endpointIndex = endpointIndex % endpoints.count
-            endpoint = endpoints[endpointIndex]
-            endpointIndex += 1
-        }
+        let endpoint = nextEndpoint()
         guard let endpoint else {
             status = "Looking for the nursery iPhone on this Wi‑Fi…"
             return
         }
         knownEndpoint = endpoint
         connect(endpoint)
+    }
+
+    private func nextEndpoint() -> NWEndpoint? {
+        let saved = savedEndpoint()
+        if let saved, endpoints.isEmpty || reconnectAttempt % 2 == 0 { return saved }
+        if !endpoints.isEmpty {
+            endpointIndex = endpointIndex % endpoints.count
+            let endpoint = endpoints[endpointIndex]
+            endpointIndex += 1
+            return endpoint
+        }
+        return knownEndpoint ?? saved
+    }
+
+    private func savedEndpoint() -> NWEndpoint? {
+        guard let host = UserDefaults.standard.string(forKey: "nivvi.wifi.lastHost"), !host.isEmpty else { return nil }
+        let port = UserDefaults.standard.object(forKey: "nivvi.wifi.lastPort") as? Int ?? Int(WiFiSharePolicy.tcpPort)
+        return NWEndpoint.hostPort(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: UInt16(port)) ?? 19891)
+    }
+
+    private func rememberRemote(_ connection: NWConnection) {
+        guard let endpoint = connection.currentPath?.remoteEndpoint else { return }
+        if case .hostPort(let host, let port) = endpoint {
+            UserDefaults.standard.set("\(host)", forKey: "nivvi.wifi.lastHost")
+            UserDefaults.standard.set(Int(port.rawValue), forKey: "nivvi.wifi.lastPort")
+        }
     }
 
     private func connect(_ endpoint: NWEndpoint) {
@@ -411,6 +431,7 @@ final class WiFiRelay: ObservableObject {
                             self.lastPacketAt = Date()
                             self.reconnectAttempt = 0
                             self.nextReconnectAt = nil
+                            self.rememberRemote(connection)
                             self.status = "Linked on this Wi‑Fi"
                         } else if let snap = try? JSONDecoder().decode(WiFiSnapshot.self, from: line), snap.pin != self.joinPin {
                             self.status = "Wrong share code. Match the nursery iPhone."

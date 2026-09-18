@@ -319,7 +319,8 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         didSet { UserDefaults.standard.set(selectedRelief.rawValue, forKey: "nivvi.sound.relief") }
     }
     @Published var experimentalCustomAlarms = false { didSet { alarmSettings.experimentalCustomEnabled = experimentalCustomAlarms } }
-    @Published var testingSiren = false
+    @Published private(set) var lowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
+    private var backgroundTask = UIBackgroundTaskIdentifier.invalid
     private var alarmEngine = RateAlarmEngine()
     private var siren: AVAudioPlayer?
     private var holdPlayer: AVAudioPlayer?
@@ -644,6 +645,9 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         if heartRateFreshness.isExpired(at: Date()) {
             pauseHeartRate("No usable heart-rate reading received for over \(Int(HeartRateFreshness.timeout)) seconds. Check the wearable and connection; the cause is unknown.")
         }
+        if criticalAlertActive, !alarmAcknowledged, !shareAlertSensor, siren?.isPlaying != true, !testingSiren {
+            startSiren(loop: true)
+        }
         guard let time = measurementTime, Date().timeIntervalSince(time) > HeartRateFreshness.timeout else { return }
         clearLiveValues(resetFreshness: false)
     }
@@ -663,6 +667,10 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
                                                name: UIApplication.didBecomeActiveNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(audioInterrupted),
                                                name: AVAudioSession.interruptionNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(audioRouteChanged),
+                                               name: AVAudioSession.routeChangeNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(powerStateChanged),
+                                               name: .NSProcessInfoPowerStateDidChange, object: nil)
         if let data = UserDefaults.standard.data(forKey: "nivvi.alarms"), let saved = try? JSONDecoder().decode(AlarmSettings.self, from: data) { alarmSettings = saved; experimentalCustomAlarms = saved.experimentalCustomEnabled }
         session.deviceID = UserDefaults.standard.string(forKey: "nivvi.session.device").flatMap(UUID.init(uuidString:))
         session.enabled = UserDefaults.standard.bool(forKey: "nivvi.session.enabled")
@@ -681,7 +689,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         freshnessTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.expireMeasurements() }
     }
     func requestNotificationPermission() {
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { [weak self] _, _ in self?.refreshNotificationStatus() }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge, .timeSensitive]) { [weak self] _, _ in self?.refreshNotificationStatus() }
     }
     func refreshNotificationStatus() {
         UNUserNotificationCenter.current().getNotificationSettings { [weak self] settings in
@@ -847,7 +855,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         soundTestTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: false) { [weak self] _ in self?.stopSiren() }
     }
     func testNotification() {
-            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { [weak self] allowed, _ in
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge, .timeSensitive]) { [weak self] allowed, _ in
             guard allowed else { self?.refreshNotificationStatus(); return }
             DispatchQueue.main.async {
                 self?.notify(title: "Nivvi sound test", body: "TEST ONLY — no device reading triggered this sound.", identifier: "nivvi-sound-test", delay: 10)
@@ -856,19 +864,45 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         }
     }
     @objc private func audioInterrupted(_ note: Notification) {
-        guard criticalAlertActive, !alarmAcknowledged else { return }
-        let info = note.userInfo
-        let type = info?[AVAudioSessionInterruptionTypeKey] as? UInt
-        if type == AVAudioSession.InterruptionType.ended.rawValue {
+        let type = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
+        guard type == AVAudioSession.InterruptionType.ended.rawValue else { return }
+        try? AVAudioSession.sharedInstance().setActive(true)
+        if criticalAlertActive, !alarmAcknowledged {
             startSiren(loop: true)
+        } else {
+            refreshBackgroundHold()
+        }
+        WiFiRelay.shared.revive()
+    }
+    @objc private func audioRouteChanged(_ note: Notification) {
+        let reason = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
+        if reason == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue
+            || reason == AVAudioSession.RouteChangeReason.newDeviceAvailable.rawValue {
+            if criticalAlertActive, !alarmAcknowledged { startSiren(loop: true) }
+            else { refreshBackgroundHold() }
+            WiFiRelay.shared.revive()
         }
     }
-    @objc private func enteredBackground() { applicationActive(false) }
+    @objc private func powerStateChanged() {
+        DispatchQueue.main.async { self.lowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled }
+    }
+    private func beginBackgroundWork() {
+        endBackgroundWork()
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "nivvi.monitor") { [weak self] in
+            self?.endBackgroundWork()
+        }
+    }
+    private func endBackgroundWork() {
+        guard backgroundTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(backgroundTask)
+        backgroundTask = .invalid
+    }
     @objc private func becameActive() { applicationActive(true) }
     func applicationActive(_ isActive: Bool) {
         guard foreground != isActive else { return }
         foreground = isActive
         if isActive {
+            endBackgroundWork()
             cancelBackgroundWatchdog()
             expireMeasurements(); refreshNotificationStatus()
             if let start = backgroundEnteredAt {
@@ -884,6 +918,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             WiFiRelay.shared.revive()
             refreshBackgroundHold()
         } else {
+            beginBackgroundWork()
             backgroundReadingCount = 0
             if session.enabled {
                 backgroundEnteredAt = Date()
@@ -979,6 +1014,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
                     connection = .discovering
                     configureConnectedServices(p)
                     note("Restored the saved Bluetooth connection and subscriptions.")
+                    self.refreshBackgroundHold()
                 }
             } else { central.cancelPeripheralConnection(p) }
         }
@@ -1897,7 +1933,7 @@ struct ContentView: View {
     }
     private var statusCaption: String {
         if monitor.wearableCharging && monitor.connection != .receiving { return "Charging" }
-        if wifi.remoteFresh { return "Shared over Wi‑Fi" }
+        if wifi.following { return wifi.remoteFresh ? "Shared over Wi‑Fi" : wifi.status }
         if family.viewingRemote { return family.statusLine }
         return monitor.connection.label
     }
@@ -2214,6 +2250,14 @@ struct ContentView: View {
                     .background(cardFill).clipShape(Capsule())
             }
             if !ageText.isEmpty { Text(childGender == "Prefer not to say" ? ageText : "\(ageText) · \(childGender)").font(.caption).foregroundStyle(muted) }
+            if monitor.lowPowerMode {
+                Text("Low Power Mode is on. Turn it off so Nivvi can keep reading overnight.")
+                    .font(.caption.weight(.semibold)).foregroundStyle(coral)
+            }
+            if wifi.following && !wifi.remoteFresh {
+                Text(wifi.status)
+                    .font(.caption.weight(.semibold)).foregroundStyle(coral)
+            }
         }.padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 8)
     }
 
@@ -2728,6 +2772,8 @@ struct ContentView: View {
                 Toggle("Follow the nursery iPhone", isOn: Binding(get: { wifi.following }, set: { wifi.setFollowing($0) })).tint(switchOn)
                 Toggle("Play nursery alerts here", isOn: $wifi.playAlerts).tint(switchOn)
                 Text(wifi.status).font(.caption).foregroundStyle(muted)
+                Text("Use the same home Wi‑Fi, not Guest. Turn Low Power Mode off on both phones. Leave Nivvi in the app switcher — do not swipe it away.")
+                    .font(.caption).foregroundStyle(muted)
             }.padding(.top, 8)
         } }
         panel { VStack(alignment: .leading, spacing: 12) {

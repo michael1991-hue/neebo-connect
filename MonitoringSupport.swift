@@ -611,6 +611,7 @@ enum SharedHistoryPolicy {
 enum WiFiSharePolicy {
     static let packetStale: TimeInterval = 6
     static let connectGiveUp: TimeInterval = 5
+    static let tcpPort: UInt16 = 19891
     static func shouldDrop(now: Date, lastPacket: Date?, connectedAt: Date?) -> Bool {
         if let lastPacket { return now.timeIntervalSince(lastPacket) >= packetStale }
         if let connectedAt { return now.timeIntervalSince(connectedAt) >= connectGiveUp }
