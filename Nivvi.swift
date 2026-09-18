@@ -779,7 +779,6 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     }
     func refreshBackgroundHold() {
         let need = session.enabled || WiFiRelay.shared.hosting || WiFiRelay.shared.following
-            || FamilyRelay.shared.publishing || FamilyRelay.shared.viewingRemote
         if !need || testingSiren || (criticalAlertActive && !alarmAcknowledged) {
             holdPlayer?.stop(); holdPlayer = nil
             return
@@ -2126,7 +2125,9 @@ struct ContentView: View {
                 Task { try? await family.notifications() }
             }
             applyShareAlert()
+            monitor.refreshBackgroundHold()
         }
+        .onChange(of: family.publishing) { _ in monitor.refreshBackgroundHold() }
         .onChange(of: monitor.staleHeartRateDetected) { _ in publishWiFiShare(); syncLiveActivity() }
         .onChange(of: monitor.wearableCharging) { _ in publishWiFiShare() }
         .onChange(of: family.remoteFetched) { _ in
