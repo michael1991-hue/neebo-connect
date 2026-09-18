@@ -614,10 +614,11 @@ final class EventHistoryStore {
 // A single fallback read may follow a real BLE event, but reads never create
 // their own event loop. Both recent data and recent attempts throttle polling.
 struct MeasurementTransportPolicy {
+    static let interval: TimeInterval = 1
     private(set) var lastAttempt: Date?
     func shouldRead(at now: Date, lastMeasurement: Date?) -> Bool {
         for time in [lastAttempt, lastMeasurement].compactMap({ $0 }) {
-            if (0..<5).contains(now.timeIntervalSince(time)) { return false }
+            if (0..<Self.interval).contains(now.timeIntervalSince(time)) { return false }
         }
         return true
     }

@@ -473,11 +473,11 @@ check(oldEntry.heartRateValue == 100 && oldEntry.oxygenValue == 99, "existing in
 var transport = MeasurementTransportPolicy()
 check(transport.shouldRead(at: now, lastMeasurement: nil), "first fallback read is available")
 transport.didRequest(at: now)
-for offset in [0.0, 0.1, 1.0, 4.99] {
-    check(!transport.shouldRead(at: now.addingTimeInterval(offset), lastMeasurement: nil), "burst cannot exceed five-second fallback cadence")
+for offset in [0.0, 0.1, 0.99] {
+    check(!transport.shouldRead(at: now.addingTimeInterval(offset), lastMeasurement: nil), "burst cannot exceed one-second fallback cadence")
 }
-check(transport.shouldRead(at: now.addingTimeInterval(5), lastMeasurement: nil), "fallback can retry after the interval")
-check(!transport.shouldRead(at: now.addingTimeInterval(6), lastMeasurement: now.addingTimeInterval(4)), "fresh measurement postpones redundant fallback")
+check(transport.shouldRead(at: now.addingTimeInterval(1), lastMeasurement: nil), "fallback can retry after the interval")
+check(!transport.shouldRead(at: now.addingTimeInterval(6), lastMeasurement: now.addingTimeInterval(5.5)), "fresh measurement postpones redundant fallback")
 check(transport.shouldRead(at: now.addingTimeInterval(120), lastMeasurement: now), "a later BLE wake permits a read after suspension")
 check(transport.shouldRead(at: now.addingTimeInterval(-1), lastMeasurement: nil), "backward clock cannot stall fallback indefinitely")
 transport.reset()

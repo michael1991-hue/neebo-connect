@@ -175,7 +175,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     }
     private func startMeasurementPolling() {
         guard pollTimer == nil else { return }
-        let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: MeasurementTransportPolicy.interval, repeats: true) { [weak self] _ in
             // This timer runs only while iOS grants execution. BLE events wake us;
             // never use audio, a busy loop or chained reads to prevent suspension.
             self?.requestCustomFallback()
@@ -565,6 +565,11 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         alarmEngine.interrupt()
     }
     private func pauseHeartRate(_ reason: String) {
+        let recent = lastHeartRateUpdate.map { Date().timeIntervalSince($0) <= 15 } ?? false
+        if recent {
+            measurementStatus = reason
+            return
+        }
         if heartRateFreshness.pause() {
             continuityID = UUID(); sampling.reset()
             if !alarmActive && !wearableCharging { notify(title: "Check sensor data", body: "No fresh reading received. Check the wearable and connection.", identifier: "nivvi-sensor-paused", soundName: "NivviSensor.wav") }
@@ -831,8 +836,9 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         signalRSSI = nil
         measurementNotificationsEnabled = false
         readQueue = []; pendingRead = nil; measurementCharacteristic = nil
-        clearLiveValues(); lastSample = nil
+        lastSample = nil
         if clearBattery {
+            clearLiveValues()
             battery = "—"
             batteryFromStandard = false
             batteryPolicy.reset()
