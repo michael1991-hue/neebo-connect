@@ -6,6 +6,7 @@ func check(_ condition: @autoclosure () -> Bool, _ name: String) {
 check(!ConnectionPhase.connecting.isConnected, "a connection request is not a confirmed connection")
 check(ConnectionPhase.connecting.isBusy, "prevent simultaneous connection attempts")
 check(ConnectionPhase.discovering.isConnected, "service discovery starts after connection")
+check(ConnectionPhase.receiving.label == "Connected · Receiving readings", "live link uses caregiver wording")
 check(!ConnectionPhase.stopping.isConnected && ConnectionPhase.stopping.isBusy, "disconnect callbacks settle before reuse")
 check(!ConnectionPhase.idle.isBusy && !ConnectionPhase.scanning.isBusy, "selection permitted during and after scan")
 check(BluetoothPolicy.isCandidate(names: [], services: ["180D"]), "discover unnamed standard heart-rate devices")

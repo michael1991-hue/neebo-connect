@@ -21,6 +21,13 @@ enum DeviceProfile: String {
     case unknown = "Profile not identified"
     var hasStandardHeartRate: Bool { self == .heartRate || self == .combined }
     var hasPulseOximeter: Bool { self == .pulseOximeter || self == .combined }
+    var readingSummary: String {
+        switch self {
+        case .heartRate: return "❤️ Heart rate"
+        case .pulseOximeter, .combined, .custom: return "❤️ Heart rate · 🫧 Oxygen"
+        case .generic, .unknown: return "Readings shown once the format is recognised"
+        }
+    }
 }
 
 struct SavedMeasurement: Codable, Identifiable {
@@ -58,7 +65,7 @@ enum ConnectionPhase: String {
         case .bluetoothOff: return "Waiting for Bluetooth"
         case .discovering: return "Connected · checking services"
         case .waiting: return "Connected · waiting for measurements"
-        case .receiving: return "Connected · fresh heart rate"
+        case .receiving: return "Connected · Receiving readings"
         case .stopping: return "Disconnecting…"
         }
     }
@@ -221,6 +228,16 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         p.readValue(for: pendingRead!)
     }
     private func owns(_ p: CBPeripheral) -> Bool { p === peripheral && session.shouldReconnect(p.identifier) && p.state == .connected && connection != .stopping }
+    var connectedMonitorName: String {
+        if let p = peripheral {
+            if let stored = deviceNames[p.identifier]?.trimmingCharacters(in: .whitespacesAndNewlines), !stored.isEmpty { return stored }
+            if let name = p.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty { return name }
+        }
+        if let id = session.deviceID, let stored = deviceNames[id]?.trimmingCharacters(in: .whitespacesAndNewlines), !stored.isEmpty {
+            return stored
+        }
+        return session.enabled ? "Saved monitor" : "No monitor connected"
+    }
     private func addDevice(_ p: CBPeripheral, name: String, rssi: Int? = nil) {
         deviceNames[p.identifier] = name.isEmpty ? (p.name ?? "Unnamed Bluetooth device") : name
         if let rssi, BluetoothSignal.isUsable(rssi) { deviceRSSI[p.identifier] = rssi }
@@ -2437,7 +2454,19 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Device").font(.largeTitle.bold())
             panel { HStack(spacing: 14) { Image(systemName: "wave.3.right.circle.fill").font(.largeTitle).foregroundStyle(teal); VStack(alignment: .leading) { Text("Bluetooth heart-rate device").font(.headline); Text(monitor.connection.label).foregroundStyle(connected ? accentMint : muted); if monitor.connection.isConnected { Text("Signal: \(BluetoothSignal.label(monitor.signalRSSI))").font(.caption).foregroundStyle(muted) } }; Spacer() } }
-            panel { VStack(alignment: .leading, spacing: 6) { Text("PROFILE").font(.caption.bold()).foregroundStyle(muted); Text(monitor.profile.rawValue).font(.headline); Text("Nivvi only displays measurements when the Bluetooth format is recognised.").font(.caption).foregroundStyle(muted) } }
+            panel {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("CONNECTED MONITOR").font(.caption.bold()).foregroundStyle(muted)
+                    Text(monitor.connectedMonitorName).font(.headline)
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(monitor.connection == .receiving ? accentMint : (connected ? accentMint.opacity(0.55) : muted))
+                            .frame(width: 8, height: 8)
+                        Text(monitor.connection.label).foregroundStyle(connected ? accentMint : muted)
+                    }
+                    Text(monitor.profile.readingSummary).font(.subheadline)
+                }
+            }
             HStack(spacing: 14) { metric("Battery", batteryLabel); metric("Mode", mode.rawValue) }
             Button { monitor.active ? monitor.stop() : monitor.scan() } label: { Text(monitor.active ? "Disconnect" : (monitor.isScanning ? "Scanning…" : "Scan for devices")).font(.headline).frame(maxWidth: .infinity).padding(17) }.buttonStyle(.borderedProminent).tint(coral).disabled(monitor.isScanning)
             ForEach(sortedDevices, id: \.identifier) { p in
