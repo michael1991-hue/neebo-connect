@@ -408,7 +408,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         let oxFresh = lastOxygenUpdate.map { now.timeIntervalSince($0) <= 30 } == true
         let hr = hrFresh ? (pulseOximeterRate ?? verifiedHeartRate.map(Double.init) ?? customHeartRateCandidate.map(Double.init)) : nil
         let ox = oxFresh ? (pulseOximeterOxygen ?? verifiedOxygen.map(Double.init) ?? customOxygenCandidate.map(Double.init)) : nil
-        let points = liveTrace.suffix(240).map { FamilySample(t: $0.time.timeIntervalSince1970, hr: $0.heartRateValue, o2: $0.oxygenValue) }
+        let points = history.suffix(120).map { FamilySample(t: $0.time.timeIntervalSince1970, hr: $0.heartRateValue, o2: $0.oxygenValue) }
         let snapshot = FamilySnapshot(
             captured: now.timeIntervalSince1970,
             heart_rate: hr,
@@ -435,7 +435,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             alarm: alarmKind.map { $0 == .high ? "high" : "low" } ?? (staleHeartRateDetected ? "sensor" : "none"),
             charging: wearableCharging,
             battery: battery,
-            history: [],
+            history: Array(history.suffix(120).map { FamilySample(t: $0.time.timeIntervalSince1970, hr: $0.heartRateValue, o2: $0.oxygenValue) }),
             acknowledged: alarmAcknowledged
         )
     }
@@ -477,9 +477,10 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         guard !historyLoadFailed else { return }
         for entry in entries.sorted(by: { $0.time < $1.time }) {
             guard entry.heartRateValue != nil || entry.oxygenValue != nil else { continue }
-            guard !storedHistoryIDs.contains(entry.id) else { continue }
-            guard sampling.shouldStoreNewer(source: entry.source, at: entry.time) else { continue }
+            let slot = SharedHistoryPolicy.slot(source: entry.source, time: entry.time)
+            guard !storedHistoryIDs.contains(entry.id), !storedHistoryIDs.contains(slot) else { continue }
             storedHistoryIDs.insert(entry.id)
+            storedHistoryIDs.insert(slot)
             do {
                 try archive.append(entry)
                 sampling.didStore(source: entry.source, at: entry.time)
@@ -492,12 +493,16 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
                 historyError = nil
             } catch {
                 storedHistoryIDs.remove(entry.id)
+                storedHistoryIDs.remove(slot)
                 historyError = "History could not be saved: \(error.localizedDescription)"
             }
         }
     }
     private func rememberHistoryIDs(_ entries: [SavedMeasurement]) {
-        for entry in entries { storedHistoryIDs.insert(entry.id) }
+        for entry in entries {
+            storedHistoryIDs.insert(entry.id)
+            storedHistoryIDs.insert(SharedHistoryPolicy.slot(source: entry.source, time: entry.time))
+        }
     }
     func clearHistory() {
         do {
@@ -1895,7 +1900,7 @@ struct ContentView: View {
             alarm: shareAlarmKind,
             charging: monitor.wearableCharging,
             battery: monitor.battery,
-            history: [],
+            history: Array(monitor.history.suffix(120).map { FamilySample(t: $0.time.timeIntervalSince1970, hr: $0.heartRateValue, o2: $0.oxygenValue) }),
             acknowledged: monitor.alarmAcknowledged
         )
     }
@@ -2455,7 +2460,7 @@ struct ContentView: View {
                     .accessibilityLabel("Add note")
             }
             if displayedHistory.contains(where: { $0.source == "family-share" || $0.source == "wifi-share" }) {
-                Text("Includes readings this iPhone received from the nursery phone. They stay here for 30 days.")
+                Text("Includes readings this iPhone received from the nursery phone. About one card every 30 seconds, same as nursery History. They stay here for 30 days.")
                     .font(.caption).foregroundStyle(muted)
             }
             if displayedHistory.isEmpty {

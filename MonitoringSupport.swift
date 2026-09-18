@@ -598,6 +598,16 @@ struct MeasurementSamplingPolicy {
     mutating func reset(source: String) { lastStored[source] = nil }
 }
 
+enum SharedHistoryPolicy {
+    static let cadence: TimeInterval = 30
+    static func bucket(_ time: Date) -> Date {
+        Date(timeIntervalSince1970: (time.timeIntervalSince1970 / cadence).rounded(.towardZero) * cadence)
+    }
+    static func slot(source: String, time: Date) -> UUID {
+        SavedMeasurement.stableID(time: bucket(time), source: source + ".slot", heartRate: nil, oxygen: nil)
+    }
+}
+
 struct SavedEvent: Codable, Identifiable {
     var id = UUID()
     let time: Date
