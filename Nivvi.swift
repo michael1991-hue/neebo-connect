@@ -113,14 +113,16 @@ enum BluetoothPolicy {
         default: return false
         }
     }
-    static func customFrame(_ data: Data) -> (heartRate: Int?, oxygen: Int?) {
+    static func customFrame(_ data: Data) -> (heartRate: Int?, oxygen: Int?, battery: Int?) {
         // Only the complete nine-byte frame observed in captures is understood.
         // Non-zero high bytes and unknown frame layouts must not be truncated.
         let bytes = Array(data)
-        guard bytes.count == 9, bytes[0...2].allSatisfy({ $0 == 0 }) else { return (nil, nil) }
+        guard bytes.count == 9, bytes[0...2].allSatisfy({ $0 == 0 }) else { return (nil, nil, nil) }
         let hr = bytes[4] == 0 && (30...240).contains(Int(bytes[3])) ? Int(bytes[3]) : nil
         let oxygen = bytes[6] == 0 && (70...100).contains(Int(bytes[5])) ? Int(bytes[5]) : nil
-        return (hr, oxygen)
+        // Captured NB0 frames put a 1...100 percentage at offset 7.
+        let battery = (1...100).contains(Int(bytes[7])) ? Int(bytes[7]) : nil
+        return (hr, oxygen, battery)
     }
     static func batteryCharging(_ data: Data) -> Bool? {
         guard let byte = data.first else { return nil }
@@ -295,6 +297,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     @Published private(set) var wearableCharging = false
     private var chargePolicy = WearableChargePolicy()
     private var batteryPolicy = WearableBatteryPolicy()
+    private var batteryFromStandard = false
     @Published private(set) var batteryWarning: WearableBatteryPolicy.Level = .ok
     var criticalAlertActive: Bool { alarmActive || staleHeartRateDetected || shareAlertActive }
     @Published private(set) var shareAlertActive = false
@@ -812,17 +815,21 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         UserDefaults.standard.set(session.enabled, forKey: "nivvi.session.enabled")
         UserDefaults.standard.set(session.deviceID?.uuidString, forKey: "nivvi.session.device")
     }
-    private func resetTransport() {
+    private func resetTransport(clearBattery: Bool = false) {
         pollTimer?.invalidate(); pollTimer = nil; noDataTimer?.invalidate()
         retryTimer?.invalidate(); retryTimer = nil; rssiTimer?.invalidate(); rssiTimer = nil
         transportPolicy.reset()
         signalRSSI = nil
         measurementNotificationsEnabled = false
         readQueue = []; pendingRead = nil; measurementCharacteristic = nil
-        clearLiveValues(); battery = "—"; lastSample = nil
+        clearLiveValues(); lastSample = nil
+        if clearBattery {
+            battery = "—"
+            batteryFromStandard = false
+            batteryPolicy.reset()
+            batteryWarning = .ok
+        }
         chargePolicy.reset()
-        batteryPolicy.reset()
-        batteryWarning = .ok
         applyCharging(false, record: false)
     }
     private func beginRecoveryScan() {
@@ -1135,17 +1142,14 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
                 if let candidateRate = candidate.heartRate { evaluateExperimentalRateAlarm(candidateRate) }
                 else { alarmEngine.interrupt() }
             } else { measurementTime = nil; alarmEngine.interrupt() }
+            if let percent = candidate.battery { applyBatteryPercent(percent, fromStandard: false) }
         }
         if serviceID == "1822", uuid == "2A5E" || uuid == "2A5F" { receivePulseOximetry(data, characteristic: uuid) }
         if let i = readings.firstIndex(where: { $0.id == key }) {
             readings[i].count += 1; readings[i].hex = hex
         } else { readings.append(Reading(id:key, count:1, hex:hex)) }
         if uuid == "2A19", serviceID == "180F", data.count == 1, data[0] <= 100 {
-            let percent = Int(data[0])
-            battery = "\(percent)%"
-            chargePolicy.observeLevel(percent)
-            applyCharging(chargePolicy.isCharging)
-            applyBatteryWarning(percent)
+            applyBatteryPercent(Int(data[0]), fromStandard: true)
         }
         if uuid == "2A1A", serviceID == "180F", let charging = BluetoothPolicy.batteryCharging(data) {
             chargePolicy.observePowerState(charging: charging)
@@ -1218,6 +1222,15 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         } else if record {
             recordEvent(kind: "connection", title: "Charging ended", detail: "Waiting for a worn reading. Put the band on the child before relying on alerts.")
         }
+    }
+    private func applyBatteryPercent(_ percent: Int, fromStandard: Bool) {
+        guard (0...100).contains(percent) else { return }
+        if fromStandard { batteryFromStandard = true }
+        else if batteryFromStandard { return }
+        battery = "\(percent)%"
+        chargePolicy.observeLevel(percent)
+        applyCharging(chargePolicy.isCharging)
+        applyBatteryWarning(percent)
     }
     private func applyBatteryWarning(_ percent: Int) {
         guard let crossed = batteryPolicy.observe(percent: percent, charging: wearableCharging) else { return }
@@ -1343,13 +1356,13 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         if session.enabled { recordEvent(kind: "connection", title: "Session disconnected", detail: "Disconnected by the user. Automatic reconnection is off.") }
         session.stop(); saveSession(); cancelBackgroundWatchdog(); retryScan = false; backgroundEnteredAt = nil
         scanToken = UUID(); scanDeadline?.invalidate(); manager.stopScan()
-        resetTransport(); closeCaptureLog(); alarmEngine.reset(); alarmKind = nil; staleHeartRate.reset(); staleHeartRateDetected = false; alarmAcknowledged = false; clearAlarmNotifications(); cancelConnectionLossNotice(); stopSiren()
+        resetTransport(clearBattery: true); closeCaptureLog(); alarmEngine.reset(); alarmKind = nil; staleHeartRate.reset(); staleHeartRateDetected = false; alarmAcknowledged = false; clearAlarmNotifications(); cancelConnectionLossNotice(); stopSiren()
         if let p = peripheral, p.state != .disconnected && manager.state == .poweredOn {
             connection = .stopping; status = "Disconnecting…"; manager.cancelPeripheralConnection(p)
         } else { finish("Disconnected. Automatic reconnection is off.") }
     }
     private func finish(_ message: String) {
-        resetTransport(); closeCaptureLog()
+        resetTransport(clearBattery: true); closeCaptureLog()
         cancelConnectionLossNotice()
         connection = .idle; peripheral = nil; status = message
         measurementStatus = "Session ended. Saved readings are in History."
@@ -1753,7 +1766,8 @@ struct ContentView: View {
         }
         if monitor.batteryWarning == .urgent { return "Very low · \(monitor.battery)" }
         if monitor.batteryWarning == .low { return "Low · \(monitor.battery)" }
-        return (monitor.battery == "—" || monitor.battery.isEmpty) ? "Unavailable" : monitor.battery
+        if monitor.battery != "—" && !monitor.battery.isEmpty { return monitor.battery }
+        return monitor.connection.isConnected || monitor.connection == .reconnecting ? "Waiting" : "Unavailable"
     }
     private var oxygenDisplay: String {
         if wifi.remoteFresh, let remote = wifi.latest { return remote.oxygen }

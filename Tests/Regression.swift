@@ -70,6 +70,9 @@ for (bytes, expected) in samples {
     let value = BluetoothPolicy.customFrame(bytes)
     check(value.heartRate == expected && value.oxygen == 99, "captured custom adapter fixture \(expected)")
 }
+check(BluetoothPolicy.customFrame(Data([0,0,0,0x5F,0,0x63,0,0x3F,1])).battery == 63, "NB0 offset 7 in captured frames is battery")
+check(BluetoothPolicy.customFrame(Data([0,0,0,0x5F,0,0x63,0,0,1])).battery == nil, "zero reserved byte is not a battery reading")
+check(BluetoothPolicy.customFrame(Data([0,0,0,0x5F,0,0x63,0,101,1])).battery == nil, "out-of-range offset 7 is not battery")
 check(BluetoothPolicy.customFrame(Data()).heartRate == nil, "empty frame")
 check(BluetoothPolicy.customFrame(Data([0,0,0,95,0,99])).heartRate == nil, "truncated frame must not appear live")
 check(BluetoothPolicy.customFrame(Data([1,0,0,95,0,99,0,0,1])).heartRate == nil, "unknown leading fields")
