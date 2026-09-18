@@ -340,14 +340,23 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         for offset in 0..<7 {
             guard let day = calendar.date(byAdding: .day, value: -offset, to: today) else { continue }
             if let rows = try? eventArchive.load(day: day) {
-                log.append(contentsOf: rows.filter {
-                    $0.kind == "critical" || $0.kind == "alarm" || $0.kind == "connection"
-                    || $0.title == "Heart rate back to normal" || $0.title == "High heart-rate alert" || $0.title == "Low heart-rate alert"
-                    || $0.title.localizedCaseInsensitiveContains("needs your attention")
-                })
+                log.append(contentsOf: rows.filter(Self.isListedAlert))
             }
         }
         return log.sorted { $0.time > $1.time }
+    }
+    func clearRecentAlerts() {
+        do {
+            for event in recentAlerts() { try eventArchive.delete(event) }
+            events = try eventArchive.load(day: selectedHistoryDay)
+            eventDays = try eventArchive.days()
+            eventError = nil
+        } catch { eventError = "Alerts could not be cleared: \(error.localizedDescription)" }
+    }
+    private static func isListedAlert(_ event: SavedEvent) -> Bool {
+        event.kind == "critical" || event.kind == "alarm" || event.kind == "connection"
+            || event.title == "Heart rate back to normal" || event.title == "High heart-rate alert" || event.title == "Low heart-rate alert"
+            || event.title.localizedCaseInsensitiveContains("needs your attention")
     }
     func recordEvent(kind: String, title: String, detail: String, heartRate: Int? = nil) {
         let event = SavedEvent(time: Date(), kind: kind, title: title, detail: detail, heartRate: heartRate)
@@ -1713,6 +1722,7 @@ struct ContentView: View {
     @State private var showParentNote = false
     @State private var selectedHistoryReading: SavedMeasurement?
     @State private var confirmDeleteHistory = false
+    @State private var confirmClearAlerts = false
     @State private var manualMode: NivviMode?
     @FocusState private var editingLimit: Bool
     private let coral = Color(red: 1, green: 0.56, blue: 0.53)
@@ -2440,11 +2450,18 @@ struct ContentView: View {
                 Text("Connection").tag("Connection")
             }.pickerStyle(.segmented)
             let items = alertItems
+            if !monitor.recentAlerts().isEmpty {
+                Button("Clear recent alerts", role: .destructive) { confirmClearAlerts = true }
+                    .font(.subheadline.weight(.semibold))
+            }
             if items.isEmpty { panel { Text(alertFilter == "Connection" ? "No connection events in the last 7 days." : "No high or low heart-rate alerts in the last 7 days.") } }
             ForEach(items) { event in
                 if event.kind == "connection" { connectionEventCard(event) }
                 else { heartEventCard(event) }
             }
+        }
+        .confirmationDialog("Clear heart-rate and connection alerts from the last 7 days? Notes and history readings stay on this iPhone.", isPresented: $confirmClearAlerts, titleVisibility: .visible) {
+            Button("Clear recent alerts", role: .destructive) { monitor.clearRecentAlerts() }
         }
     }
     private func heartEventCard(_ event: SavedEvent) -> some View {
