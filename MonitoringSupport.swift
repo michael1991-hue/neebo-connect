@@ -91,6 +91,27 @@ enum FamilyLivePolicy {
     }
 }
 
+struct SharedAlertLog {
+    static func event(previous: String, next: String, wasAcknowledged: Bool, acknowledged: Bool) -> (kind: String, title: String, detail: String)? {
+        if previous == "none", next == "high" {
+            return ("critical", "High heart-rate alert", "From the nursery iPhone. Limits are set on that phone. Saved on this iPhone.")
+        }
+        if previous == "none", next == "low" {
+            return ("critical", "Low heart-rate alert", "From the nursery iPhone. Limits are set on that phone. Saved on this iPhone.")
+        }
+        if previous == "none", next == "sensor" {
+            return ("measurement", "Check sensor data", "The nursery iPhone reported no fresh heart-rate data. Saved on this iPhone.")
+        }
+        if (previous == "high" || previous == "low"), next == "none" {
+            return ("critical", "Heart rate back to normal", "Nursery reading returned within the configured limits. Saved on this iPhone.")
+        }
+        if !wasAcknowledged, acknowledged, next != "none" {
+            return ("critical", "Alarm acknowledged", "Heard it was tapped. The nursery alert stays active until a fresh in-range reading. Saved on this iPhone.")
+        }
+        return nil
+    }
+}
+
 // Five minutes of unchanged received values is a heuristic, not proof of
 // sensor failure. Rounding, averaging and cached reads can also repeat values.
 struct StaleHeartRateDetector {

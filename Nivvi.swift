@@ -362,6 +362,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     private static func isListedAlert(_ event: SavedEvent) -> Bool {
         event.kind == "critical" || event.kind == "alarm" || event.kind == "connection"
             || event.title == "Heart rate back to normal" || event.title == "High heart-rate alert" || event.title == "Low heart-rate alert"
+            || event.title == "Check sensor data" || event.title == "Alarm acknowledged"
             || event.title.localizedCaseInsensitiveContains("needs your attention")
     }
     func recordEvent(kind: String, title: String, detail: String, heartRate: Int? = nil) {
@@ -1755,6 +1756,8 @@ struct ContentView: View {
     @State private var selectedHistoryReading: SavedMeasurement?
     @State private var confirmDeleteHistory = false
     @State private var confirmClearAlerts = false
+    @State private var lastSharedAlarm = "none"
+    @State private var lastSharedAck = false
     @State private var manualMode: NivviMode?
     @FocusState private var editingLimit: Bool
     private let coral = Color(red: 1, green: 0.56, blue: 0.53)
@@ -1904,24 +1907,42 @@ struct ContentView: View {
         }
     }
     private func applyShareAlert() {
-        if wifi.following, wifi.playAlerts, let snap = wifi.latest, Date().timeIntervalSince1970 - snap.captured < 90 {
+        if wifi.following, let snap = wifi.latest, Date().timeIntervalSince1970 - snap.captured < 90 {
             let alarm = snap.alarm ?? "none"
+            noteSharedAlert(alarm: alarm, acknowledged: snap.acknowledged == true, heartRate: remoteBeats.flatMap { $0 > 0 ? Int($0.rounded()) : nil }, catchup: false)
             if alarm == "none" { monitor.endShareAlert(); return }
+            guard wifi.playAlerts else { return }
             if snap.acknowledged == true { monitor.silenceAlarm() }
             monitor.beginShareAlert(sensor: alarm == "sensor")
             return
         }
         if family.viewingRemote, let snap = family.remote?.snapshot {
+            let alarm = snap.alarm
+            noteSharedAlert(alarm: alarm, acknowledged: snap.acknowledged == true, heartRate: snap.heart_rate.map { Int($0.rounded()) }, catchup: family.alarmCatchup)
             if family.alarmCatchup {
-                if snap.alarm == "none" { monitor.endShareAlert() }
+                if alarm == "none" { monitor.endShareAlert() }
                 return
             }
-            if snap.alarm == "none" { monitor.endShareAlert(); return }
+            if alarm == "none" { monitor.endShareAlert(); return }
             if snap.acknowledged == true { monitor.silenceAlarm() }
-            monitor.beginShareAlert(sensor: snap.alarm == "sensor")
+            monitor.beginShareAlert(sensor: alarm == "sensor")
             return
         }
+        lastSharedAlarm = "none"
+        lastSharedAck = false
         monitor.endShareAlert()
+    }
+    private func noteSharedAlert(alarm: String, acknowledged: Bool, heartRate: Int?, catchup: Bool) {
+        if catchup {
+            lastSharedAlarm = alarm
+            lastSharedAck = acknowledged
+            return
+        }
+        if let event = SharedAlertLog.event(previous: lastSharedAlarm, next: alarm, wasAcknowledged: lastSharedAck, acknowledged: acknowledged) {
+            monitor.recordEvent(kind: event.kind, title: event.title, detail: event.detail, heartRate: heartRate == 0 ? nil : heartRate)
+        }
+        lastSharedAlarm = alarm
+        lastSharedAck = alarm == "none" ? false : (acknowledged || lastSharedAck)
     }
     private func acknowledgeEverywhere() {
         monitor.silenceAlarm()
