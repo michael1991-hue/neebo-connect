@@ -354,6 +354,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     private var continuityID = UUID()
     @Published var historyError: String?
     private var historyLoadFailed = false
+    private var storedHistoryIDs = Set<UUID>()
     private var freshnessTimer: Timer?
     private lazy var archive = DailyHistoryStore(folder: folder)
     private var historyURL: URL { folder.appendingPathComponent("measurements.json") }
@@ -387,6 +388,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         do {
             try archive.append(entry)
             sampling.didStore(source: source, at: entry.time)
+            storedHistoryIDs.insert(entry.id)
             if Calendar.current.isDate(entry.time, inSameDayAs: selectedHistoryDay) { history.append(entry) }
             let today = Calendar.current.startOfDay(for: entry.time)
             if !historyDays.contains(today) { historyDays = try archive.days() }
@@ -405,10 +407,36 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     }
     func selectHistoryDay(_ day: Date) {
         selectedHistoryDay = day
-        do { history = try archive.load(day: day); historyError = nil }
+        do { history = try archive.load(day: day); rememberHistoryIDs(history); historyError = nil }
         catch { history = []; historyError = "This day could not be read. Original history is preserved." }
         do { events = try eventArchive.load(day: day); eventError = nil }
         catch { events = []; eventError = "This day's events could not be read. Original log is preserved." }
+    }
+    func ingestShared(_ entries: [SavedMeasurement]) {
+        guard !historyLoadFailed else { return }
+        for entry in entries.sorted(by: { $0.time < $1.time }) {
+            guard entry.heartRateValue != nil || entry.oxygenValue != nil else { continue }
+            guard !storedHistoryIDs.contains(entry.id) else { continue }
+            guard sampling.shouldStoreNewer(source: entry.source, at: entry.time) else { continue }
+            storedHistoryIDs.insert(entry.id)
+            do {
+                try archive.append(entry)
+                sampling.didStore(source: entry.source, at: entry.time)
+                if Calendar.current.isDate(entry.time, inSameDayAs: selectedHistoryDay) {
+                    history.append(entry)
+                    history.sort { $0.time < $1.time }
+                }
+                let day = Calendar.current.startOfDay(for: entry.time)
+                if !historyDays.contains(day) { historyDays = try archive.days() }
+                historyError = nil
+            } catch {
+                storedHistoryIDs.remove(entry.id)
+                historyError = "History could not be saved: \(error.localizedDescription)"
+            }
+        }
+    }
+    private func rememberHistoryIDs(_ entries: [SavedMeasurement]) {
+        for entry in entries { storedHistoryIDs.insert(entry.id) }
     }
     func clearHistory() {
         do {
@@ -417,6 +445,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             UserDefaults.standard.removeObject(forKey: "nivvi.sleep.timer")
             events = []; eventDays = []; eventError = nil; sampling.reset()
             history = []; historyDays = []; historyError = nil; historyLoadFailed = false
+            storedHistoryIDs = []
             try? FileManager.default.removeItem(at: folder.appendingPathComponent("Nivvi-history.csv"))
             try? FileManager.default.removeItem(at: folder.appendingPathComponent("Nivvi-events.csv"))
         } catch { historyError = "History could not be fully cleared: \(error.localizedDescription)" }
@@ -573,6 +602,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         do {
             try archive.prepare(legacy: historyURL)
             historyDays = try archive.days(); history = try archive.load(day: selectedHistoryDay)
+            rememberHistoryIDs(history)
         } catch { historyLoadFailed = true; historyError = "Saved history could not be read. Original files preserved; storage is paused." }
         freshnessTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.expireMeasurements() }
     }
@@ -1711,23 +1741,15 @@ struct ContentView: View {
         return monitor.profile == .heartRate ? "Waiting for heart-rate data" : "Waiting for device data"
     }
     private var displayedHistory: [SavedMeasurement] {
-        if family.viewingRemote {
-            if let samples = family.remote?.snapshot?.history, !samples.isEmpty {
-                return SavedMeasurement.uniquelyIdentified(samples.map {
-                    SavedMeasurement.mapped(time: Date(timeIntervalSince1970: $0.t), heartRate: $0.hr, oxygen: $0.o2, source: "family-share")
-                })
-            }
-            if !family.trail.isEmpty { return SavedMeasurement.uniquelyIdentified(family.trail) }
+        var rows = monitor.history
+        let showingToday = Calendar.current.isDateInToday(monitor.selectedHistoryDay)
+        if showingToday, family.viewingRemote, !family.trail.isEmpty {
+            rows.append(contentsOf: family.trail)
         }
-        if wifi.remoteFresh {
-            if let samples = wifi.latest?.history, !samples.isEmpty {
-                return SavedMeasurement.uniquelyIdentified(samples.map {
-                    SavedMeasurement.mapped(time: Date(timeIntervalSince1970: $0.t), heartRate: $0.hr, oxygen: $0.o2, source: "wifi-share")
-                })
-            }
-            if !wifi.trail.isEmpty { return SavedMeasurement.uniquelyIdentified(wifi.trail) }
+        if showingToday, wifi.remoteFresh, !wifi.trail.isEmpty {
+            rows.append(contentsOf: wifi.trail)
         }
-        return monitor.history
+        return SavedMeasurement.uniquelyIdentified(rows.sorted { $0.time < $1.time })
     }
     private var displayName: String { childName.isEmpty ? "Your child" : childName }
     private var mirroringNursery: Bool { wifi.remoteFresh || family.viewingRemote }
@@ -1783,6 +1805,26 @@ struct ContentView: View {
         if let kind = monitor.alarmKind { return kind.rawValue }
         if monitor.staleHeartRateDetected { return "sensor" }
         return "none"
+    }
+    private func persistSharedHistory() {
+        if family.viewingRemote {
+            var rows = family.trail
+            if let samples = family.remote?.snapshot?.history {
+                rows.append(contentsOf: samples.map {
+                    SavedMeasurement.mapped(time: Date(timeIntervalSince1970: $0.t), heartRate: $0.hr, oxygen: $0.o2, source: "family-share")
+                })
+            }
+            monitor.ingestShared(rows)
+        }
+        if wifi.following {
+            var rows = wifi.trail
+            if let samples = wifi.latest?.history {
+                rows.append(contentsOf: samples.map {
+                    SavedMeasurement.mapped(time: Date(timeIntervalSince1970: $0.t), heartRate: $0.hr, oxygen: $0.o2, source: "wifi-share")
+                })
+            }
+            monitor.ingestShared(rows)
+        }
     }
     private func applyShareAlert() {
         if wifi.following, wifi.playAlerts, let snap = wifi.latest, Date().timeIntervalSince1970 - snap.captured < 90 {
@@ -1913,11 +1955,13 @@ struct ContentView: View {
         .onChange(of: monitor.wearableCharging) { _ in publishWiFiShare() }
         .onChange(of: family.remoteFetched) { _ in
             applyShareAlert()
+            persistSharedHistory()
             syncLiveActivity()
             UIApplication.shared.isIdleTimerDisabled = wifi.hosting || wifi.following || monitor.connection.isConnected || family.viewingRemote
         }
         .onChange(of: wifi.latest) { _ in
             applyShareAlert()
+            persistSharedHistory()
             syncLiveActivity()
         }
         .onChange(of: wifi.playAlerts) { _ in applyShareAlert() }
@@ -2242,11 +2286,21 @@ struct ContentView: View {
                     .buttonStyle(.bordered)
                     .accessibilityLabel("Add note")
             }
+            if displayedHistory.contains(where: { $0.source == "family-share" || $0.source == "wifi-share" }) {
+                Text("Includes readings this iPhone received from the nursery phone. They stay here for 30 days.")
+                    .font(.caption).foregroundStyle(muted)
+            }
             if displayedHistory.isEmpty {
-                panel { Text("No readings this day.") }
+                panel {
+                    Text("No readings this day.")
+                    if family.viewingRemote || wifi.following {
+                        Text("Shared readings are saved on this iPhone while you follow the nursery phone. They stay here for 30 days.")
+                            .font(.caption).foregroundStyle(muted)
+                    }
+                }
             } else {
                 panel {
-                    HistoryChartsView(entries: displayedHistory, day: (family.viewingRemote || wifi.remoteFresh) ? Calendar.current.startOfDay(for: Date()) : monitor.selectedHistoryDay, selected: $selectedHistoryReading, coral: coral, teal: accentMint, lavender: stamp, caption: muted, ink: ink)
+                    HistoryChartsView(entries: displayedHistory, day: monitor.selectedHistoryDay, selected: $selectedHistoryReading, coral: coral, teal: accentMint, lavender: stamp, caption: muted, ink: ink)
                 }
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
                     ForEach(Array(displayedHistory.suffix(15).reversed())) { sample in

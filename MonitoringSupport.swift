@@ -503,6 +503,11 @@ struct MeasurementSamplingPolicy {
         guard let last = lastStored[source] else { return true }
         return time < last || time.timeIntervalSince(last) >= 30
     }
+    // Shared catch-up points are in the past; never treat an older packet as a clock rollback.
+    func shouldStoreNewer(source: String, at time: Date) -> Bool {
+        guard let last = lastStored[source] else { return true }
+        return time.timeIntervalSince(last) >= 30
+    }
     mutating func didStore(source: String, at time: Date) { lastStored[source] = time }
     mutating func reset() { lastStored = [:] }
     mutating func reset(source: String) { lastStored[source] = nil }
