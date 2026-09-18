@@ -148,6 +148,53 @@ struct WearableChargePolicy {
     mutating func reset() { self = Self() }
 }
 
+enum NivviSiren: String, CaseIterable, Identifiable {
+    case classic, urgent, pulse, deep, high
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .classic: return "Classic"
+        case .urgent: return "Urgent"
+        case .pulse: return "Pulse"
+        case .deep: return "Deep"
+        case .high: return "High"
+        }
+    }
+    var resource: String {
+        switch self {
+        case .classic: return "NivviSiren"
+        case .urgent: return "NivviSirenUrgent"
+        case .pulse: return "NivviSirenPulse"
+        case .deep: return "NivviSirenDeep"
+        case .high: return "NivviSirenHigh"
+        }
+    }
+    var notificationFile: String { resource + ".wav" }
+}
+
+enum NivviRelief: String, CaseIterable, Identifiable {
+    case soft, warm, bright, piano, hush
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .soft: return "Soft bells"
+        case .warm: return "Warm"
+        case .bright: return "Bright"
+        case .piano: return "Piano"
+        case .hush: return "Hush"
+        }
+    }
+    var resource: String {
+        switch self {
+        case .soft: return "NivviRelief"
+        case .warm: return "NivviReliefWarm"
+        case .bright: return "NivviReliefBright"
+        case .piano: return "NivviReliefPiano"
+        case .hush: return "NivviReliefHush"
+        }
+    }
+}
+
 struct WearableBatteryPolicy {
     static let warn = 20
     static let urgent = 10

@@ -25,7 +25,11 @@ with (app / "PrivacyInfo.xcprivacy").open("rb") as stream:
     privacy = plistlib.load(stream)
 assert privacy.get("NSPrivacyTracking") is False, "Unexpected tracking declaration"
 assert privacy.get("NSPrivacyAccessedAPITypes"), "Missing required-reason API declarations"
-for sound in ("NivviSiren.wav", "NivviSensor.wav", "NivviRelief.wav"):
+for sound in (
+    "NivviSiren.wav", "NivviSirenUrgent.wav", "NivviSirenPulse.wav", "NivviSirenDeep.wav", "NivviSirenHigh.wav",
+    "NivviSensor.wav",
+    "NivviRelief.wav", "NivviReliefWarm.wav", "NivviReliefBright.wav", "NivviReliefPiano.wav", "NivviReliefHush.wav",
+):
     assert (app / sound).stat().st_size > 44, f"Missing sound: {sound}"
 catalog = root / "build/Assets.xcassets/AppIcon.appiconset"
 icons = json.loads((catalog / "Contents.json").read_text())["images"]

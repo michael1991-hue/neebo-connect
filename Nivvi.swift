@@ -305,6 +305,12 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     @Published private(set) var alarmAcknowledged = false
     @Published var notificationStatus = "Notification permission has not been checked."
     @Published var soundStatus = "Use Test siren to check the iPhone’s current volume."
+    @Published var selectedSiren: NivviSiren = NivviSiren(rawValue: UserDefaults.standard.string(forKey: "nivvi.sound.siren") ?? "") ?? .classic {
+        didSet { UserDefaults.standard.set(selectedSiren.rawValue, forKey: "nivvi.sound.siren") }
+    }
+    @Published var selectedRelief: NivviRelief = NivviRelief(rawValue: UserDefaults.standard.string(forKey: "nivvi.sound.relief") ?? "") ?? .soft {
+        didSet { UserDefaults.standard.set(selectedRelief.rawValue, forKey: "nivvi.sound.relief") }
+    }
     @Published var experimentalCustomAlarms = false { didSet { alarmSettings.experimentalCustomEnabled = experimentalCustomAlarms } }
     @Published var testingSiren = false
     private var alarmEngine = RateAlarmEngine()
@@ -663,7 +669,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         if let soundName {
             content.sound = UNNotificationSound(named: UNNotificationSoundName(rawValue: soundName))
         } else {
-            content.sound = sirenSound ? UNNotificationSound(named: UNNotificationSoundName(rawValue: "NivviSiren.wav")) : .default
+            content.sound = sirenSound ? UNNotificationSound(named: UNNotificationSoundName(rawValue: selectedSiren.notificationFile)) : .default
         }
         content.interruptionLevel = soundName == "NivviSensor.wav" ? .active : .timeSensitive
         let trigger: UNNotificationTrigger?
@@ -687,7 +693,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     }
     private func scheduleAlarmNotifications(title: String? = nil, body: String? = nil) {
         let sensorOnly = staleHeartRateDetected && !alarmActive
-        let selectedSound = sensorOnly ? "NivviSensor.wav" : "NivviSiren.wav"
+        let selectedSound = sensorOnly ? "NivviSensor.wav" : selectedSiren.notificationFile
         let selectedTitle = sensorOnly ? "Check sensor data" : (title ?? attentionTitle)
         let alertBody = body ?? "\(alarmDetail) Check \(displayNameForAlert) and follow the care plan."
         notify(title: selectedTitle, body: alertBody, identifier: "nivvi-rate-alarm", soundName: selectedSound)
@@ -715,7 +721,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     private func playReliefSound() {
         guard foreground else { return }
         do {
-            guard let url = Bundle.main.url(forResource: "NivviRelief", withExtension: "wav") else { throw CocoaError(.fileNoSuchFile) }
+            guard let url = Bundle.main.url(forResource: selectedRelief.resource, withExtension: "wav") else { throw CocoaError(.fileNoSuchFile) }
             try configureAlarmAudio()
             siren = try AVAudioPlayer(contentsOf: url); siren?.numberOfLoops = 0; siren?.volume = 0.5
             _ = siren?.play()
@@ -726,7 +732,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         let sensorOnly = shareAlertSensor || (staleHeartRateDetected && !alarmActive && !testingSiren)
         if !foreground && sensorOnly { return }
         do {
-            guard let url = Bundle.main.url(forResource: sensorOnly ? "NivviSensor" : "NivviSiren", withExtension: "wav") else { throw CocoaError(.fileNoSuchFile) }
+            guard let url = Bundle.main.url(forResource: sensorOnly ? "NivviSensor" : selectedSiren.resource, withExtension: "wav") else { throw CocoaError(.fileNoSuchFile) }
             try configureAlarmAudio()
             siren = try AVAudioPlayer(contentsOf: url); siren?.numberOfLoops = sensorOnly ? 0 : (loop ? -1 : 0); siren?.volume = sensorOnly ? 0.4 : 1
             guard siren?.play() == true else { throw CocoaError(.fileReadUnknown) }
@@ -746,7 +752,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             title: sensor ? "Check sensor data" : attentionTitle,
             body: sensor ? "The nursery iPhone reports no fresh heart-rate data. Check the child and the wearable." : "The nursery iPhone has a heart-rate alert. Check \(displayNameForAlert) and follow the care plan.",
             identifier: "nivvi-wifi-share-alarm",
-            soundName: sensor ? "NivviSensor.wav" : "NivviSiren.wav"
+            soundName: sensor ? "NivviSensor.wav" : selectedSiren.notificationFile
         )
         startSiren(loop: !sensor)
     }
@@ -2649,6 +2655,12 @@ struct ContentView: View {
             Text("Sounds and notifications").font(.headline)
             Text("Siren plays in the app even on Silent. Lock-screen banners can still be quiet in Silent or Focus. Allow Time Sensitive for Nivvi.")
                 .font(.caption).foregroundStyle(muted)
+            Picker("Alert siren", selection: $monitor.selectedSiren) {
+                ForEach(NivviSiren.allCases) { Text($0.title).tag($0) }
+            }
+            Picker("Recovery chime", selection: $monitor.selectedRelief) {
+                ForEach(NivviRelief.allCases) { Text($0.title).tag($0) }
+            }
             Button(monitor.testingSiren ? "Stop test siren" : "Test siren for 5 seconds") { monitor.testSiren() }
                 .buttonStyle(.borderedProminent).tint(coral).disabled(monitor.criticalAlertActive)
             Button("Preview recovery chime") { monitor.testRecoverySound() }
