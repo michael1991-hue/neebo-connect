@@ -439,7 +439,6 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             acknowledged: alarmAcknowledged
         )
     }
-    }
     private func saveMeasurement(heartRate: Int?, oxygen: Int?, source: String, exactHeartRate: Double? = nil, exactOxygen: Double? = nil, segment: UUID? = nil) {
         let entry = SavedMeasurement(time: Date(), heartRate: heartRate, oxygen: oxygen, source: source, continuityID: segment ?? continuityID, exactHeartRate: exactHeartRate, exactOxygen: exactOxygen)
         appendLiveTrace(entry)
