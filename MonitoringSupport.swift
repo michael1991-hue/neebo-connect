@@ -140,7 +140,7 @@ struct WearableChargePolicy {
     mutating func observeLevel(_ percent: Int) {
         guard (0...100).contains(percent) else { return }
         if let last = lastLevel {
-            if percent >= last + 2 { isCharging = true }
+            if percent >= last + 8 { isCharging = true }
             if percent + 1 < last { isCharging = false }
         }
         lastLevel = percent

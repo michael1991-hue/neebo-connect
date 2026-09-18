@@ -1232,18 +1232,12 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         guard wearableCharging != on else { return }
         wearableCharging = on
         if on {
-            cancelBackgroundWatchdog()
-            UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["nivvi-background-data", "nivvi-sensor-paused"])
-            staleHeartRate.reset(); staleHeartRateDetected = false
-            alarmEngine.interrupt(); alarmKind = nil
-            if !testingSiren { stopSiren() }
             if record {
-                recordEvent(kind: "connection", title: "Wearable charging", detail: "Live readings paused while the band reports charging. No-reading alerts are silenced until it is worn again.")
+                recordEvent(kind: "connection", title: "Wearable charging", detail: "The band reported charging. Live readings continue while packets still arrive.")
             }
-            status = "Charging · monitoring paused"
-            measurementStatus = "Wearable on charge. Heart-rate alerts are paused."
+            status = "Connected · charging"
         } else if record {
-            recordEvent(kind: "connection", title: "Charging ended", detail: "Waiting for a worn reading. Put the band on the child before relying on alerts.")
+            recordEvent(kind: "connection", title: "Charging ended", detail: "The band is no longer reporting charge. Live readings continue.")
         }
     }
     private func applyBatteryPercent(_ percent: Int, fromStandard: Bool) {
@@ -1251,8 +1245,12 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         if fromStandard { batteryFromStandard = true }
         else if batteryFromStandard { return }
         battery = "\(percent)%"
-        chargePolicy.observeLevel(percent)
-        applyCharging(chargePolicy.isCharging)
+        if fromStandard {
+            chargePolicy.observeLevel(percent)
+            applyCharging(chargePolicy.isCharging)
+        } else {
+            applyCharging(false, record: false)
+        }
         applyBatteryWarning(percent)
     }
     private func applyBatteryWarning(_ percent: Int) {
@@ -1823,7 +1821,7 @@ struct ContentView: View {
         family.remote?.snapshot?.heart_rate ?? wifi.latest.flatMap { Double($0.heartRate.filter { $0.isNumber || $0 == "." }) }
     }
     private var statusCaption: String {
-        if monitor.wearableCharging { return "Charging · monitoring paused" }
+        if monitor.wearableCharging && monitor.connection != .receiving { return "Charging" }
         if wifi.remoteFresh { return "Shared over Wi‑Fi" }
         if family.viewingRemote { return family.statusLine }
         return monitor.connection.label
@@ -1860,7 +1858,6 @@ struct ContentView: View {
         )
     }
     private var shareAlarmKind: String {
-        if monitor.wearableCharging { return "none" }
         if let kind = monitor.alarmKind { return kind.rawValue }
         if monitor.staleHeartRateDetected { return "sensor" }
         return "none"
@@ -2248,7 +2245,7 @@ struct ContentView: View {
             }
         }
         if wifi.following { return wifi.remoteFresh ? "Live · Wi‑Fi" : "Wi‑Fi stale · not live" }
-        if monitor.wearableCharging || monitor.staleHeartRateDetected { return "Not live" }
+        if monitor.staleHeartRateDetected { return "Not live" }
         return "Live"
     }
     private var fiveMinuteChart: some View {
@@ -2294,7 +2291,7 @@ struct ContentView: View {
                 Text("Heart rate").font(.caption.weight(.bold)).tracking(1.1).foregroundStyle(muted)
                 HStack(alignment: .center, spacing: 12) {
                     PulsingHeart(
-                        beatsPerMinute: mirroringNursery ? remoteBeats : (monitor.wearableCharging || monitor.staleHeartRateDetected ? nil : (monitor.verifiedHeartRate.map(Double.init) ?? monitor.pulseOximeterRate ?? monitor.customHeartRateCandidate.map(Double.init))),
+                        beatsPerMinute: mirroringNursery ? remoteBeats : (monitor.staleHeartRateDetected ? nil : (monitor.verifiedHeartRate.map(Double.init) ?? monitor.pulseOximeterRate ?? monitor.customHeartRateCandidate.map(Double.init))),
                         tint: monitor.staleHeartRateDetected && !mirroringNursery ? coral : Color(red: 0.93, green: 0.38, blue: 0.42)
                     )
                     Text(heroHeartRate)
@@ -2342,7 +2339,6 @@ struct ContentView: View {
         }
     }
     private var heroHeartRate: String {
-        if monitor.wearableCharging { return "—" }
         if heartRateDisplay == "No reading" { return "—" }
         return heartRateDisplay.replacingOccurrences(of: " bpm", with: "")
     }
