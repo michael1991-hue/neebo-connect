@@ -1829,15 +1829,7 @@ struct ContentView: View {
         return value.map { "\(MetricText.number($0))%" } ?? "No reading"
     }
     private var displayedHistory: [SavedMeasurement] {
-        var rows = monitor.history
-        let showingToday = Calendar.current.isDateInToday(monitor.selectedHistoryDay)
-        if showingToday, family.viewingRemote, !family.trail.isEmpty {
-            rows.append(contentsOf: family.trail)
-        }
-        if showingToday, wifi.remoteFresh, !wifi.trail.isEmpty {
-            rows.append(contentsOf: wifi.trail)
-        }
-        return SavedMeasurement.uniquelyIdentified(rows.sorted { $0.time < $1.time })
+        SavedMeasurement.uniquelyIdentified(monitor.history.sorted { $0.time < $1.time })
     }
     private var displayName: String { childName.isEmpty ? "Your child" : childName }
     private var mirroringNursery: Bool { wifi.remoteFresh || family.viewingRemote }
