@@ -608,6 +608,19 @@ enum SharedHistoryPolicy {
     }
 }
 
+enum WiFiSharePolicy {
+    static let packetStale: TimeInterval = 6
+    static let connectGiveUp: TimeInterval = 5
+    static func shouldDrop(now: Date, lastPacket: Date?, connectedAt: Date?) -> Bool {
+        if let lastPacket { return now.timeIntervalSince(lastPacket) >= packetStale }
+        if let connectedAt { return now.timeIntervalSince(connectedAt) >= connectGiveUp }
+        return false
+    }
+    static func reconnectDelay(attempt: Int) -> TimeInterval {
+        min(8, pow(2, Double(max(0, attempt - 1))) * 0.5)
+    }
+}
+
 struct SavedEvent: Codable, Identifiable {
     var id = UUID()
     let time: Date

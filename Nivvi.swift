@@ -2075,6 +2075,8 @@ struct ContentView: View {
             UIApplication.shared.isIdleTimerDisabled = wifi.hosting || wifi.following || monitor.connection.isConnected || family.viewingRemote
         }
         .onChange(of: scenePhase) { phase in
+            wifi.revive()
+            monitor.refreshBackgroundHold()
             if phase == .active { family.resumeForeground() }
         }
         .sheet(isPresented: $showProfile) {
