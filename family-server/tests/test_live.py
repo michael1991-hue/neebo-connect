@@ -136,3 +136,25 @@ def test_missing_heart_rate_does_not_recover_alarm(client):
     data = client.get(f"/families/{family}/latest", headers=owner).json()["snapshot"]
     assert data["alarm"] == "high"
     assert data["heart_rate"] == 160
+
+
+def test_viewer_ack_keeps_alarm_silenced(client):
+    owner, _, _ = account(client, "ack-owner@example.com")
+    reader, _, _ = account(client, "ack-reader@example.com")
+    family = client.post("/families", headers=owner, json={"label": "Ack"}).json()["id"]
+    code = client.post(f"/families/{family}/invites", headers=owner, json={"email": "ack-reader@example.com"}).json()["code"]
+    assert client.post("/invites/accept", headers=reader, json={"code": code}).status_code == 200
+    now = time.time()
+    assert client.put(f"/families/{family}/latest", headers=owner, json=snapshot(captured=now, alarm="high", heart_rate=170, seq=1)).status_code == 200
+    assert client.post(f"/families/{family}/ack", headers=reader).status_code == 200
+    data = client.get(f"/families/{family}/latest", headers=reader).json()["snapshot"]
+    assert data["alarm"] == "high"
+    assert data["acknowledged"] is True
+    later = now + 0.2
+    assert client.put(
+        f"/families/{family}/latest",
+        headers=owner,
+        json=snapshot(captured=later, alarm="high", heart_rate=168, seq=2, acknowledged=False),
+    ).status_code == 200
+    data = client.get(f"/families/{family}/latest", headers=reader).json()["snapshot"]
+    assert data["acknowledged"] is True

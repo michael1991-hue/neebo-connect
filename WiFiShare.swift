@@ -12,6 +12,7 @@ struct WiFiSnapshot: Codable, Equatable {
     var charging: Bool?
     var battery: String?
     var history: [FamilySample]? = nil
+    var acknowledged: Bool? = nil
 }
 
 final class WiFiRelay: ObservableObject {
@@ -22,6 +23,7 @@ final class WiFiRelay: ObservableObject {
     @Published var pin: String
     @Published var joinPin = ""
     @Published var playAlerts = true
+    @Published var inboundAck = false
     @Published var status = "Off"
     @Published var latest: WiFiSnapshot?
     @Published private(set) var trail: [SavedMeasurement] = []
@@ -42,6 +44,7 @@ final class WiFiRelay: ObservableObject {
     private var lastCharging = false
     private var lastBattery = "—"
     private var lastHistory: [FamilySample] = []
+    private var lastAcknowledged = false
 
     init() {
         if let saved = UserDefaults.standard.string(forKey: "nivvi.wifi.pin"), saved.count == 4 {
@@ -63,7 +66,7 @@ final class WiFiRelay: ObservableObject {
         return Date().timeIntervalSince1970 - latest.captured < 45
     }
 
-    func publish(heartRate: String, oxygen: String, connection: String, alarm: String = "none", charging: Bool = false, battery: String = "—", history: [FamilySample] = []) {
+    func publish(heartRate: String, oxygen: String, connection: String, alarm: String = "none", charging: Bool = false, battery: String = "—", history: [FamilySample] = [], acknowledged: Bool = false) {
         lastHR = heartRate
         lastO2 = oxygen
         lastConnection = connection
@@ -71,7 +74,21 @@ final class WiFiRelay: ObservableObject {
         lastCharging = charging
         lastBattery = battery
         lastHistory = history
+        lastAcknowledged = acknowledged
         emit()
+    }
+
+    func sendAck() {
+        guard wantFollow, let viewer else { return }
+        var packet = Data("{\"ack\":true}".utf8)
+        packet.append(10)
+        viewer.send(content: packet, completion: .contentProcessed { _ in })
+    }
+
+    func consumeInboundAck() -> Bool {
+        guard inboundAck else { return false }
+        inboundAck = false
+        return true
     }
 
     func setHosting(_ on: Bool) {
@@ -138,7 +155,7 @@ final class WiFiRelay: ObservableObject {
     }
 
     private func emit() {
-        let snap = WiFiSnapshot(pin: pin, heartRate: lastHR, oxygen: lastO2, connection: lastConnection, captured: Date().timeIntervalSince1970, alarm: lastAlarm, charging: lastCharging, battery: lastBattery, history: lastHistory)
+        let snap = WiFiSnapshot(pin: pin, heartRate: lastHR, oxygen: lastO2, connection: lastConnection, captured: Date().timeIntervalSince1970, alarm: lastAlarm, charging: lastCharging, battery: lastBattery, history: lastHistory, acknowledged: lastAcknowledged)
         payload = (try? JSONEncoder().encode(snap)) ?? Data()
         payload.append(10)
         flush()
@@ -219,7 +236,22 @@ final class WiFiRelay: ObservableObject {
             }
         }
         connection.start(queue: .main)
+        receiveHost(connection)
         flush()
+    }
+
+    private func receiveHost(_ connection: NWConnection) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self] data, _, isComplete, error in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if let data, let text = String(data: data, encoding: .utf8), text.contains("\"ack\"") {
+                    self.inboundAck = true
+                    self.lastAcknowledged = true
+                    self.emit()
+                }
+                if error == nil, !isComplete { self.receiveHost(connection) }
+            }
+        }
     }
 
     private func stopHost(clearWant: Bool = true) {

@@ -241,6 +241,7 @@ class Snapshot(BaseModel):
     stream_id: str | None = Field(default=None, max_length=80)
     seq: int | None = Field(default=None, ge=1)
     kind: str = Field(default="live", max_length=20)
+    acknowledged: bool = False
 
 
 class Device(BaseModel):
@@ -448,6 +449,10 @@ def merge_snapshot(old, body: Snapshot, received):
     payload["server_received"] = received
     payload["seq"] = body.seq or int(old.get("seq") or 0) + 1
     payload["stream_id"] = body.stream_id or old.get("stream_id")
+    if body.alarm == old.get("alarm"):
+        payload["acknowledged"] = bool(body.acknowledged or old.get("acknowledged"))
+    else:
+        payload["acknowledged"] = bool(body.acknowledged)
     return payload
 
 
@@ -483,6 +488,23 @@ def publish(family: str, body: Snapshot, user=Depends(require_user)):
     live["kind"] = "live"
     HUB.emit(family, live)
     return {"ok": True, "seq": payload["seq"], "server_received": now}
+
+
+@app.post("/families/{family}/ack")
+def acknowledge_alarm(family: str, user=Depends(require_user)):
+    with db() as c:
+        member(c, family, user)
+        row = c.execute("SELECT payload FROM latest WHERE family=?", (family,)).fetchone()
+        if not row:
+            raise HTTPException(404, "No live reading to acknowledge")
+        payload = json.loads(row[0])
+        payload["acknowledged"] = True
+        c.execute("INSERT OR REPLACE INTO latest VALUES(?,?,?)", (family, json.dumps(payload), time.time()))
+    live = {key: value for key, value in payload.items() if key != "history"}
+    live["type"] = "ack"
+    live["acknowledged"] = True
+    HUB.emit(family, live)
+    return {"ok": True}
 
 
 @app.get("/families/{family}/latest")

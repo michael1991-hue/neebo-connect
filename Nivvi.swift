@@ -409,7 +409,8 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             connection: connection.label,
             history: Array(points),
             heart_rate_at: hr == nil ? nil : hrTime?.timeIntervalSince1970,
-            oxygen_at: ox == nil ? nil : oxTime?.timeIntervalSince1970
+            oxygen_at: ox == nil ? nil : oxTime?.timeIntervalSince1970,
+            acknowledged: alarmAcknowledged
         )
         Task { @MainActor in FamilyRelay.shared.capture(snapshot) }
     }
@@ -744,9 +745,16 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         siren?.stop(); siren = nil
     }
     func beginShareAlert(sensor: Bool) {
-        if shareAlertActive && shareAlertSensor == sensor { return }
+        if shareAlertActive && shareAlertSensor == sensor {
+            if alarmAcknowledged { stopSiren(); return }
+            return
+        }
         shareAlertSensor = sensor
         shareAlertActive = true
+        if alarmAcknowledged {
+            stopSiren()
+            return
+        }
         alarmAcknowledged = false
         notify(
             title: sensor ? "Check sensor data" : attentionTitle,
@@ -754,14 +762,23 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             identifier: "nivvi-wifi-share-alarm",
             soundName: sensor ? "NivviSensor.wav" : selectedSiren.notificationFile
         )
+        if !sensor {
+            notify(
+                title: attentionTitle,
+                body: "This heart-rate alert is still active. Open Nivvi and tap Heard it.",
+                identifier: "nivvi-wifi-share-alarm-reminder",
+                soundName: selectedSiren.notificationFile,
+                repeatInterval: 60
+            )
+        }
         startSiren(loop: !sensor)
     }
     func endShareAlert() {
         guard shareAlertActive else { return }
         shareAlertActive = false
         shareAlertSensor = false
-        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["nivvi-wifi-share-alarm"])
-        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["nivvi-wifi-share-alarm"])
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["nivvi-wifi-share-alarm", "nivvi-wifi-share-alarm-reminder"])
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["nivvi-wifi-share-alarm", "nivvi-wifi-share-alarm-reminder"])
         if !alarmActive && !staleHeartRateDetected && !testingSiren { stopSiren() }
     }
     func testRecoverySound() {
@@ -1371,7 +1388,10 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         alarmAcknowledged = true
         stopSiren()
         clearAlarmNotifications()
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["nivvi-wifi-share-alarm", "nivvi-wifi-share-alarm-reminder"])
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["nivvi-wifi-share-alarm", "nivvi-wifi-share-alarm-reminder"])
         soundStatus = "Acknowledged. The alarm stays active until a fresh in-range reading."
+        publishFamilySnapshot()
     }
     func stop() {
         if session.enabled { recordEvent(kind: "connection", title: "Session disconnected", detail: "Disconnected by the user. Automatic reconnection is off.") }
@@ -1854,7 +1874,8 @@ struct ContentView: View {
             alarm: shareAlarmKind,
             charging: monitor.wearableCharging,
             battery: monitor.battery,
-            history: monitor.liveTrace.suffix(240).map { FamilySample(t: $0.time.timeIntervalSince1970, hr: $0.heartRateValue, o2: $0.oxygenValue) }
+            history: monitor.liveTrace.suffix(240).map { FamilySample(t: $0.time.timeIntervalSince1970, hr: $0.heartRateValue, o2: $0.oxygenValue) },
+            acknowledged: monitor.alarmAcknowledged
         )
     }
     private var shareAlarmKind: String {
@@ -1885,8 +1906,9 @@ struct ContentView: View {
     private func applyShareAlert() {
         if wifi.following, wifi.playAlerts, let snap = wifi.latest, Date().timeIntervalSince1970 - snap.captured < 90 {
             let alarm = snap.alarm ?? "none"
-            if alarm == "none" { monitor.endShareAlert() }
-            else { monitor.beginShareAlert(sensor: alarm == "sensor") }
+            if alarm == "none" { monitor.endShareAlert(); return }
+            if snap.acknowledged == true { monitor.silenceAlarm() }
+            monitor.beginShareAlert(sensor: alarm == "sensor")
             return
         }
         if family.viewingRemote, let snap = family.remote?.snapshot {
@@ -1894,11 +1916,17 @@ struct ContentView: View {
                 if snap.alarm == "none" { monitor.endShareAlert() }
                 return
             }
-            if snap.alarm == "none" { monitor.endShareAlert() }
-            else { monitor.beginShareAlert(sensor: snap.alarm == "sensor") }
+            if snap.alarm == "none" { monitor.endShareAlert(); return }
+            if snap.acknowledged == true { monitor.silenceAlarm() }
+            monitor.beginShareAlert(sensor: snap.alarm == "sensor")
             return
         }
         monitor.endShareAlert()
+    }
+    private func acknowledgeEverywhere() {
+        monitor.silenceAlarm()
+        wifi.sendAck()
+        Task { await family.acknowledgeAlarm() }
     }
     private var avatarTint: Color {
         switch avatarColor {
@@ -2009,6 +2037,20 @@ struct ContentView: View {
         .onChange(of: monitor.customOxygenCandidate) { _ in publishWiFiShare(); syncLiveActivity() }
         .onChange(of: monitor.signalRSSI) { _ in syncLiveActivity() }
         .onChange(of: monitor.alarmKind) { _ in publishWiFiShare(); syncLiveActivity() }
+        .onChange(of: monitor.alarmAcknowledged) { _ in publishWiFiShare() }
+        .onChange(of: wifi.inboundAck) { _ in
+            if wifi.consumeInboundAck() { monitor.silenceAlarm() }
+        }
+        .onChange(of: family.inboundAck) { _ in
+            if family.consumeInboundAck() { monitor.silenceAlarm() }
+        }
+        .onChange(of: family.viewingRemote) { on in
+            if on {
+                monitor.requestNotificationPermission()
+                Task { try? await family.notifications() }
+            }
+            applyShareAlert()
+        }
         .onChange(of: monitor.staleHeartRateDetected) { _ in publishWiFiShare(); syncLiveActivity() }
         .onChange(of: monitor.wearableCharging) { _ in publishWiFiShare() }
         .onChange(of: family.remoteFetched) { _ in
@@ -2147,9 +2189,9 @@ struct ContentView: View {
                     }
                     Spacer()
                     if monitor.shareAlertActive && !monitor.alarmActive && !monitor.staleHeartRateDetected {
-                        Button("Heard it") { monitor.endShareAlert() }.buttonStyle(.bordered).tint(.white)
+                        Button("Heard it") { acknowledgeEverywhere() }.buttonStyle(.bordered).tint(.white)
                     } else if !monitor.alarmAcknowledged {
-                        Button("Acknowledge") { monitor.silenceAlarm() }.buttonStyle(.bordered).tint(.white)
+                        Button("Acknowledge") { acknowledgeEverywhere() }.buttonStyle(.bordered).tint(.white)
                     }
                 }.padding(16).background((monitor.alarmActive || (wifi.latest?.alarm == "high") || (wifi.latest?.alarm == "low")) ? coral : Color.orange.opacity(0.75)).clipShape(RoundedRectangle(cornerRadius: 20))
     }

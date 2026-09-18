@@ -26,12 +26,13 @@ struct FamilySnapshot: Codable {
     var seq: Int?
     var kind: String?
     var server_received: Double?
+    var acknowledged: Bool?
 
     enum CodingKeys: String, CodingKey {
-        case captured, heart_rate, oxygen, heart_rate_at, oxygen_at, source, alarm, connection, history, stream_id, seq, kind, server_received
+        case captured, heart_rate, oxygen, heart_rate_at, oxygen_at, source, alarm, connection, history, stream_id, seq, kind, server_received, acknowledged
     }
 
-    init(captured: Double, heart_rate: Double?, oxygen: Double?, source: String, alarm: String, connection: String, history: [FamilySample] = [], heart_rate_at: Double? = nil, oxygen_at: Double? = nil, stream_id: String? = nil, seq: Int? = nil, kind: String? = "live") {
+    init(captured: Double, heart_rate: Double?, oxygen: Double?, source: String, alarm: String, connection: String, history: [FamilySample] = [], heart_rate_at: Double? = nil, oxygen_at: Double? = nil, stream_id: String? = nil, seq: Int? = nil, kind: String? = "live", acknowledged: Bool = false) {
         self.captured = captured
         self.heart_rate = heart_rate
         self.oxygen = oxygen
@@ -44,6 +45,7 @@ struct FamilySnapshot: Codable {
         self.stream_id = stream_id
         self.seq = seq
         self.kind = kind
+        self.acknowledged = acknowledged
     }
 
     init(from decoder: Decoder) throws {
@@ -61,6 +63,7 @@ struct FamilySnapshot: Codable {
         seq = try box.decodeIfPresent(Int.self, forKey: .seq)
         kind = try box.decodeIfPresent(String.self, forKey: .kind)
         server_received = try box.decodeIfPresent(Double.self, forKey: .server_received)
+        acknowledged = try box.decodeIfPresent(Bool.self, forKey: .acknowledged)
     }
 }
 struct RemoteReading: Codable {
@@ -112,6 +115,7 @@ final class FamilyRelay: ObservableObject {
     @Published private(set) var lastLatency: TimeInterval?
     @Published private(set) var trail: [SavedMeasurement] = []
     @Published private(set) var alarmCatchup = true
+    @Published private(set) var inboundAck = false
     private var lastUpload: Date?
     private var lastHistoryUpload: Date?
     private var lastAlarm = "none"
@@ -300,7 +304,7 @@ final class FamilyRelay: ObservableObject {
         }
     }
     func resumeForeground() {
-        guard watching, followingFamily else { return }
+        guard watching, followingFamily || publishing else { return }
         reconnectAttempt = 0
         reconnectTask?.cancel()
         reconnectTask = nil
@@ -308,16 +312,12 @@ final class FamilyRelay: ObservableObject {
     }
     private func tickWatch() async {
         guard signedIn else { dropSocket(); return }
-        if publishing && selected == ownFamily?.id {
-            dropSocket()
-            return
-        }
         if families.isEmpty {
             do { try await refreshFamilies() } catch { message = error.localizedDescription }
         }
-        if followingFamily {
+        if followingFamily || publishing {
             if socket == nil { scheduleReconnect() }
-            if !socketConnected { await fetchRemote() }
+            if followingFamily, !socketConnected { await fetchRemote() }
         } else {
             dropSocket()
         }
@@ -412,20 +412,21 @@ final class FamilyRelay: ObservableObject {
         return parts?.url
     }
     private func connectSocket() {
-        guard followingFamily, let selected, let url = socketURL(family: selected), let token = account?.token else { return }
-        if socket != nil, socketFamily == selected { return }
+        let familyID = followingFamily ? selected : ownFamily?.id
+        guard signedIn, let familyID, let url = socketURL(family: familyID), let token = account?.token else { return }
+        if socket != nil, socketFamily == familyID { return }
         dropSocket(resetBackoff: false)
         var req = URLRequest(url: url)
         req.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
         req.timeoutInterval = 30
         let task = URLSession.shared.webSocketTask(with: req)
         socket = task
-        socketFamily = selected
+        socketFamily = familyID
         task.resume()
         listenSocket()
     }
     private func reconnectSocket() {
-        guard followingFamily else { return }
+        guard followingFamily || publishing else { return }
         dropSocket(resetBackoff: false)
         connectSocket()
     }
@@ -441,7 +442,7 @@ final class FamilyRelay: ObservableObject {
         }
     }
     private func scheduleReconnect() {
-        guard followingFamily, socket == nil, reconnectTask == nil else { return }
+        guard (followingFamily || publishing), socket == nil, reconnectTask == nil else { return }
         reconnectAttempt += 1
         let delay = FamilyLivePolicy.reconnectDelay(attempt: reconnectAttempt)
         reconnectTask = Task { [weak self] in
@@ -485,6 +486,14 @@ final class FamilyRelay: ObservableObject {
         if type == "revoked" {
             dropSocket(); clearRemote()
             self.message = "Family access ended."
+            return
+        }
+        if type == "ack" {
+            inboundAck = true
+            if followingFamily, var snap = remote?.snapshot {
+                snap.acknowledged = true
+                applyRemote(snap, catchup: false, serverReceived: snap.server_received)
+            }
             return
         }
         var payload = data
@@ -554,6 +563,21 @@ final class FamilyRelay: ObservableObject {
             alarmCatchup = false
         }
         appliedAlarm = nextAlarm
+        if snap.acknowledged == true { inboundAck = true }
+    }
+    func consumeInboundAck() -> Bool {
+        guard inboundAck else { return false }
+        inboundAck = false
+        return true
+    }
+    func acknowledgeAlarm() async {
+        let familyID = followingFamily ? selected : ownFamily?.id
+        guard signedIn, let familyID else { return }
+        do {
+            let _: FamilyReply = try await request("families/\(familyID)/ack", method: "POST")
+        } catch {
+            message = error.localizedDescription
+        }
     }
     func signOut(delete: Bool = false) async throws {
         publishing = false; generation = UUID(); dropSocket(); clearRemote()
