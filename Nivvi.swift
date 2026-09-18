@@ -690,7 +690,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         freshnessTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.expireMeasurements() }
     }
     func requestNotificationPermission() {
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge, .timeSensitive]) { [weak self] _, _ in self?.refreshNotificationStatus() }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { [weak self] _, _ in self?.refreshNotificationStatus() }
     }
     func refreshNotificationStatus() {
         UNUserNotificationCenter.current().getNotificationSettings { [weak self] settings in
@@ -856,7 +856,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         soundTestTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: false) { [weak self] _ in self?.stopSiren() }
     }
     func testNotification() {
-            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge, .timeSensitive]) { [weak self] allowed, _ in
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { [weak self] allowed, _ in
             guard allowed else { self?.refreshNotificationStatus(); return }
             DispatchQueue.main.async {
                 self?.notify(title: "Nivvi sound test", body: "TEST ONLY — no device reading triggered this sound.", identifier: "nivvi-sound-test", delay: 10)
@@ -898,6 +898,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         UIApplication.shared.endBackgroundTask(backgroundTask)
         backgroundTask = .invalid
     }
+    @objc private func enteredBackground() { applicationActive(false) }
     @objc private func becameActive() { applicationActive(true) }
     func applicationActive(_ isActive: Bool) {
         guard foreground != isActive else { return }
