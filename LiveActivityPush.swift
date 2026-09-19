@@ -50,6 +50,7 @@ enum LiveActivityPush {
         Task { await post("live-activity/publish", body: body) }
     }
 
+    @available(iOS 16.1, *)
     static func watch(_ activity: Activity<NivviActivityAttributes>) {
         guard #available(iOS 16.2, *) else { return }
         guard !watching else { return }

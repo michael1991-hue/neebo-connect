@@ -71,7 +71,9 @@ final class WiFiRelay: ObservableObject {
         keepTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 500_000_000)
-                await MainActor.run { self?.tick() }
+                await MainActor.run { [weak self] in
+                    self?.tick()
+                }
             }
         }
         let monitor = NWPathMonitor()
