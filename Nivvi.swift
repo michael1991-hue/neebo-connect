@@ -422,7 +422,8 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             history: Array(points),
             heart_rate_at: hr == nil ? nil : (lastHeartRateUpdate ?? lastCustomMeasurement)?.timeIntervalSince1970,
             oxygen_at: ox == nil ? nil : lastOxygenUpdate?.timeIntervalSince1970,
-            acknowledged: alarmAcknowledged
+            acknowledged: alarmAcknowledged,
+            activity_secret: LiveActivityPush.secret
         )
         Task { @MainActor in FamilyRelay.shared.capture(snapshot) }
         pushLocalShare()
@@ -440,6 +441,15 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             battery: battery,
             history: Array(history.suffix(120).map { FamilySample(t: $0.time.timeIntervalSince1970, hr: $0.heartRateValue, o2: $0.oxygenValue) }),
             acknowledged: alarmAcknowledged
+        )
+        let title = UserDefaults.standard.string(forKey: "nivvi.profile.name").flatMap { $0.isEmpty ? nil : $0 } ?? "Nivvi"
+        LiveActivityPush.publish(
+            title: title,
+            heartRate: hr.map { "\(MetricText.number($0)) bpm" } ?? "No reading",
+            oxygen: ox.map { "\(MetricText.number($0))%" } ?? "No reading",
+            connection: "Shared over Wi‑Fi",
+            measuredAt: lastHeartRateUpdate ?? lastCustomMeasurement ?? Date(),
+            session: title
         )
     }
     private func saveMeasurement(heartRate: Int?, oxygen: Int?, source: String, exactHeartRate: Double? = nil, exactOxygen: Double? = nil, segment: UUID? = nil) {
@@ -650,7 +660,8 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             connection: connection.label,
             signal: BluetoothSignal.label(signalRSSI),
             nurseryHint: "",
-            monitoring: true
+            monitoring: true,
+            measuredAt: lastHeartRateUpdate ?? Date()
         )
     }
     private func expireMeasurements() {
@@ -2841,7 +2852,7 @@ struct ContentView: View {
                 Toggle("Follow the nursery iPhone", isOn: Binding(get: { wifi.following }, set: { wifi.setFollowing($0) })).tint(switchOn)
                 Toggle("Play nursery alerts here", isOn: $wifi.playAlerts).tint(switchOn)
                 Text(wifi.status).font(.caption).foregroundStyle(muted)
-                Text("Use the same home Wi‑Fi, not Guest. Turn Low Power Mode off on both phones. Leave Nivvi in the app switcher — do not swipe it away.")
+                Text("Use the same home Wi‑Fi, not Guest. Turn Low Power Mode off on both phones. Leave Nivvi in the app switcher — do not swipe it away. Lock-screen numbers while the downstairs phone is locked need internet so Apple can push Live Activity updates.")
                     .font(.caption).foregroundStyle(muted)
             }.padding(.top, 8)
         } }

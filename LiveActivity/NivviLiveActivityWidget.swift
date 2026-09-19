@@ -28,9 +28,9 @@ struct NivviLiveActivityWidget: Widget {
                     }
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    Text(context.state.connection)
+                    Text(lockCaption(context))
                         .font(.caption)
-                    if !context.state.nurseryHint.isEmpty {
+                    if !context.state.nurseryHint.isEmpty && !context.isStale {
                         Text(context.state.nurseryHint).font(.caption2).foregroundStyle(.secondary)
                     }
                 }
@@ -54,14 +54,23 @@ struct NivviLiveActivityWidget: Widget {
                 Text("O₂ \(context.state.oxygen) · \(context.state.connection)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                if !context.state.nurseryHint.isEmpty {
-                    Text(context.state.nurseryHint).font(.caption2).foregroundStyle(.secondary)
-                }
+                Text(lockCaption(context))
+                    .font(.caption2)
+                    .foregroundStyle(context.isStale || context.state.stale ? .orange : .secondary)
             }
             Spacer()
         }
         .padding(16)
         .activityBackgroundTint(Color.black.opacity(0.35))
         .activitySystemActionForegroundColor(.white)
+    }
+
+    private func lockCaption(_ context: ActivityViewContext<NivviActivityAttributes>) -> String {
+        if context.isStale || context.state.stale { return "Readings delayed" }
+        if context.state.measuredAt > 0 {
+            let time = Date(timeIntervalSince1970: context.state.measuredAt)
+            return "Measured " + time.formatted(Date.FormatStyle().hour().minute().second())
+        }
+        return context.state.connection
     }
 }

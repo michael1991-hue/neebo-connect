@@ -27,12 +27,13 @@ struct FamilySnapshot: Codable {
     var kind: String?
     var server_received: Double?
     var acknowledged: Bool?
+    var activity_secret: String?
 
     enum CodingKeys: String, CodingKey {
-        case captured, heart_rate, oxygen, heart_rate_at, oxygen_at, source, alarm, connection, history, stream_id, seq, kind, server_received, acknowledged
+        case captured, heart_rate, oxygen, heart_rate_at, oxygen_at, source, alarm, connection, history, stream_id, seq, kind, server_received, acknowledged, activity_secret
     }
 
-    init(captured: Double, heart_rate: Double?, oxygen: Double?, source: String, alarm: String, connection: String, history: [FamilySample] = [], heart_rate_at: Double? = nil, oxygen_at: Double? = nil, stream_id: String? = nil, seq: Int? = nil, kind: String? = "live", acknowledged: Bool = false) {
+    init(captured: Double, heart_rate: Double?, oxygen: Double?, source: String, alarm: String, connection: String, history: [FamilySample] = [], heart_rate_at: Double? = nil, oxygen_at: Double? = nil, stream_id: String? = nil, seq: Int? = nil, kind: String? = "live", acknowledged: Bool = false, activity_secret: String? = nil) {
         self.captured = captured
         self.heart_rate = heart_rate
         self.oxygen = oxygen
@@ -46,6 +47,7 @@ struct FamilySnapshot: Codable {
         self.seq = seq
         self.kind = kind
         self.acknowledged = acknowledged
+        self.activity_secret = activity_secret
     }
 
     init(from decoder: Decoder) throws {
@@ -64,6 +66,7 @@ struct FamilySnapshot: Codable {
         kind = try box.decodeIfPresent(String.self, forKey: .kind)
         server_received = try box.decodeIfPresent(Double.self, forKey: .server_received)
         acknowledged = try box.decodeIfPresent(Bool.self, forKey: .acknowledged)
+        activity_secret = try box.decodeIfPresent(String.self, forKey: .activity_secret)
     }
 }
 struct RemoteReading: Codable {
@@ -568,6 +571,7 @@ final class FamilyRelay: ObservableObject {
         }
         appliedAlarm = nextAlarm
         if snap.acknowledged == true { inboundAck = true }
+        if followingFamily { LiveActivityPush.rememberFollowSecret(snap.activity_secret) }
     }
     func consumeInboundAck() -> Bool {
         guard inboundAck else { return false }

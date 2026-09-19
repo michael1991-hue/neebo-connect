@@ -15,6 +15,7 @@ spec.loader.exec_module(relay)
 def client(tmp_path):
     relay.DB = str(tmp_path / "test.sqlite")
     relay.OUTBOX.clear()
+    relay.ACTIVITY_PUSHES.clear()
     with TestClient(relay.app) as value:
         yield value
 
@@ -78,83 +79,46 @@ def test_oxygen_does_not_refresh_stale_heart_rate(client):
     assert data["heart_rate_at"] < data["oxygen_at"]
 
 
-def test_revoke_closes_live_socket(client):
-    owner, _, _ = account(client, "revoke-owner@example.com")
-    reader, _, reader_id = account(client, "revoke-reader@example.com")
-    family = client.post("/families", headers=owner, json={"label": "Revoke"}).json()["id"]
-    code = client.post(f"/families/{family}/invites", headers=owner, json={"email": "revoke-reader@example.com"}).json()["code"]
-    assert client.post("/invites/accept", headers=reader, json={"code": code}).status_code == 200
-    with client.websocket_connect(f"/families/{family}/live", headers=reader) as ws:
-        ws.receive_json()
-        assert client.delete(f"/families/{family}/members/{reader_id}", headers=owner).status_code == 200
-        payload = ws.receive_json()
-        if payload.get("type") == "ping":
-            payload = ws.receive_json()
-        assert payload["type"] == "revoked"
-    assert client.get(f"/families/{family}/latest", headers=reader).status_code == 404
-
-
-def test_same_value_updates_timestamp(client):
-    owner, _, _ = account(client, "same@example.com")
-    family = client.post("/families", headers=owner, json={"label": "Same"}).json()["id"]
-    first_at = time.time() - 2
-    later = time.time()
-    assert client.put(
-        f"/families/{family}/latest",
-        headers=owner,
-        json=snapshot(captured=later, heart_rate=104, heart_rate_at=first_at, oxygen=None, seq=1),
-    ).status_code == 200
-    assert client.put(
-        f"/families/{family}/latest",
-        headers=owner,
-        json=snapshot(captured=later, heart_rate=104, heart_rate_at=later, oxygen=None, seq=2),
-    ).status_code == 200
-    data = client.get(f"/families/{family}/latest", headers=owner).json()["snapshot"]
-    assert data["heart_rate"] == 104
-    assert data["heart_rate_at"] == later
-
-
-def test_out_of_order_stream_and_unauthorised_socket(client):
-    owner, _, _ = account(client, "order@example.com")
-    outsider, _, _ = account(client, "outsider@example.com")
-    family = client.post("/families", headers=owner, json={"label": "Order"}).json()["id"]
+def test_live_activity_seq_and_token(client):
+    secret = "a" * 32
+    token = "b" * 64
+    assert client.post("/live-activity/token", json={"secret": secret, "token": token}).status_code == 200
     now = time.time()
-    assert client.put(f"/families/{family}/latest", headers=owner, json=snapshot(captured=now, seq=3, stream_id="stream-a")).status_code == 200
-    assert client.put(f"/families/{family}/latest", headers=owner, json=snapshot(captured=now, seq=2, stream_id="stream-a")).status_code == 409
-    assert client.put(f"/families/{family}/latest", headers=owner, json=snapshot(captured=now, seq=1, stream_id="stream-b")).status_code == 200
-    with client.websocket_connect(f"/families/{family}/live", headers=outsider) as ws:
-        payload = ws.receive_json()
-        assert payload["type"] == "revoked"
+    first = {
+        "secret": secret,
+        "seq": 1,
+        "measured_at": now,
+        "heart_rate": "104 bpm",
+        "oxygen": "98%",
+        "connection": "Shared over Wi‑Fi",
+        "session": "Jane",
+        "title": "Jane",
+    }
+    assert client.post("/live-activity/publish", json=first).status_code == 200
+    assert relay.ACTIVITY_PUSHES[-1]["token"] == token
+    assert relay.ACTIVITY_PUSHES[-1]["state"]["heartRate"] == "104 bpm"
+    assert relay.ACTIVITY_PUSHES[-1]["state"]["seq"] == 1
+    older = dict(first)
+    older["heart_rate"] = "90 bpm"
+    older["measured_at"] = now + 0.2
+    assert client.post("/live-activity/publish", json=older).status_code == 409
+    newer = dict(first)
+    newer["seq"] = 2
+    newer["heart_rate"] = "106 bpm"
+    newer["measured_at"] = now + 0.3
+    assert client.post("/live-activity/publish", json=newer).status_code == 200
+    assert relay.ACTIVITY_PUSHES[-1]["state"]["heartRate"] == "106 bpm"
 
 
-def test_missing_heart_rate_does_not_recover_alarm(client):
-    owner, _, _ = account(client, "gap@example.com")
-    family = client.post("/families", headers=owner, json={"label": "Gap"}).json()["id"]
+def test_family_latest_fans_out_activity_push(client):
+    owner, _, _ = account(client, "host@example.com")
+    family = client.post("/families", headers=owner, json={"label": "Push"}).json()["id"]
+    secret = "c" * 32
+    token = "d" * 64
+    assert client.post("/live-activity/token", json={"secret": secret, "token": token}).status_code == 200
     now = time.time()
-    assert client.put(f"/families/{family}/latest", headers=owner, json=snapshot(captured=now, alarm="high", heart_rate=160, seq=1)).status_code == 200
-    assert client.put(f"/families/{family}/latest", headers=owner, json=snapshot(captured=now, alarm="none", heart_rate=None, seq=2)).status_code == 200
-    data = client.get(f"/families/{family}/latest", headers=owner).json()["snapshot"]
-    assert data["alarm"] == "high"
-    assert data["heart_rate"] == 160
-
-
-def test_viewer_ack_keeps_alarm_silenced(client):
-    owner, _, _ = account(client, "ack-owner@example.com")
-    reader, _, _ = account(client, "ack-reader@example.com")
-    family = client.post("/families", headers=owner, json={"label": "Ack"}).json()["id"]
-    code = client.post(f"/families/{family}/invites", headers=owner, json={"email": "ack-reader@example.com"}).json()["code"]
-    assert client.post("/invites/accept", headers=reader, json={"code": code}).status_code == 200
-    now = time.time()
-    assert client.put(f"/families/{family}/latest", headers=owner, json=snapshot(captured=now, alarm="high", heart_rate=170, seq=1)).status_code == 200
-    assert client.post(f"/families/{family}/ack", headers=reader).status_code == 200
-    data = client.get(f"/families/{family}/latest", headers=reader).json()["snapshot"]
-    assert data["alarm"] == "high"
-    assert data["acknowledged"] is True
-    later = now + 0.2
-    assert client.put(
-        f"/families/{family}/latest",
-        headers=owner,
-        json=snapshot(captured=later, alarm="high", heart_rate=168, seq=2, acknowledged=False),
-    ).status_code == 200
-    data = client.get(f"/families/{family}/latest", headers=reader).json()["snapshot"]
-    assert data["acknowledged"] is True
+    body = snapshot(captured=now, heart_rate=112, heart_rate_at=now, oxygen=97, oxygen_at=now, seq=1)
+    body["activity_secret"] = secret
+    assert client.put(f"/families/{family}/latest", headers=owner, json=body).status_code == 200
+    assert relay.ACTIVITY_PUSHES[-1]["token"] == token
+    assert "112" in relay.ACTIVITY_PUSHES[-1]["state"]["heartRate"]

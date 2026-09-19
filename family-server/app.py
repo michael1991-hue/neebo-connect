@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 DB = os.environ.get("NIVVI_DATABASE", "/data/nivvi.sqlite")
 TEST = os.environ.get("NIVVI_TESTING") == "1"
 OUTBOX = []  # Tests only; production never stores verification messages here.
+ACTIVITY_PUSHES = []  # Tests only.
 
 
 class LiveHub:
@@ -115,6 +116,8 @@ def initialize():
         CREATE TABLE IF NOT EXISTS latest(family TEXT PRIMARY KEY REFERENCES families ON DELETE CASCADE,payload TEXT NOT NULL,received REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS devices(token TEXT PRIMARY KEY,user_id TEXT REFERENCES users ON DELETE CASCADE);
         CREATE TABLE IF NOT EXISTS pushes(id TEXT PRIMARY KEY,family TEXT REFERENCES families ON DELETE CASCADE,kind TEXT,created REAL,attempts INTEGER DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS activity_tokens(token TEXT PRIMARY KEY, secret TEXT NOT NULL, updated REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS activity_latest(secret TEXT PRIMARY KEY, seq INTEGER NOT NULL, measured REAL NOT NULL);
         """)
     os.chmod(DB, 0o600)
 
@@ -242,10 +245,27 @@ class Snapshot(BaseModel):
     seq: int | None = Field(default=None, ge=1)
     kind: str = Field(default="live", max_length=20)
     acknowledged: bool = False
+    activity_secret: str | None = Field(default=None, max_length=80)
 
 
 class Device(BaseModel):
     token: str = Field(pattern="^[a-fA-F0-9]{64,256}$")
+
+
+class ActivityToken(BaseModel):
+    secret: str = Field(min_length=16, max_length=80)
+    token: str = Field(pattern="^[a-fA-F0-9]{64,512}$")
+
+
+class ActivityPublish(BaseModel):
+    secret: str = Field(min_length=16, max_length=80)
+    seq: int = Field(ge=1)
+    measured_at: float
+    heart_rate: str = Field(max_length=40)
+    oxygen: str = Field(max_length=40)
+    connection: str = Field(max_length=80)
+    session: str = Field(default="", max_length=80)
+    title: str = Field(default="Nivvi", max_length=80)
 
 
 @asynccontextmanager
@@ -487,6 +507,8 @@ def publish(family: str, body: Snapshot, user=Depends(require_user)):
     live["type"] = "live"
     live["kind"] = "live"
     HUB.emit(family, live)
+    if payload.get("activity_secret"):
+        queue_activity(payload["activity_secret"], activity_state(payload, payload.get("activity_secret")))
     return {"ok": True, "seq": payload["seq"], "server_received": now}
 
 
@@ -590,6 +612,115 @@ def remove_device(token: str, user=Depends(require_user)):
     with db() as c:
         c.execute("DELETE FROM devices WHERE token=? AND user_id=?", (token.lower(), user["id"]))
     return {"ok": True}
+
+
+@app.post("/live-activity/token")
+def register_activity_token(body: ActivityToken, request: Request):
+    throttle("activity-token:" + request.client.host, 30)
+    with db() as c:
+        c.execute("INSERT OR REPLACE INTO activity_tokens VALUES(?,?,?)", (body.token.lower(), body.secret, time.time()))
+        c.execute("DELETE FROM activity_tokens WHERE updated<?", (time.time() - 7 * 86400,))
+    return {"ok": True}
+
+
+@app.delete("/live-activity/token")
+def remove_activity_token(body: ActivityToken):
+    with db() as c:
+        c.execute("DELETE FROM activity_tokens WHERE token=? AND secret=?", (body.token.lower(), body.secret))
+    return {"ok": True}
+
+
+@app.post("/live-activity/publish")
+def publish_activity(body: ActivityPublish, request: Request):
+    throttle("activity:" + body.secret, 60, 60)
+    now = time.time()
+    if not now - 30 <= body.measured_at <= now + 5:
+        raise HTTPException(400, "Only fresh readings can update the lock screen")
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        previous = c.execute("SELECT seq FROM activity_latest WHERE secret=?", (body.secret,)).fetchone()
+        if previous and body.seq <= previous[0]:
+            raise HTTPException(409, "An older reading cannot replace a newer one")
+        c.execute("INSERT OR REPLACE INTO activity_latest VALUES(?,?,?)", (body.secret, body.seq, body.measured_at))
+    state = {
+        "heartRate": body.heart_rate,
+        "oxygen": body.oxygen,
+        "connection": body.connection,
+        "signal": "Wi-Fi",
+        "nurseryHint": "",
+        "captured": body.measured_at,
+        "measuredAt": body.measured_at,
+        "seq": body.seq,
+        "session": body.session,
+        "stale": False,
+        "title": body.title,
+    }
+    queue_activity(body.secret, state)
+    return {"ok": True, "seq": body.seq}
+
+
+def activity_state(payload, secret):
+    measured = payload.get("heart_rate_at") or payload.get("captured") or time.time()
+    hr = payload.get("heart_rate")
+    ox = payload.get("oxygen")
+    return {
+        "heartRate": f"{int(round(hr))} bpm" if isinstance(hr, (int, float)) else "No reading",
+        "oxygen": f"{int(round(ox))}%" if isinstance(ox, (int, float)) else "No reading",
+        "connection": payload.get("connection") or "Shared over Wi‑Fi",
+        "signal": "Internet",
+        "nurseryHint": "",
+        "captured": measured,
+        "measuredAt": measured,
+        "seq": int(payload.get("seq") or 0),
+        "session": payload.get("source") or "Nivvi",
+        "stale": False,
+        "title": "Nivvi",
+    }
+
+
+def queue_activity(secret, state):
+    with db() as c:
+        tokens = [r[0] for r in c.execute("SELECT token FROM activity_tokens WHERE secret=?", (secret,))]
+    if TEST:
+        for token in tokens:
+            ACTIVITY_PUSHES.append({"token": token, "state": state})
+        return
+    if HUB.loop is not None:
+        HUB.loop.call_soon_threadsafe(lambda: asyncio.create_task(deliver_activity(tokens, state)))
+
+
+async def deliver_activity(tokens, state):
+    key = os.environ.get("NIVVI_APNS_KEY")
+    if not key or not tokens:
+        return
+    bearer = jwt.encode({"iss": os.environ["NIVVI_APNS_TEAM"], "iat": int(time.time())}, Path(key).read_text(), algorithm="ES256", headers={"kid": os.environ["NIVVI_APNS_KEY_ID"]})
+    host = "api.sandbox.push.apple.com" if os.environ.get("NIVVI_APNS_SANDBOX") == "1" else "api.push.apple.com"
+    topic = os.environ.get("NIVVI_APNS_TOPIC", "com.michael1991.nivvi") + ".push-type.liveactivity"
+    measured = float(state.get("measuredAt") or time.time())
+    payload = {
+        "aps": {
+            "timestamp": int(time.time()),
+            "event": "update",
+            "stale-date": int(measured + 45),
+            "content-state": {key: value for key, value in state.items() if key != "title"},
+        }
+    }
+    async with httpx.AsyncClient(http2=True, timeout=10) as client:
+        for token in tokens:
+            result = await client.post(
+                f"https://{host}/3/device/{token}",
+                headers={
+                    "authorization": "bearer " + bearer,
+                    "apns-topic": topic,
+                    "apns-push-type": "liveactivity",
+                    "apns-priority": "10",
+                    "apns-expiration": str(int(time.time() + 60)),
+                },
+                json=payload,
+            )
+            if result.status_code == 410 or (result.status_code == 400 and result.json().get("reason") == "BadDeviceToken"):
+                with db() as c:
+                    c.execute("DELETE FROM activity_tokens WHERE token=?", (token,))
 
 
 async def push_worker():

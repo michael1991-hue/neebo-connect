@@ -13,6 +13,10 @@ struct WiFiSnapshot: Codable, Equatable {
     var battery: String?
     var history: [FamilySample]? = nil
     var acknowledged: Bool? = nil
+    var seq: Int? = nil
+    var measuredAt: Double? = nil
+    var activitySecret: String? = nil
+    var childName: String? = nil
 }
 
 final class WiFiRelay: ObservableObject {
@@ -46,6 +50,8 @@ final class WiFiRelay: ObservableObject {
     private var lastHistory: [FamilySample] = []
     private var lastAcknowledged = false
     private var lastHistorySent: Date?
+    private var shareSeq = 0
+    private var lastShareSeq = 0
     private var lastPacketAt: Date?
     private var viewerStartedAt: Date?
     private var nextReconnectAt: Date?
@@ -188,7 +194,24 @@ final class WiFiRelay: ObservableObject {
 
     private func emit() {
         let sendHistory = lastHistorySent.map { Date().timeIntervalSince($0) >= 15 } ?? !lastHistory.isEmpty
-        let snap = WiFiSnapshot(pin: pin, heartRate: lastHR, oxygen: lastO2, connection: lastConnection, captured: Date().timeIntervalSince1970, alarm: lastAlarm, charging: lastCharging, battery: lastBattery, history: sendHistory ? lastHistory : nil, acknowledged: lastAcknowledged)
+        shareSeq += 1
+        let measured = Date().timeIntervalSince1970
+        let snap = WiFiSnapshot(
+            pin: pin,
+            heartRate: lastHR,
+            oxygen: lastO2,
+            connection: lastConnection,
+            captured: Date().timeIntervalSince1970,
+            alarm: lastAlarm,
+            charging: lastCharging,
+            battery: lastBattery,
+            history: sendHistory ? lastHistory : nil,
+            acknowledged: lastAcknowledged,
+            seq: shareSeq,
+            measuredAt: measured,
+            activitySecret: LiveActivityPush.secret,
+            childName: UserDefaults.standard.string(forKey: "nivvi.profile.name")
+        )
         if sendHistory { lastHistorySent = Date() }
         payload = (try? JSONEncoder().encode(snap)) ?? Data()
         payload.append(10)
@@ -434,6 +457,8 @@ final class WiFiRelay: ObservableObject {
                             self.buffer = Data()
                         }
                         if let snap = try? JSONDecoder().decode(WiFiSnapshot.self, from: line), snap.pin == self.joinPin {
+                            if let seq = snap.seq, seq > 0, seq <= self.lastShareSeq { continue }
+                            if let seq = snap.seq { self.lastShareSeq = seq }
                             self.latest = snap
                             self.record(snap)
                             self.lastPacketAt = Date()
@@ -441,7 +466,17 @@ final class WiFiRelay: ObservableObject {
                             self.nextReconnectAt = nil
                             self.rememberRemote(connection)
                             self.status = "Linked on this Wi‑Fi"
-                            NivviLiveActivityBridge.syncShare(heartRate: snap.heartRate, oxygen: snap.oxygen, linked: true, status: self.status)
+                            LiveActivityPush.rememberFollowSecret(snap.activitySecret)
+                            let measured = snap.measuredAt.map { Date(timeIntervalSince1970: $0) } ?? Date()
+                            NivviLiveActivityBridge.syncShare(
+                                heartRate: snap.heartRate,
+                                oxygen: snap.oxygen,
+                                linked: true,
+                                status: self.status,
+                                measuredAt: measured,
+                                seq: snap.seq ?? 0,
+                                session: snap.childName
+                            )
                         } else if let snap = try? JSONDecoder().decode(WiFiSnapshot.self, from: line), snap.pin != self.joinPin {
                             self.status = "Wrong share code. Match the nursery iPhone."
                         }
@@ -465,6 +500,7 @@ final class WiFiRelay: ObservableObject {
         endpoints = []
         latest = nil
         trail = []
+        lastShareSeq = 0
         if following { following = false }
         if !wantHost { status = "Off" }
     }

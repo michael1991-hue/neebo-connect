@@ -9,6 +9,10 @@ struct NivviActivityAttributes: ActivityAttributes {
         var signal: String
         var nurseryHint: String
         var captured: TimeInterval = 0
+        var measuredAt: TimeInterval = 0
+        var seq: Int = 0
+        var session: String = ""
+        var stale: Bool = false
     }
     var title: String
 }
