@@ -122,3 +122,20 @@ def test_family_latest_fans_out_activity_push(client):
     assert client.put(f"/families/{family}/latest", headers=owner, json=body).status_code == 200
     assert relay.ACTIVITY_PUSHES[-1]["token"] == token
     assert "112" in relay.ACTIVITY_PUSHES[-1]["state"]["heartRate"]
+
+
+def test_carer_can_publish_watcher_cannot(client):
+    owner, _, _ = account(client, "parents@example.com")
+    carer, _, _ = account(client, "nan@example.com")
+    watcher, _, _ = account(client, "aunt@example.com")
+    family = client.post("/families", headers=owner, json={"label": "Jane"}).json()["id"]
+    carer_code = client.post(f"/families/{family}/invites", headers=owner, json={"email": "nan@example.com", "role": "carer"}).json()["code"]
+    watch_code = client.post(f"/families/{family}/invites", headers=owner, json={"email": "aunt@example.com", "role": "watcher"}).json()["code"]
+    assert client.post("/invites/accept", headers=carer, json={"code": carer_code}).status_code == 200
+    assert client.post("/invites/accept", headers=watcher, json={"code": watch_code}).status_code == 200
+    now = time.time()
+    body = snapshot(captured=now, heart_rate=108, heart_rate_at=now, seq=1, place="carer")
+    assert client.put(f"/families/{family}/latest", headers=carer, json=body).status_code == 200
+    assert client.put(f"/families/{family}/latest", headers=watcher, json=snapshot(captured=now + 0.2, seq=2)).status_code == 404
+    listed = client.get("/families", headers=carer).json()
+    assert listed[0]["role"] == "carer"

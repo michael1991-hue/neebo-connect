@@ -423,7 +423,8 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             heart_rate_at: hr == nil ? nil : (lastHeartRateUpdate ?? lastCustomMeasurement)?.timeIntervalSince1970,
             oxygen_at: ox == nil ? nil : lastOxygenUpdate?.timeIntervalSince1970,
             acknowledged: alarmAcknowledged,
-            activity_secret: LiveActivityPush.secret
+            activity_secret: LiveActivityPush.secret,
+            place: UserDefaults.standard.string(forKey: "nivvi.place")
         )
         Task { @MainActor in FamilyRelay.shared.capture(snapshot) }
         pushLocalShare()
@@ -1884,6 +1885,7 @@ struct ContentView: View {
     @AppStorage("nivvi.profile.gender") private var childGender = "Prefer not to say"
     @AppStorage("nivvi.profile.avatarSymbol") private var avatarSymbol = "star.fill"
     @AppStorage("nivvi.profile.avatarColor") private var avatarColor = "teal"
+    @AppStorage("nivvi.place") private var placeRaw = NurseryPlace.home.rawValue
     @AppStorage("nivvi.atmosphere.enabled") private var atmosphereEnabled = true
     @AppStorage("nivvi.nursery.acknowledged") private var nurseryAcknowledged = false
     @State private var skyOffset: CGFloat = 0
@@ -2259,7 +2261,7 @@ struct ContentView: View {
             persistSharedHistory()
             syncLiveActivity()
         }
-        .onChange(of: wifi.playAlerts) { _ in applyShareAlert() }
+        .onChange(of: placeRaw) { _ in applyPlace() }
         .onChange(of: wifi.pin) { value in UserDefaults.standard.set(value, forKey: "nivvi.wifi.pin") }
         .sheet(isPresented: $showParentNote) {
             NavigationStack {
@@ -2330,6 +2332,13 @@ struct ContentView: View {
                     .background(cardFill).clipShape(Capsule())
             }
             if !ageText.isEmpty { Text(childGender == "Prefer not to say" ? ageText : "\(ageText) · \(childGender)").font(.caption).foregroundStyle(muted) }
+            if wifi.following || family.viewingRemote {
+                Text(remotePlace.banner(displayName)).font(.subheadline.weight(.semibold)).foregroundStyle(ink)
+                Text(remotePlace.hint(displayName)).font(.caption).foregroundStyle(muted)
+            } else {
+                placePicker
+                Text(currentPlace.hint(displayName)).font(.caption).foregroundStyle(muted)
+            }
             if monitor.lowPowerMode {
                 Text("Low Power Mode is on. Turn it off so Nivvi can keep reading overnight.")
                     .font(.caption.weight(.semibold)).foregroundStyle(coral)
@@ -2452,6 +2461,41 @@ struct ContentView: View {
                 } }
             }
             if !mirroringNursery { readinessPanel }
+        }
+    }
+
+    private var currentPlace: NurseryPlace { NurseryPlace(rawValue: placeRaw) ?? .home }
+    private var remotePlace: NurseryPlace {
+        let raw = wifi.latest?.place ?? family.remote?.snapshot?.place ?? placeRaw
+        return NurseryPlace(rawValue: raw) ?? .home
+    }
+    private var placePicker: some View {
+        HStack(spacing: 8) {
+            ForEach(NurseryPlace.allCases) { option in
+                Button { placeRaw = option.rawValue } label: {
+                    VStack(spacing: 4) {
+                        Image(systemName: option.symbol)
+                        Text(option.title).font(.caption2.weight(.bold)).multilineTextAlignment(.center)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(currentPlace == option ? teal.opacity(0.35) : cardFill)
+                    .foregroundStyle(ink)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(option.title)
+                .accessibilityAddTraits(currentPlace == option ? [.isSelected] : [])
+            }
+        }
+    }
+    private func applyPlace() {
+        switch currentPlace {
+        case .home: break
+        case .carer: wifi.setFollowing(false)
+        case .exploring:
+            wifi.setHosting(false)
+            wifi.setFollowing(false)
         }
     }
 

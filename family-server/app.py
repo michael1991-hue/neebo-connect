@@ -111,14 +111,22 @@ def initialize():
         CREATE TABLE IF NOT EXISTS codes(email TEXT,purpose TEXT,token TEXT,expires REAL,PRIMARY KEY(email,purpose));
         CREATE TABLE IF NOT EXISTS limits(key TEXT PRIMARY KEY,count INTEGER,expires REAL);
         CREATE TABLE IF NOT EXISTS families(id TEXT PRIMARY KEY,owner TEXT UNIQUE REFERENCES users ON DELETE CASCADE,label TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS members(family TEXT REFERENCES families ON DELETE CASCADE,user_id TEXT REFERENCES users ON DELETE CASCADE,PRIMARY KEY(family,user_id));
-        CREATE TABLE IF NOT EXISTS invites(token TEXT PRIMARY KEY,family TEXT REFERENCES families ON DELETE CASCADE,email TEXT NOT NULL,expires REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS members(family TEXT REFERENCES families ON DELETE CASCADE,user_id TEXT REFERENCES users ON DELETE CASCADE,role TEXT NOT NULL DEFAULT 'watcher',PRIMARY KEY(family,user_id));
+        CREATE TABLE IF NOT EXISTS invites(token TEXT PRIMARY KEY,family TEXT REFERENCES families ON DELETE CASCADE,email TEXT NOT NULL,expires REAL NOT NULL,role TEXT NOT NULL DEFAULT 'watcher');
         CREATE TABLE IF NOT EXISTS latest(family TEXT PRIMARY KEY REFERENCES families ON DELETE CASCADE,payload TEXT NOT NULL,received REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS devices(token TEXT PRIMARY KEY,user_id TEXT REFERENCES users ON DELETE CASCADE);
         CREATE TABLE IF NOT EXISTS pushes(id TEXT PRIMARY KEY,family TEXT REFERENCES families ON DELETE CASCADE,kind TEXT,created REAL,attempts INTEGER DEFAULT 0);
         CREATE TABLE IF NOT EXISTS activity_tokens(token TEXT PRIMARY KEY, secret TEXT NOT NULL, updated REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS activity_latest(secret TEXT PRIMARY KEY, seq INTEGER NOT NULL, measured REAL NOT NULL);
         """)
+        for stmt in (
+            "ALTER TABLE members ADD COLUMN role TEXT NOT NULL DEFAULT 'watcher'",
+            "ALTER TABLE invites ADD COLUMN role TEXT NOT NULL DEFAULT 'watcher'",
+        ):
+            try:
+                c.execute(stmt)
+            except sqlite3.OperationalError:
+                pass
     os.chmod(DB, 0o600)
 
 
@@ -173,6 +181,14 @@ def member(c, family, user):
         raise HTTPException(404, "Family unavailable")
 
 
+def publisher(c, family, user):
+    if c.execute("SELECT 1 FROM families WHERE id=? AND owner=?", (family, user["id"])).fetchone():
+        return
+    row = c.execute("SELECT role FROM members WHERE family=? AND user_id=?", (family, user["id"])).fetchone()
+    if row and row[0] == "carer":
+        return
+    raise HTTPException(404, "Only the nursery or a carer can send live readings")
+
 def send_code(address, purpose):
     token = secrets.token_urlsafe(24)
     with db() as c:
@@ -214,6 +230,7 @@ class Reset(Code):
 
 class Address(BaseModel):
     email: str = Field(max_length=254)
+    role: str = Field(default="watcher", pattern="^(watcher|carer)$")
 
 
 class Family(BaseModel):
@@ -246,6 +263,7 @@ class Snapshot(BaseModel):
     kind: str = Field(default="live", max_length=20)
     acknowledged: bool = False
     activity_secret: str | None = Field(default=None, max_length=80)
+    place: str | None = Field(default=None, pattern="^(home|carer|exploring)$")
 
 
 class Device(BaseModel):
@@ -391,7 +409,11 @@ def delete_account(user=Depends(require_user)):
 @app.get("/families")
 def families(user=Depends(require_user)):
     with db() as c:
-        return [dict(r) for r in c.execute("SELECT id,label,owner FROM families WHERE owner=? OR id IN(SELECT family FROM members WHERE user_id=?)", (user["id"], user["id"]))]
+        return [dict(r) for r in c.execute(
+            """SELECT id,label,owner,
+                      CASE WHEN owner=? THEN 'owner' ELSE COALESCE((SELECT role FROM members WHERE family=families.id AND user_id=?),'watcher') END AS role
+               FROM families WHERE owner=? OR id IN(SELECT family FROM members WHERE user_id=?)""",
+            (user["id"], user["id"], user["id"], user["id"]))]
 
 
 @app.post("/families")
@@ -417,7 +439,7 @@ def invite(family: str, body: Address, user=Depends(require_user)):
     with db() as c:
         owner(c, family, user)
         c.execute("DELETE FROM invites WHERE family=? AND email=?", (family, email(body.email)))
-        c.execute("INSERT INTO invites VALUES(?,?,?,?)", (digest(token), family, email(body.email), time.time()+86400))
+        c.execute("INSERT INTO invites VALUES(?,?,?,?,?)", (digest(token), family, email(body.email), time.time()+86400, body.role))
     return {"code": token}
 
 
@@ -429,7 +451,7 @@ def accept(body: Invite, user=Depends(require_user)):
         row = c.execute("SELECT * FROM invites WHERE token=? AND email=? AND expires>?", (digest(body.code.strip()), user["email"], time.time())).fetchone()
         if not row:
             raise HTTPException(400, "Invitation unavailable, expired or addressed to another account")
-        c.execute("INSERT OR IGNORE INTO members VALUES(?,?)", (row["family"], user["id"]))
+        c.execute("INSERT OR IGNORE INTO members VALUES(?,?,?)", (row["family"], user["id"], row["role"] if "role" in row.keys() else "watcher"))
         c.execute("DELETE FROM invites WHERE token=?", (row["token"],))
     return {"ok": True}
 
@@ -438,7 +460,7 @@ def accept(body: Invite, user=Depends(require_user)):
 def members(family: str, user=Depends(require_user)):
     with db() as c:
         owner(c, family, user)
-        return [dict(r) for r in c.execute("SELECT users.id,users.email FROM members JOIN users ON users.id=user_id WHERE family=?", (family,))]
+        return [dict(r) for r in c.execute("SELECT users.id,users.email,members.role FROM members JOIN users ON users.id=user_id WHERE family=?", (family,))]
 
 
 @app.delete("/families/{family}/members/{member_id}")
@@ -484,7 +506,7 @@ def publish(family: str, body: Snapshot, user=Depends(require_user)):
     throttle("publish:" + user["id"], 240, 60)
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
-        owner(c, family, user)
+        publisher(c, family, user)
         previous = c.execute("SELECT payload FROM latest WHERE family=?", (family,)).fetchone()
         old = json.loads(previous[0]) if previous else {}
         old_seq = int(old.get("seq") or 0)

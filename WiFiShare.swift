@@ -17,6 +17,7 @@ struct WiFiSnapshot: Codable, Equatable {
     var measuredAt: Double? = nil
     var activitySecret: String? = nil
     var childName: String? = nil
+    var place: String? = nil
 }
 
 final class WiFiRelay: ObservableObject {
@@ -212,7 +213,8 @@ final class WiFiRelay: ObservableObject {
             seq: shareSeq,
             measuredAt: measured,
             activitySecret: LiveActivityPush.secret,
-            childName: UserDefaults.standard.string(forKey: "nivvi.profile.name")
+            childName: UserDefaults.standard.string(forKey: "nivvi.profile.name"),
+            place: UserDefaults.standard.string(forKey: "nivvi.place")
         )
         if sendHistory { lastHistorySent = Date() }
         payload = (try? JSONEncoder().encode(snap)) ?? Data()

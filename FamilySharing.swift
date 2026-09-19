@@ -5,8 +5,8 @@ import AVFoundation
 import Network
 
 struct FamilyAccount: Codable { let token: String; let user_id: String; let email: String }
-struct SharedFamily: Codable, Identifiable { let id: String; let label: String; let owner: String }
-struct FamilyMember: Codable, Identifiable { let id: String; let email: String }
+struct SharedFamily: Codable, Identifiable { let id: String; let label: String; let owner: String; var role: String? }
+struct FamilyMember: Codable, Identifiable { let id: String; let email: String; var role: String? }
 struct FamilySample: Codable, Equatable {
     var t: Double
     var hr: Double?
@@ -28,12 +28,13 @@ struct FamilySnapshot: Codable {
     var server_received: Double?
     var acknowledged: Bool?
     var activity_secret: String?
+    var place: String?
 
     enum CodingKeys: String, CodingKey {
-        case captured, heart_rate, oxygen, heart_rate_at, oxygen_at, source, alarm, connection, history, stream_id, seq, kind, server_received, acknowledged, activity_secret
+        case captured, heart_rate, oxygen, heart_rate_at, oxygen_at, source, alarm, connection, history, stream_id, seq, kind, server_received, acknowledged, activity_secret, place
     }
 
-    init(captured: Double, heart_rate: Double?, oxygen: Double?, source: String, alarm: String, connection: String, history: [FamilySample] = [], heart_rate_at: Double? = nil, oxygen_at: Double? = nil, stream_id: String? = nil, seq: Int? = nil, kind: String? = "live", acknowledged: Bool = false, activity_secret: String? = nil) {
+    init(captured: Double, heart_rate: Double?, oxygen: Double?, source: String, alarm: String, connection: String, history: [FamilySample] = [], heart_rate_at: Double? = nil, oxygen_at: Double? = nil, stream_id: String? = nil, seq: Int? = nil, kind: String? = "live", acknowledged: Bool = false, activity_secret: String? = nil, place: String? = nil) {
         self.captured = captured
         self.heart_rate = heart_rate
         self.oxygen = oxygen
@@ -48,6 +49,7 @@ struct FamilySnapshot: Codable {
         self.kind = kind
         self.acknowledged = acknowledged
         self.activity_secret = activity_secret
+        self.place = place
     }
 
     init(from decoder: Decoder) throws {
@@ -67,6 +69,7 @@ struct FamilySnapshot: Codable {
         server_received = try box.decodeIfPresent(Double.self, forKey: .server_received)
         acknowledged = try box.decodeIfPresent(Bool.self, forKey: .acknowledged)
         activity_secret = try box.decodeIfPresent(String.self, forKey: .activity_secret)
+        place = try box.decodeIfPresent(String.self, forKey: .place)
     }
 }
 struct RemoteReading: Codable {
@@ -140,6 +143,10 @@ final class FamilyRelay: ObservableObject {
     private var reconnectTask: Task<Void, Never>?
     private var watching = false
     private var ownFamily: SharedFamily? { families.first { $0.owner == account?.user_id } }
+    private var publishFamilyID: String? {
+        ownFamily?.id ?? families.first(where: { $0.id == selected && $0.role == "carer" })?.id
+    }
+    var isCarer: Bool { families.contains { $0.role == "carer" } }
     var signedIn: Bool { account != nil }
     var userID: String? { account?.user_id }
     var followingFamily: Bool { signedIn && selected != nil && selected != ownFamily?.id }
@@ -239,9 +246,18 @@ final class FamilyRelay: ObservableObject {
         guard token == generation else { return }
         families = result
         if !result.contains(where: { $0.id == selected }) { selected = result.first?.id; clearRemote() }
-        if ownFamily == nil { publishing = false }
+        if ownFamily == nil && !families.contains(where: { $0.role == "carer" }) { publishing = false }
     }
     func enable(label: String) async throws {
+        if ownFamily == nil, families.contains(where: { $0.id == selected && $0.role == "carer" }) {
+            publishing = true
+            lastUpload = nil
+            lastHistoryUpload = nil
+            publishStream = UUID().uuidString
+            uploadSeq = 0
+            message = "This phone is the nursery while you have the baby. Parents see live numbers on theirs."
+            return
+        }
         let _: SharedFamily = try await request("families", method: "POST", body: body(["label": label]))
         try await refreshFamilies()
         publishing = true
@@ -255,15 +271,19 @@ final class FamilyRelay: ObservableObject {
         publishing = false; generation = UUID(); invitation = nil
         if let family = ownFamily {
             let _: FamilyReply = try await request("families/" + family.id, method: "DELETE")
+            try await refreshFamilies(); clearRemote(); members = []
+            message = "Sharing stopped. Online snapshot, invitations and member access removed."
+        } else {
+            try await refreshFamilies()
+            message = "This phone is no longer the nursery. Parents keep the family."
         }
-        try await refreshFamilies(); clearRemote(); members = []
-        message = "Sharing stopped. Online snapshot, invitations and member access removed."
-    }
-    func invite(email: String) async throws {
+    func invite(email: String, role: String = "watcher") async throws {
         guard let family = ownFamily else { throw FamilyError.message("Enable sharing first.") }
-        let reply: FamilyReply = try await request("families/\(family.id)/invites", method: "POST", body: body(["email": email]))
+        let reply: FamilyReply = try await request("families/\(family.id)/invites", method: "POST", body: body(["email": email, "role": role]))
         invitation = reply.code
-        message = "Give this private code to that person. It expires in 24 hours and only their verified email can accept it."
+        message = role == "carer"
+            ? "Give this code to Nan. She can be the nursery phone when she has the baby."
+            : "Give this private code to that person. It expires in 24 hours and only their verified email can accept it."
     }
     func join(code: String) async throws {
         let _: FamilyReply = try await request("invites/accept", method: "POST", body: body(["code": code]))
@@ -354,7 +374,7 @@ final class FamilyRelay: ObservableObject {
         }
     }
     func capture(_ snapshot: FamilySnapshot) {
-        guard publishing, let family = ownFamily else { return }
+        guard publishing, let familyID = publishFamilyID else { return }
         var next = snapshot
         if next.seq == nil {
             uploadSeq += 1
@@ -374,7 +394,7 @@ final class FamilyRelay: ObservableObject {
             }
             guard publishing && token == generation else { return }
             do {
-                let reply: FamilyReply = try await request("families/\(family.id)/latest", method: "PUT", body: JSONEncoder().encode(next), timeout: 8)
+                let reply: FamilyReply = try await request("families/\(familyID)/latest", method: "PUT", body: JSONEncoder().encode(next), timeout: 8)
                 guard token == generation else { return }
                 lastUpload = Date()
                 lastAlarm = next.alarm
@@ -695,10 +715,11 @@ struct FamilySharingView: View {
             Text("Nursery iPhone").font(.headline)
             Text("This phone stays on Bluetooth and sends live numbers plus today’s history to invited emails.").font(.caption)
             Toggle("I have authority to share these readings", isOn: $consent)
-            Button(relay.publishing ? "Sharing from this phone" : "Start sharing") { relay.perform { try await relay.enable(label: label) } }.disabled(!consent || relay.publishing)
+            Button(relay.publishing ? "This phone is the nursery" : (relay.isCarer ? "I’m looking after the baby" : "Start sharing")) { relay.perform { try await relay.enable(label: label) } }.disabled(!consent || relay.publishing)
             if relay.families.contains(where: { $0.owner == relay.userID }) {
                 TextField("Family member’s email", text: $inviteEmail).keyboardType(.emailAddress).textInputAutocapitalization(.never).autocorrectionDisabled()
-                Button("Email an invite") { relay.perform { try await relay.invite(email: inviteEmail) } }
+                Button("Invite to watch") { relay.perform { try await relay.invite(email: inviteEmail, role: "watcher") } }
+                Button("Invite as carer") { relay.perform { try await relay.invite(email: inviteEmail, role: "carer") } }
                 if let invitation = relay.invitation {
                     Text("Invite code").font(.caption)
                     Text(invitation).font(.title3.monospacedDigit().weight(.bold))

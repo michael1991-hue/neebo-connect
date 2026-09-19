@@ -1,5 +1,40 @@
 import Foundation
 
+enum NurseryPlace: String, CaseIterable, Identifiable {
+    case home, carer, exploring
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .home: return "Home"
+        case .carer: return "Carer’s house"
+        case .exploring: return "Exploring"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .home: return "house.fill"
+        case .carer: return "heart.circle.fill"
+        case .exploring: return "figure.walk"
+        }
+    }
+    func banner(_ child: String) -> String {
+        let name = child.isEmpty ? "Baby" : child
+        switch self {
+        case .home: return "\(name) is at home"
+        case .carer: return "\(name) is at the carer’s house"
+        case .exploring: return "\(name) is out exploring"
+        }
+    }
+    func hint(_ child: String) -> String {
+        let name = child.isEmpty ? "the baby" : child
+        switch self {
+        case .home: return "Leave a phone in \(name)’s room. Downstairs can follow on this Wi‑Fi."
+        case .carer: return "The carer’s iPhone stays with \(name). Parents watch on theirs over the internet."
+        case .exploring: return "Keep this iPhone with \(name). Same-Wi‑Fi downstairs is off while you’re out."
+        }
+    }
+}
+
 // Heart-rate freshness is independent of battery, oxygen and other BLE traffic.
 struct HeartRateFreshness {
     static let timeout: TimeInterval = 120
