@@ -315,12 +315,24 @@ enum HistoryChartPolicy {
             .min { abs($0.time.timeIntervalSince(date)) < abs($1.time.timeIntervalSince(date)) }
     }
     static func window(day: Date, hours: Int, endingAt end: Date, calendar: Calendar = .current) -> ClosedRange<Date> {
+        window(day: day, span: hours <= 0 ? 0 : TimeInterval(hours) * 3600, endingAt: end, calendar: calendar)
+    }
+    static func window(day: Date, span: TimeInterval, endingAt end: Date, calendar: Calendar = .current) -> ClosedRange<Date> {
         let start = calendar.startOfDay(for: day)
         let finish = calendar.date(byAdding: .day, value: 1, to: start)!
-        guard hours > 0 else { return start...finish }
-        let duration = min(Double(hours) * 3600, finish.timeIntervalSince(start))
+        guard span > 0 else { return start...finish }
+        let duration = min(span, finish.timeIntervalSince(start))
         let boundedEnd = min(finish, max(start.addingTimeInterval(duration), end))
         return boundedEnd.addingTimeInterval(-duration)...boundedEnd
+    }
+    static let zoomSpans: [TimeInterval] = [0, 6 * 3600, 3600, 900, 300]
+    static func closerZoom(than span: TimeInterval) -> TimeInterval {
+        zoomSpans.filter { $0 > 0 && (span <= 0 || $0 < span) }.max() ?? 300
+    }
+    static func widerZoom(than span: TimeInterval) -> TimeInterval {
+        if span <= 0 { return 0 }
+        let wider = zoomSpans.filter { $0 > span }
+        return wider.min() ?? 0
     }
     static func yScale(values: [Double], floor: Double, ceiling: Double, pad: Double, fallback: Double) -> ClosedRange<Double> {
         let finite = values.filter(\.isFinite)

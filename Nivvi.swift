@@ -1732,44 +1732,70 @@ struct HistoryChartsView: View {
     let caption: Color
     let ink: Color
     @State private var hours = 1
+    @State private var span: TimeInterval = 900
     @State private var windowEnd: Date?
+    @State private var pinchStart: TimeInterval?
     private var domain: ClosedRange<Date> {
-        let window = HistoryChartPolicy.window(day: day, hours: hours, endingAt: windowEnd ?? entries.last?.time ?? day)
+        let window = HistoryChartPolicy.window(day: day, span: span, endingAt: windowEnd ?? entries.last?.time ?? day)
         return HistoryChartPolicy.xScale(from: window.lowerBound, to: window.upperBound)
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Picker("Chart range", selection: $hours) {
-                Text("Full day").tag(0); Text("6 hours").tag(6); Text("1 hour").tag(1)
+            Picker("Chart range", selection: $span) {
+                Text("Day").tag(0.0)
+                Text("6h").tag(6 * 3600.0)
+                Text("1h").tag(3600.0)
+                Text("15m").tag(900.0)
+                Text("5m").tag(300.0)
             }.pickerStyle(.segmented)
-            if hours > 0 {
-                HStack {
-                    Button("Earlier") { moveWindow(-1) }.disabled(domain.lowerBound <= Calendar.current.startOfDay(for: day))
-                    Spacer()
-                    Button("Later") { moveWindow(1) }.disabled(domain.upperBound >= dayEnd)
-                }.buttonStyle(.bordered)
-            }
-            Text("\(domain.lowerBound.formatted(date: .omitted, time: .shortened)) – \(domain.upperBound.formatted(date: .omitted, time: .shortened))\(hours == 0 ? " · full calendar day" : "")")
+            HStack {
+                Button("Earlier") { moveWindow(-1) }
+                    .disabled(span <= 0 || domain.lowerBound <= Calendar.current.startOfDay(for: day))
+                Spacer()
+                Button("Zoom −") {
+                    span = HistoryChartPolicy.widerZoom(than: span)
+                    selected = nil
+                }.disabled(span <= 0)
+                Button("Zoom +") {
+                    span = HistoryChartPolicy.closerZoom(than: span)
+                    selected = nil
+                }.disabled(span > 0 && span <= 300)
+                Spacer()
+                Button("Later") { moveWindow(1) }
+                    .disabled(span <= 0 || domain.upperBound >= dayEnd)
+            }.buttonStyle(.bordered)
+            Text("\(domain.lowerBound.formatted(date: .omitted, time: .shortened)) – \(domain.upperBound.formatted(date: .omitted, time: .shortened))\(span <= 0 ? " · full calendar day" : "")")
                 .font(.caption.weight(.semibold)).foregroundStyle(ink).monospacedDigit()
-            Text("Blank gaps are missing data. Drag the line to read a time.")
+            Text("Pinch or Zoom + to read the line. Blank gaps are missing data. Drag to a time.")
                 .font(.caption).foregroundStyle(caption)
             if let entry = selected {
                 Text("Selected: \(entry.time.formatted(date: .abbreviated, time: .standard)) · HR \(entry.heartRateValue.map(MetricText.number) ?? "—") bpm · O₂ \(entry.oxygenValue.map(MetricText.number) ?? "—")%")
                     .font(.caption.bold()).foregroundStyle(lavender).monospacedDigit()
             }
             Label("Heart rate", systemImage: "heart.fill").foregroundStyle(coral).font(.headline)
-            metricChart(.heartRate, tint: coral).frame(minHeight: 80)
+            metricChart(.heartRate, tint: coral).frame(minHeight: 150)
             if entries.contains(where: { $0.oxygenValue != nil }) {
                 Label("Oxygen", systemImage: "lungs.fill").foregroundStyle(teal).font(.headline)
-                metricChart(.oxygen, tint: teal).frame(minHeight: 80)
+                metricChart(.oxygen, tint: teal).frame(minHeight: 120)
             }
         }
-        .onChange(of: hours) { _ in selected = nil; windowEnd = nil }
-        .onChange(of: day) { _ in selected = nil; windowEnd = nil }
+        .gesture(
+            MagnificationGesture()
+                .onChanged { value in
+                    if pinchStart == nil { pinchStart = span <= 0 ? 24 * 3600 : span }
+                    let next = (pinchStart ?? 3600) / max(0.25, value)
+                    span = min(24 * 3600, max(180, next))
+                    if span >= 20 * 3600 { span = 0 }
+                    selected = nil
+                }
+                .onEnded { _ in pinchStart = nil }
+        )
+        .onChange(of: span) { _ in selected = nil }
+        .onChange(of: day) { _ in selected = nil; windowEnd = nil; span = 900 }
     }
     private var dayEnd: Date { Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: day))! }
     private func moveWindow(_ direction: Int) {
-        windowEnd = domain.upperBound.addingTimeInterval(Double(direction * hours) * 3600)
+        windowEnd = domain.upperBound.addingTimeInterval(Double(direction) * (span <= 0 ? 3600 : span))
         selected = nil
     }
     private func metricChart(_ metric: HistoryMetric, tint: Color) -> some View {
@@ -1786,7 +1812,7 @@ struct HistoryChartsView: View {
             if points.count < 2 {
                 Text("Not enough readings in this window.")
                     .font(.caption).foregroundStyle(caption)
-                    .frame(maxWidth: .infinity, minHeight: 80, alignment: .leading)
+                    .frame(maxWidth: .infinity, minHeight: 150, alignment: .leading)
             } else {
                 Chart {
                     ForEach(points) { point in
@@ -1801,15 +1827,15 @@ struct HistoryChartsView: View {
                 .chartXScale(domain: domain)
                 .chartYScale(domain: yDomain)
                 .chartXAxis {
-                    AxisMarks(values: .automatic(desiredCount: 4)) { _ in
+                    AxisMarks(values: .automatic(desiredCount: span > 0 && span <= 900 ? 5 : 4)) { _ in
                         AxisGridLine().foregroundStyle(caption.opacity(0.35))
-                        AxisValueLabel().foregroundStyle(caption)
+                        AxisValueLabel().foregroundStyle(caption).font(.caption2)
                     }
                 }
                 .chartYAxis {
-                    AxisMarks(values: .automatic(desiredCount: 4)) { _ in
+                    AxisMarks(values: .automatic(desiredCount: 5)) { _ in
                         AxisGridLine().foregroundStyle(caption.opacity(0.35))
-                        AxisValueLabel().foregroundStyle(caption)
+                        AxisValueLabel().foregroundStyle(caption).font(.caption2)
                     }
                 }
                 .chartOverlay { proxy in

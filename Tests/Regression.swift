@@ -357,6 +357,9 @@ let earlyWindow = HistoryChartPolicy.window(day: now, hours: 1, endingAt: entire
 check(earlyWindow.lowerBound == entireDay.lowerBound && earlyWindow.upperBound.timeIntervalSince(earlyWindow.lowerBound) == 3600, "zoom clamps to start of selected day")
 let lateWindow = HistoryChartPolicy.window(day: now, hours: 6, endingAt: entireDay.upperBound.addingTimeInterval(3600), calendar: calendar)
 check(lateWindow.upperBound == entireDay.upperBound && lateWindow.upperBound.timeIntervalSince(lateWindow.lowerBound) == 21600, "zoom clamps to end of selected day")
+let tight = HistoryChartPolicy.window(day: now, span: 900, endingAt: now, calendar: calendar)
+check(tight.upperBound.timeIntervalSince(tight.lowerBound) == 900, "15-minute zoom keeps a 15-minute axis")
+check(HistoryChartPolicy.closerZoom(than: 3600) == 900 && HistoryChartPolicy.widerZoom(than: 900) == 3600, "zoom buttons step 1 hour to 15 minutes")
 var daylightCalendar = Calendar(identifier: .gregorian)
 daylightCalendar.timeZone = TimeZone(identifier: "Europe/London")!
 let springDay = daylightCalendar.date(from: DateComponents(year: 2026, month: 3, day: 29))!
