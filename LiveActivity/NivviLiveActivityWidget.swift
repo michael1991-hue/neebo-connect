@@ -30,7 +30,7 @@ struct NivviLiveActivityWidget: Widget {
                 DynamicIslandExpandedRegion(.bottom) {
                     Text(lockCaption(context))
                         .font(.caption)
-                    if !context.state.nurseryHint.isEmpty && !context.isStale {
+                    if !context.state.nurseryHint.isEmpty && !readingsDelayed(context) {
                         Text(context.state.nurseryHint).font(.caption2).foregroundStyle(.secondary)
                     }
                 }
@@ -56,7 +56,7 @@ struct NivviLiveActivityWidget: Widget {
                     .foregroundStyle(.secondary)
                 Text(lockCaption(context))
                     .font(.caption2)
-                    .foregroundStyle(context.isStale || context.state.stale ? .orange : .secondary)
+                    .foregroundStyle(readingsDelayed(context) ? Color.orange : Color.secondary)
             }
             Spacer()
         }
@@ -66,11 +66,18 @@ struct NivviLiveActivityWidget: Widget {
     }
 
     private func lockCaption(_ context: ActivityViewContext<NivviActivityAttributes>) -> String {
-        if context.isStale || context.state.stale { return "Readings delayed" }
+        if readingsDelayed(context) { return "Readings delayed" }
         if context.state.measuredAt > 0 {
             let time = Date(timeIntervalSince1970: context.state.measuredAt)
             return "Measured " + time.formatted(Date.FormatStyle().hour().minute().second())
         }
         return context.state.connection
+    }
+
+    private func readingsDelayed(_ context: ActivityViewContext<NivviActivityAttributes>) -> Bool {
+        if context.state.stale { return true }
+        if #available(iOS 16.2, *), context.isStale { return true }
+        if context.state.measuredAt > 0, Date().timeIntervalSince1970 - context.state.measuredAt > 45 { return true }
+        return false
     }
 }
