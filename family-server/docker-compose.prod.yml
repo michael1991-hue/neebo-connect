@@ -1,0 +1,27 @@
+services:
+  family:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - nivvi-data:/data
+      - ./AuthKey_8AFZ636P58.p8:/data/AuthKey_8AFZ636P58.p8:ro
+    expose:
+      - "8000"
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - family
+volumes:
+  nivvi-data:
+  caddy-data:
+  caddy-config:

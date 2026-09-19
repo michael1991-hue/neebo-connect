@@ -1,0 +1,4 @@
+family.nivvi.app {
+	encode gzip
+	reverse_proxy family:8000
+}
