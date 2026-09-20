@@ -1958,9 +1958,15 @@ struct ContentView: View {
     private func eventLabel(_ kind: String) -> String {
         kind == "critical" ? "Critical" : kind.capitalized
     }
+    private var watchingFamily: Bool { family.viewingRemote }
+    private var watchingWifi: Bool { wifi.following && !family.viewingRemote }
     private var heartRateDisplay: String {
-        if wifi.remoteFresh, let remote = wifi.latest { return remote.heartRate }
-        if let remote = family.liveHeartRate { return remote }
+        if watchingFamily {
+            if let remote = family.liveHeartRate { return remote }
+            if let value = family.remote?.snapshot?.heart_rate { return "\(Int(value.rounded())) bpm" }
+            return "No reading"
+        }
+        if watchingWifi, wifi.remoteFresh, let remote = wifi.latest { return remote.heartRate }
         let value = monitor.verifiedHeartRate.map(Double.init) ?? monitor.pulseOximeterRate ?? monitor.customHeartRateCandidate.map(Double.init)
         return value.map { "\(MetricText.number($0)) bpm" } ?? "No reading"
     }
@@ -1974,8 +1980,12 @@ struct ContentView: View {
         return monitor.connection.isConnected || monitor.connection == .reconnecting ? "Waiting" : "Unavailable"
     }
     private var oxygenDisplay: String {
-        if wifi.remoteFresh, let remote = wifi.latest { return remote.oxygen }
-        if let remote = family.liveOxygen { return remote }
+        if watchingFamily {
+            if let remote = family.liveOxygen { return remote }
+            if let value = family.remote?.snapshot?.oxygen { return "\(Int(value.rounded()))%" }
+            return "No reading"
+        }
+        if watchingWifi, wifi.remoteFresh, let remote = wifi.latest { return remote.oxygen }
         let value = monitor.pulseOximeterOxygen ?? monitor.customOxygenCandidate.map(Double.init)
         return value.map { "\(MetricText.number($0))%" } ?? "No reading"
     }
@@ -1983,10 +1993,10 @@ struct ContentView: View {
         SavedMeasurement.uniquelyIdentified(monitor.history.sorted { $0.time < $1.time })
     }
     private var displayName: String { childName.isEmpty ? "Your child" : childName }
-    private var mirroringNursery: Bool { wifi.remoteFresh || family.viewingRemote }
+    private var mirroringNursery: Bool { (watchingWifi && wifi.remoteFresh) || watchingFamily }
     private var remoteStamp: Date? {
-        if wifi.remoteFresh, let captured = wifi.latest?.captured { return Date(timeIntervalSince1970: captured) }
-        if family.viewingRemote, let stamped = family.remote?.snapshot?.heart_rate_at ?? family.remote?.snapshot?.captured {
+        if watchingWifi, let captured = wifi.latest?.captured { return Date(timeIntervalSince1970: captured) }
+        if watchingFamily, let stamped = family.remote?.snapshot?.heart_rate_at ?? family.remote?.snapshot?.captured {
             return Date(timeIntervalSince1970: stamped)
         }
         return nil
@@ -1996,8 +2006,8 @@ struct ContentView: View {
     }
     private var statusCaption: String {
         if monitor.wearableCharging && monitor.connection != .receiving { return "Charging" }
-        if wifi.following { return wifi.remoteFresh ? "Shared over Wi‑Fi" : wifi.status }
-        if family.viewingRemote { return family.statusLine }
+        if watchingFamily { return family.statusLine }
+        if watchingWifi { return wifi.remoteFresh ? "Shared over Wi‑Fi" : wifi.status }
         return monitor.connection.label
     }
     private var nurseryHint: String {
@@ -2008,8 +2018,8 @@ struct ContentView: View {
     private func syncLiveActivity() {
         let ble = monitor.connection.isConnected || monitor.connection == .reconnecting
         NivviLiveActivityBridge.preferLocalBluetooth = ble
-        let wifiLive = wifi.following && !ble
-        let familyLive = family.viewingRemote && !ble
+        let wifiLive = watchingWifi && !ble
+        let familyLive = watchingFamily && !ble
         let connection: String
         let signal: String
         let hint: String
@@ -2081,16 +2091,7 @@ struct ContentView: View {
         }
     }
     private func applyShareAlert() {
-        if wifi.following, let snap = wifi.latest, Date().timeIntervalSince1970 - snap.captured < 90 {
-            let alarm = snap.alarm ?? "none"
-            noteSharedAlert(alarm: alarm, acknowledged: snap.acknowledged == true, heartRate: remoteBeats.flatMap { $0 > 0 ? Int($0.rounded()) : nil }, catchup: false)
-            if alarm == "none" { monitor.endShareAlert(); return }
-            guard wifi.playAlerts else { return }
-            if snap.acknowledged == true { monitor.silenceAlarm() }
-            monitor.beginShareAlert(sensor: alarm == "sensor")
-            return
-        }
-        if family.viewingRemote, let snap = family.remote?.snapshot {
+        if watchingFamily, let snap = family.remote?.snapshot {
             let alarm = snap.alarm
             noteSharedAlert(alarm: alarm, acknowledged: snap.acknowledged == true, heartRate: snap.heart_rate.map { Int($0.rounded()) }, catchup: family.alarmCatchup)
             if family.alarmCatchup {
@@ -2098,6 +2099,15 @@ struct ContentView: View {
                 return
             }
             if alarm == "none" { monitor.endShareAlert(); return }
+            if snap.acknowledged == true { monitor.silenceAlarm() }
+            monitor.beginShareAlert(sensor: alarm == "sensor")
+            return
+        }
+        if watchingWifi, let snap = wifi.latest, Date().timeIntervalSince1970 - snap.captured < 90 {
+            let alarm = snap.alarm ?? "none"
+            noteSharedAlert(alarm: alarm, acknowledged: snap.acknowledged == true, heartRate: remoteBeats.flatMap { $0 > 0 ? Int($0.rounded()) : nil }, catchup: false)
+            if alarm == "none" { monitor.endShareAlert(); return }
+            guard wifi.playAlerts else { return }
             if snap.acknowledged == true { monitor.silenceAlarm() }
             monitor.beginShareAlert(sensor: alarm == "sensor")
             return
@@ -2337,7 +2347,7 @@ struct ContentView: View {
                     .background(cardFill).clipShape(Capsule())
             }
             if !ageText.isEmpty { Text(childGender == "Prefer not to say" ? ageText : "\(ageText) · \(childGender)").font(.caption).foregroundStyle(muted) }
-            if wifi.following || family.viewingRemote {
+            if watchingWifi || watchingFamily {
                 Text(remotePlace.banner(displayName)).font(.subheadline.weight(.semibold)).foregroundStyle(ink)
                 Text(remotePlace.hint(displayName)).font(.caption).foregroundStyle(muted)
             } else {
@@ -2348,7 +2358,7 @@ struct ContentView: View {
                 Text("Low Power Mode is on. Turn it off so Nivvi can keep reading overnight.")
                     .font(.caption.weight(.semibold)).foregroundStyle(coral)
             }
-            if wifi.following && !wifi.remoteFresh {
+            if watchingWifi && !wifi.remoteFresh {
                 Text(wifi.status)
                     .font(.caption.weight(.semibold)).foregroundStyle(coral)
             }
@@ -2529,9 +2539,9 @@ struct ContentView: View {
     private var fiveMinuteReadings: [SavedMeasurement] {
         let start = Date().addingTimeInterval(-120)
         let source: [SavedMeasurement] = {
-            if wifi.remoteFresh, !wifi.trail.isEmpty { return wifi.trail }
-            if family.viewingRemote, !family.trail.isEmpty { return family.trail }
-            if family.viewingRemote, let samples = family.remote?.snapshot?.history, !samples.isEmpty {
+            if watchingWifi, wifi.remoteFresh, !wifi.trail.isEmpty { return wifi.trail }
+            if watchingFamily, !family.trail.isEmpty { return family.trail }
+            if watchingFamily, let samples = family.remote?.snapshot?.history, !samples.isEmpty {
                 return samples.map {
                     SavedMeasurement.mapped(
                         time: Date(timeIntervalSince1970: $0.t),
@@ -2548,17 +2558,16 @@ struct ContentView: View {
         }
     }
     private var liveChartCaption: String {
-        if wifi.remoteFresh { return "Live · Wi‑Fi" }
-        if family.viewingRemote {
+        if watchingFamily {
             switch family.linkState {
-            case .live: return "Live"
+            case .live: return "Live · internet"
             case .hostStale: return "Stale · not live"
             case .sensorDisconnected: return "Sensor disconnected"
             case .viewerOffline: return "Offline · not live"
             case .idle: return "Family share"
             }
         }
-        if wifi.following { return "Wi‑Fi stale · not live" }
+        if watchingWifi { return wifi.remoteFresh ? "Live · Wi‑Fi" : "Wi‑Fi stale · not live" }
         if monitor.staleHeartRateDetected { return "Not live" }
         return "Live"
     }
@@ -2625,9 +2634,9 @@ struct ContentView: View {
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle((family.viewingRemote && family.linkState != .live) || (monitor.staleHeartRateDetected && !mirroringNursery) ? coral : accentMint)
                 }
-                if wifi.remoteFresh {
+                if watchingWifi && wifi.remoteFresh {
                     Text(FamilyRelation.sharedFrom(wifi.latest?.hostRelation, wifi: true)).font(.caption).foregroundStyle(accentMint)
-                } else if family.viewingRemote {
+                } else if watchingFamily {
                     Text(family.statusLine).font(.caption).foregroundStyle(family.linkState == .live ? accentMint : coral)
                 }
                 fiveMinuteChart
@@ -2936,7 +2945,7 @@ struct ContentView: View {
                 Toggle("Follow the phone with the baby", isOn: Binding(get: { wifi.following }, set: { wifi.setFollowing($0) })).tint(switchOn)
                 Toggle("Play those alerts here", isOn: $wifi.playAlerts).tint(switchOn)
                 Text(wifi.status).font(.caption).foregroundStyle(muted)
-                Text("Use the same home Wi‑Fi, not Guest. Turn Low Power Mode off on both phones. Leave Nivvi in the app switcher — do not swipe it away. Lock-screen numbers while the downstairs phone is locked need internet so Apple can push Live Activity updates.")
+                Text("Same house only — 4-digit PIN on this Wi‑Fi. Nan in another house uses Family sharing above, not this.")
                     .font(.caption).foregroundStyle(muted)
             }.padding(.top, 8)
         } }

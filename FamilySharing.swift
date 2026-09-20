@@ -664,7 +664,6 @@ struct FamilySharingView: View {
     }
 
     @ObservedObject private var relay = FamilyRelay.shared
-    @ObservedObject private var wifi = WiFiRelay.shared
     @Environment(\.scenePhase) private var phase
     @Environment(\.colorScheme) private var scheme
     @State private var email = ""
@@ -703,7 +702,9 @@ struct FamilySharingView: View {
             VStack(alignment: .leading, spacing: 20) {
                 header
                 if !relay.configured {
-                    wifiShortcut
+                    Text("Family sharing needs the Nivvi server. Same-house Wi‑Fi Follow is in Settings, not here.")
+                        .font(.subheadline)
+                        .foregroundStyle(muted)
                 } else if !relay.signedIn {
                     authFlow
                 } else {
@@ -1072,25 +1073,6 @@ struct FamilySharingView: View {
             if action == "login" || action == "reset" { password = ""; code = "" }
             if action == "verify" { code = "" }
             if let next { step = next }
-        }
-    }
-
-    private var wifiShortcut: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Works on this Wi‑Fi tonight").font(.headline)
-            Text("There is no Apple shortcut and no online server yet. Two iPhones on the same home Wi‑Fi can still share live numbers: one stays in the room on Bluetooth, the other follows downstairs.")
-            Toggle("Share from this iPhone", isOn: Binding(get: { wifi.hosting }, set: { wifi.setHosting($0) }))
-            if wifi.hosting {
-                Text(wifi.pin).font(.system(size: 36, weight: .bold, design: .rounded)).monospacedDigit()
-                Text("Do not type on this phone. Open Nivvi on the other iPhone and enter this code.")
-            }
-            TextField("4-digit code from the other iPhone", text: Binding(get: { wifi.joinPin }, set: { wifi.setJoinPin($0) }))
-                .keyboardType(.numberPad)
-                .font(.title3.monospacedDigit())
-            Toggle("Follow the phone with the baby", isOn: Binding(get: { wifi.following }, set: { wifi.setFollowing($0) }))
-            Text(wifi.status).font(.caption)
-            Text("Seeing it from another house needs a paid always-on server. iCloud Family Sharing does not copy Nivvi readings.")
-                .font(.caption)
         }
     }
 
