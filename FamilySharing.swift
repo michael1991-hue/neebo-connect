@@ -1358,7 +1358,6 @@ struct FamilySharingView: View {
 
         Same code for the whole family. Don’t wait for a new one if someone else takes over.
         """
-        """
     }
 
     private var remoteControls: some View {
