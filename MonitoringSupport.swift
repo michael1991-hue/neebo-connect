@@ -94,7 +94,7 @@ struct FamilyLiveEvent: Equatable {
 }
 
 enum FamilyLivePolicy {
-    static let metricWindow: TimeInterval = 30
+    static let metricWindow: TimeInterval = 45
     static func accept(currentStream: String?, lastSeq: Int, incoming: FamilyLiveEvent) -> FamilyLiveEvent? {
         if incoming.type == "revoked" { return incoming }
         if incoming.seq < 1 { return nil }
@@ -110,7 +110,7 @@ enum FamilyLivePolicy {
         guard following else { return .idle }
         if sensorAlarm || hostConnection == "idle" || hostConnection == "bluetoothOff" { return .sensorDisconnected }
         let eventAge = lastEvent.map { now.timeIntervalSince($0) } ?? .infinity
-        if !socketConnected && eventAge > 4 { return .viewerOffline }
+        if !socketConnected && eventAge > 12 { return .viewerOffline }
         if !heartFresh { return .hostStale }
         return .live
     }
