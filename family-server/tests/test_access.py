@@ -243,6 +243,22 @@ def test_share_link_live_view(client):
     assert "Delilah Faith" in client.get("/join/" + token).text
 
 
+def test_one_short_family_code_joins_everyone(client):
+    mum, _ = account(client, "mum@example.com")
+    dad, _ = account(client, "dad@example.com")
+    nan, _ = account(client, "nan@example.com")
+    family = group(client, mum)
+    code = client.get("/families", headers=mum).json()[0]["join_code"]
+    assert len(code) == 6
+    assert client.post("/invites/accept", headers=dad, json={"code": code}).status_code == 200
+    assert client.post("/invites/accept", headers=nan, json={"code": code.lower()}).status_code == 200
+    people = client.get(f"/families/{family}/members", headers=mum).json()
+    emails = {row["email"] for row in people}
+    assert emails == {"dad@example.com", "nan@example.com"}
+    assert client.post("/invites/accept", headers=mum, json={"code": code}).status_code == 400
+
+
+
 def test_short_password_explains_422(client):
     result = client.post("/auth/register", json={"email": "short@example.com", "password": "tiny"})
     assert result.status_code == 422

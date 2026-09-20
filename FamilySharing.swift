@@ -13,6 +13,7 @@ struct SharedFamily: Codable, Identifiable {
     var role: String?
     var host_relation: String?
     var share_token: String?
+    var join_code: String?
     var child_name: String?
     var child_gender: String?
     var child_birth: Double?
@@ -180,6 +181,7 @@ final class FamilyRelay: ObservableObject {
     @Published var busy = false
     @Published private(set) var publishing = false { didSet { noteHold() } }
     @Published var shareLink = ""
+    @Published var familyCode = ""
     @Published private(set) var invitation: String?
     @Published private(set) var socketConnected = false
     @Published private(set) var lastLatency: TimeInterval?
@@ -338,6 +340,9 @@ final class FamilyRelay: ObservableObject {
            let server {
             shareLink = server.appendingPathComponent("join").appendingPathComponent(token).absoluteString
         }
+        if let code = ownFamily?.join_code ?? result.first(where: { $0.id == selected })?.join_code ?? result.first?.join_code {
+            familyCode = code
+        }
         applyCloudProfileIfWatching()
     }
     func enable(label: String) async throws {
@@ -364,6 +369,7 @@ final class FamilyRelay: ObservableObject {
         guard let familyID = ownFamily?.id else { return }
         let reply: FamilyReply = try await request("families/\(familyID)/share-link", method: "POST")
         if let url = reply.url { shareLink = url }
+        if let code = reply.code, code.count == 6 { familyCode = code }
     }
     func pushProfile() async throws {
         guard let familyID = ownFamily?.id else { return }
@@ -432,7 +438,7 @@ final class FamilyRelay: ObservableObject {
     func join(code: String) async throws {
         let _: FamilyReply = try await request("invites/accept", method: "POST", body: body(["code": code]))
         try await refreshFamilies()
-        message = "You’re in. Live readings will show here when the phone with the baby is sharing."
+        message = "You’re in. You’re on this child’s family now. Live numbers appear when someone is monitoring."
         UIApplication.shared.registerForRemoteNotifications()
     }
     func refreshMembers() async throws {
@@ -1074,12 +1080,12 @@ struct FamilySharingView: View {
         VStack(alignment: .leading, spacing: 12) {
             if relay.families.isEmpty {
                 Text("Watch live readings").font(.headline)
-                Text("Someone sends you a code. Sign up with the same email they invited, then paste it here.")
+                Text("Create your own Nivvi login, then type the 6-letter family code. The same code joins everyone to one child.")
                     .font(.subheadline)
                     .foregroundStyle(muted)
-                labeled("Invite code") {
-                    TextField("Paste the full code", text: $joinCode)
-                        .textInputAutocapitalization(.never)
+                labeled("Family code") {
+                    TextField("e.g. K7M4QP", text: $joinCode)
+                        .textInputAutocapitalization(.characters)
                         .autocorrectionDisabled()
                         .keyboardType(.asciiCapable)
                 }
@@ -1090,7 +1096,7 @@ struct FamilySharingView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(accent)
-                .disabled(joinCode.trimmingCharacters(in: .whitespaces).count < 20 || relay.busy)
+                .disabled(joinCode.trimmingCharacters(in: .whitespacesAndNewlines).count < 6 || relay.busy)
             } else {
                 remoteControls
             }
@@ -1242,6 +1248,21 @@ struct FamilySharingView: View {
                 if relay.publishing {
                     Button("Stop monitoring") { relay.perform { try await relay.releaseHost() } }
                 }
+                if !relay.familyCode.isEmpty {
+                    Text("Family code").font(.subheadline.weight(.semibold))
+                    Text(relay.familyCode)
+                        .font(.system(size: 34, weight: .bold, design: .rounded))
+                        .textSelection(.enabled)
+                    ShareLink(item: inviteMessage(code: relay.familyCode)) {
+                        Label("Send family code", systemImage: "square.and.arrow.up")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                    }
+                    Text("Same 6 letters for everyone. They sign up with their own email, type this code, they’re on this child. Take over later — don’t send a new code.")
+                        .font(.caption)
+                        .foregroundStyle(muted)
+                }
                 if let url = URL(string: relay.shareLink), !relay.shareLink.isEmpty {
                     ShareLink(item: url) {
                         Label("Copy the live link", systemImage: "link")
@@ -1327,19 +1348,16 @@ struct FamilySharingView: View {
     private func inviteMessage(code: String) -> String {
         let child = childName.isEmpty ? "the baby" : childName
         return """
-        You’re invited to Nivvi as \(inviteRelation.title), to see \(child)’s live heart rate.
+        You’re invited to Nivvi to see \(child)’s live heart rate.
 
-        Watch on iPhone or Mac:
-        \(relay.shareLink.isEmpty ? "Open Nivvi Family sharing after they send the live link." : relay.shareLink)
-
-        The live link stays the same if someone else takes over. Don’t wait for a new one.
-
-        For the iPhone app, create an account with this email: \(inviteEmail)
-        Then Settings → Family sharing → paste this code:
+        1. Install Nivvi (TestFlight)
+        2. Create your own account (your email)
+        3. Family sharing → type this family code:
 
         \(code)
 
-        The code lasts 24 hours. Stop sharing with everyone is the only thing that kills the live link.
+        Same code for the whole family. Don’t wait for a new one if someone else takes over.
+        """
         """
     }
 

@@ -131,6 +131,7 @@ def initialize():
             "ALTER TABLE families ADD COLUMN host_stream TEXT",
             "ALTER TABLE families ADD COLUMN host_relation TEXT",
             "ALTER TABLE families ADD COLUMN share_token TEXT",
+            "ALTER TABLE families ADD COLUMN join_code TEXT",
             "ALTER TABLE families ADD COLUMN child_name TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE families ADD COLUMN child_gender TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE families ADD COLUMN child_birth REAL",
@@ -203,6 +204,26 @@ def public_root():
     return (os.environ.get("NIVVI_PUBLIC_URL") or "https://family.nivvi.app").rstrip("/")
 
 
+JOIN_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
+
+
+def new_join_code(c):
+    for _ in range(24):
+        code = "".join(secrets.choice(JOIN_ALPHABET) for _ in range(6))
+        if not c.execute("SELECT 1 FROM families WHERE join_code=?", (code,)).fetchone():
+            return code
+    raise HTTPException(500, "Could not create a family code")
+
+
+def ensure_join_code(c, family):
+    row = c.execute("SELECT join_code FROM families WHERE id=?", (family,)).fetchone()
+    if row and row["join_code"]:
+        return row["join_code"]
+    code = new_join_code(c)
+    c.execute("UPDATE families SET join_code=? WHERE id=?", (code, family))
+    return code
+
+
 def ensure_share_token(c, family):
     row = c.execute("SELECT share_token FROM families WHERE id=?", (family,)).fetchone()
     if row and row["share_token"]:
@@ -217,7 +238,10 @@ def family_for_share(token):
     if not token or len(token) > 80:
         return None
     with db() as c:
-        row = c.execute("SELECT id,label,host_relation,child_name FROM families WHERE share_token=?", (token,)).fetchone()
+        row = c.execute(
+            "SELECT id,label,host_relation,child_name FROM families WHERE share_token=? OR join_code=?",
+            (token, token.upper().replace(" ", "").replace("-", "")),
+        ).fetchone()
         if not row:
             return None
         latest = c.execute("SELECT payload,received FROM latest WHERE family=?", (row["id"],)).fetchone()
@@ -312,7 +336,7 @@ class Family(BaseModel):
 
 
 class Invite(BaseModel):
-    code: str = Field(min_length=20, max_length=128)
+    code: str = Field(min_length=6, max_length=128)
 
 
 class HistoryPoint(BaseModel):
@@ -511,6 +535,7 @@ def families(user=Depends(require_user)):
                       CASE WHEN owner=? THEN 'owner' ELSE COALESCE((SELECT role FROM members WHERE family=families.id AND user_id=?),'watcher') END AS role,
                       host_relation,
                       share_token,
+                      join_code,
                       child_name, child_gender, child_birth, place,
                       high_enabled, low_enabled, high_threshold, low_threshold, duration_seconds
                FROM families WHERE owner=? OR id IN(SELECT family FROM members WHERE user_id=?)""",
@@ -527,6 +552,7 @@ def create_family(body: Family, user=Depends(require_user)):
         c.execute("INSERT OR IGNORE INTO families(id, owner, label) VALUES(?,?,?)", (secrets.token_hex(16), user["id"], body.label.strip() or "Family"))
         family = dict(c.execute("SELECT id,label,owner FROM families WHERE owner=?", (user["id"],)).fetchone())
         family["share_token"] = ensure_share_token(c, family["id"])
+        family["join_code"] = ensure_join_code(c, family["id"])
         return family
 
 
@@ -544,7 +570,8 @@ def share_link(family: str, user=Depends(require_user)):
     with db() as c:
         owner(c, family, user)
         token = ensure_share_token(c, family)
-    return {"ok": True, "token": token, "url": public_root() + "/join/" + token}
+        code = ensure_join_code(c, family)
+    return {"ok": True, "token": token, "code": code, "url": public_root() + "/join/" + token}
 
 
 @app.put("/families/{family}/profile")
@@ -685,6 +712,7 @@ def claim_host(family: str, body: HostClaim, user=Depends(require_user)):
     stream = secrets.token_hex(16)
     with db() as c:
         publisher(c, family, user)
+        ensure_join_code(c, family)
         c.execute("UPDATE families SET host_user=?, host_stream=?, host_relation=? WHERE id=?", (user["id"], stream, relation, family))
     HUB.emit(family, {"type": "host", "stream_id": stream, "host_relation": relation, "host_user": user["id"]})
     return {"ok": True, "stream_id": stream, "host_relation": relation}
@@ -724,16 +752,31 @@ def invite(family: str, body: Address, user=Depends(require_user)):
 @app.post("/invites/accept")
 def accept(body: Invite, user=Depends(require_user)):
     throttle("accept:" + user["id"], 20)
+    raw = body.code.strip()
+    short = raw.upper().replace(" ", "").replace("-", "")
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
-        row = c.execute("SELECT * FROM invites WHERE token=? AND email=? AND expires>?", (digest(body.code.strip()), user["email"], time.time())).fetchone()
-        if not row:
-            raise HTTPException(400, "Invitation unavailable, expired or addressed to another account")
+        family = None
+        role = "watcher"
+        relation = ""
+        if len(short) == 6 and all(ch in JOIN_ALPHABET for ch in short):
+            family = c.execute("SELECT id,owner FROM families WHERE join_code=?", (short,)).fetchone()
+            if not family:
+                raise HTTPException(400, "That family code is not recognised.")
+            if family["owner"] == user["id"]:
+                raise HTTPException(400, "You’re already the parent of this family.")
+        else:
+            row = c.execute("SELECT * FROM invites WHERE token=? AND email=? AND expires>?", (digest(raw), user["email"], time.time())).fetchone()
+            if not row:
+                raise HTTPException(400, "Invitation unavailable, expired or addressed to another account")
+            family = {"id": row["family"]}
+            role = row["role"] if "role" in row.keys() else "watcher"
+            relation = row["relation"] if "relation" in row.keys() else ""
+            c.execute("DELETE FROM invites WHERE token=?", (row["token"],))
         c.execute(
             "INSERT OR IGNORE INTO members(family,user_id,role,relation) VALUES(?,?,?,?)",
-            (row["family"], user["id"], row["role"] if "role" in row.keys() else "watcher", row["relation"] if "relation" in row.keys() else ""),
+            (family["id"], user["id"], role, relation),
         )
-        c.execute("DELETE FROM invites WHERE token=?", (row["token"],))
     return {"ok": True}
 
 
