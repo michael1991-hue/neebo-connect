@@ -243,5 +243,12 @@ def test_share_link_live_view(client):
     assert "Delilah Faith" in client.get("/join/" + token).text
 
 
+def test_short_password_explains_422(client):
+    result = client.post("/auth/register", json={"email": "short@example.com", "password": "tiny"})
+    assert result.status_code == 422
+    assert "12 characters" in result.json()["detail"]
+
+
+
 
 

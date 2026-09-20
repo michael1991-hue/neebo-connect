@@ -19,6 +19,7 @@ from pathlib import Path
 import httpx
 import jwt
 from fastapi import FastAPI, HTTPException, Request, Depends, WebSocket
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
@@ -383,6 +384,23 @@ async def lifespan(app):
 
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+
+
+@app.exception_handler(RequestValidationError)
+async def invalid_form(_, exc: RequestValidationError):
+    notes = []
+    for err in exc.errors():
+        field = (err.get("loc") or [None])[-1]
+        if field == "password":
+            notes.append("Password must be at least 12 characters.")
+        elif field == "email":
+            notes.append("Check the email address.")
+        elif field == "code":
+            notes.append("Paste the full code from the email, not a 6-digit PIN.")
+        else:
+            notes.append("Check the form and try again.")
+    text = " ".join(dict.fromkeys(notes)) or "Check the form and try again."
+    return JSONResponse({"detail": text}, status_code=422)
 
 
 @app.middleware("http")
