@@ -29,8 +29,8 @@ struct AtmosphereBackdrop: View {
     private func drawSky(_ canvas: GraphicsContext, size: CGSize) {
         let nightTop = Color(red: 0.01, green: 0.05, blue: 0.12)
         let nightBottom = Color(red: 0.02, green: 0.13, blue: 0.23)
-        let dayTop = Color(red: 0.74, green: 0.82, blue: 0.79)
-        let dayBottom = Color(red: 0.62, green: 0.73, blue: 0.72)
+        let dayTop = Color(red: 0.98, green: 0.86, blue: 0.52)
+        let dayBottom = Color(red: 1.0, green: 0.72, blue: 0.38)
         let top = mode == .night ? nightTop : dayTop
         let bottom = mode == .night ? nightBottom : dayBottom
         canvas.fill(

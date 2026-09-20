@@ -915,12 +915,7 @@ struct FamilySharingView: View {
             }
             .accessibilityElement(children: .combine)
             .accessibilityAddTraits(.isHeader)
-            Text("Share your child’s readings with the people who care for them.")
-                .font(.body)
-                .foregroundStyle(ink)
-            Text("Each family member needs their own account.")
-                .font(.subheadline)
-                .foregroundStyle(muted)
+            Text("Share live readings with family. One 6-letter code.")
         }
         .fixedSize(horizontal: false, vertical: true)
     }
@@ -1066,16 +1061,83 @@ struct FamilySharingView: View {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(muted)
                 .textSelection(.enabled)
-            joinCard
-            ownerControls
-            if !relay.families.isEmpty {
-                remoteControls
+            if relay.families.isEmpty {
+                joinCard
+                Text("Or start this child’s family").font(.headline)
+                Button {
+                    relay.perform { try await relay.createProfile(label: label) }
+                } label: {
+                    Text("Create family code").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 12)
+                }
+                .buttonStyle(.borderedProminent).tint(accent).disabled(relay.busy)
+            } else {
+                if relay.families.count > 1 {
+                    Picker("Family", selection: $relay.selected) {
+                        ForEach(relay.families) { family in
+                            Text((family.child_name?.isEmpty == false) ? family.child_name! : family.label).tag(Optional(family.id))
+                        }
+                    }
+                }
+                if !relay.familyCode.isEmpty {
+                    Text("Family code").font(.subheadline.weight(.semibold))
+                    Text(relay.familyCode)
+                        .font(.system(size: 40, weight: .bold, design: .rounded))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity)
+                    ShareLink(item: inviteMessage(code: relay.familyCode)) {
+                        Label("Send family code", systemImage: "square.and.arrow.up")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                    }
+                }
+                labeled("This phone is") {
+                    Picker("This phone is", selection: $hostRelation) {
+                        Text("Choose…").tag("")
+                        ForEach(FamilyRelation.allCases) { relation in
+                            Text(relation.title).tag(relation.rawValue)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                Toggle("I can share these readings", isOn: $consent)
+                Button {
+                    relay.perform { try await relay.enable(label: label) }
+                } label: {
+                    Text(relay.publishing
+                         ? "Monitoring on this phone"
+                         : (relay.remote?.snapshot != nil
+                            ? "Take over monitoring"
+                            : "I’m with \(familyChildName) — start monitoring"))
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(accent)
+                .disabled(!consent || relay.busy || relay.publishing)
+                if relay.publishing {
+                    Button("Stop monitoring") { relay.perform { try await relay.releaseHost() } }
+                }
+                TimelineView(.periodic(from: .now, by: 1)) { _ in
+                    Text(relay.statusLine)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(relay.linkState == .live ? accent : Color.orange)
+                }
+                Button("Refresh") { Task { await relay.fetchRemote() } }
+                    .buttonStyle(.bordered)
+                if relay.isOwner {
+                    Button("Stop sharing with everyone", role: .destructive) { confirmStop = true }
+                } else {
+                    Button("Leave this family", role: .destructive) { relay.perform { try await relay.leave() } }
+                }
+                DisclosureGroup("Join another family") { joinCard.padding(.top, 8) }
             }
             Button("Turn on family alerts") { relay.perform { try await relay.notifications() } }
                 .buttonStyle(.bordered)
-            Text("Alerts can miss if a phone is locked, on Silent, or off the internet. This is not a medical monitor.")
-                .font(.caption)
-                .foregroundStyle(muted)
+            Text("Alarms can miss if a phone is locked, on Silent, or offline. Not a medical monitor.")
+                .font(.caption).foregroundStyle(muted)
             HStack {
                 Button("Sign out") { relay.perform { try await relay.signOut() } }
                 Button("Delete account", role: .destructive) { confirmDelete = true }
@@ -1236,97 +1298,8 @@ struct FamilySharingView: View {
         return "the baby"
     }
 
-    private var ownerControls: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("This child’s family").font(.headline)
-            Text("One 6-letter code. Everyone who types it is on this child. They pick Mum, Dad, Nan or Carer when they join.")
-                .font(.subheadline)
-                .foregroundStyle(muted)
-            if relay.familyCode.isEmpty && (relay.isOwner || relay.families.isEmpty) {
-                Button {
-                    relay.perform { try await relay.createProfile(label: label) }
-                } label: {
-                    Text("Create family code")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(accent)
-                .disabled(relay.busy)
-            } else {
-                Text("Family code").font(.subheadline.weight(.semibold))
-                Text(relay.familyCode)
-                    .font(.system(size: 40, weight: .bold, design: .rounded))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity)
-                ShareLink(item: inviteMessage(code: relay.familyCode)) {
-                    Label("Send family code", systemImage: "square.and.arrow.up")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                }
-                Text("Send this once. Same code forever until you stop sharing with everyone.")
-                    .font(.caption)
-                    .foregroundStyle(muted)
-            }
-            labeled("This phone is") {
-                Picker("This phone is", selection: $hostRelation) {
-                    Text("Choose…").tag("")
-                    ForEach(FamilyRelation.allCases) { relation in
-                        Text(relation.title).tag(relation.rawValue)
-                    }
-                }
-                .pickerStyle(.menu)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            Toggle("I can share these readings", isOn: $consent)
-            if relay.canPublish || relay.families.isEmpty {
-                Button {
-                    relay.perform { try await relay.enable(label: label) }
-                } label: {
-                    Text(relay.publishing
-                         ? "Monitoring on this phone"
-                         : (relay.remote?.snapshot != nil
-                            ? "Take over monitoring"
-                            : "I’m with \(familyChildName) — start monitoring"))
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(accent)
-                .disabled(!consent || relay.busy || relay.publishing)
-                if relay.publishing {
-                    Button("Stop monitoring") { relay.perform { try await relay.releaseHost() } }
-                }
-            }
-            if !relay.members.isEmpty {
-                Text("Family").font(.subheadline.weight(.semibold))
-                ForEach(relay.members) { member in
-                    HStack {
-                        Text(FamilyRelation(rawValue: member.relation ?? "")?.title ?? "Family")
-                            .font(.subheadline.weight(.semibold))
-                        Text(member.email).font(.caption).foregroundStyle(muted)
-                        Spacer()
-                        if relay.isOwner {
-                            Button("Remove", role: .destructive) { relay.perform { try await relay.revoke(member) } }
-                                .font(.caption)
-                        }
-                    }
-                }
-            }
-            if relay.isOwner {
-                Button("Stop sharing with everyone", role: .destructive) { confirmStop = true }
-                Text("That ends the family and kills the live link. To hand over, the other phone taps Take over — don’t stop sharing.")
-                    .font(.caption)
-                    .foregroundStyle(muted)
-            }
-        }
-    }
-
     private func inviteMessage(code: String) -> String {
-        let child = childName.isEmpty ? "the baby" : childName
+        let child = familyChildName
         return """
         You’re invited to Nivvi to see \(child)’s live heart rate.
 
@@ -1338,65 +1311,6 @@ struct FamilySharingView: View {
 
         Same code for the whole family. Don’t wait for a new one if someone else takes over.
         """
-    }
-
-    private var remoteControls: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Watching live readings").font(.headline)
-            if relay.families.count > 1 {
-                Picker("Family", selection: $relay.selected) {
-                    ForEach(relay.families) { family in Text(family.label).tag(Optional(family.id)) }
-                }
-            }
-            TimelineView(.periodic(from: .now, by: 1)) { _ in
-                Text(relay.statusLine)
-                    .font(.headline)
-                    .foregroundStyle(relay.linkState == .live ? accent : Color.orange)
-                if let snapshot = relay.remote?.snapshot {
-                    HStack {
-                        metric("Heart rate", relay.familyHeartFresh ? snapshot.heart_rate : nil, "bpm")
-                        metric("Oxygen", relay.familyOxygenFresh ? snapshot.oxygen : nil, "%")
-                    }
-                    let stamp = Date(timeIntervalSince1970: snapshot.heart_rate_at ?? snapshot.captured)
-                    Text(relay.linkState == .live
-                         ? "Live now"
-                         : "Last live \(stamp.formatted(date: .omitted, time: .shortened)). Open Nivvi on the other phone.")
-                        .font(.caption)
-                        .foregroundStyle(muted)
-                    if relay.linkState == .live && snapshot.alarm != "none" {
-                        if snapshot.acknowledged == true {
-                            let who = FamilyRelation(rawValue: snapshot.acknowledged_by ?? "")?.title ?? "family"
-                            Text("Heard it by \(who). Alarm stays on until a fresh in-range reading.")
-                                .foregroundStyle(Color.orange)
-                        } else {
-                            Text(snapshot.alarm == "sensor" ? "Check the sensor on the other phone." : "Alert on the other phone.")
-                                .foregroundStyle(Color.orange)
-                        }
-                    }
-                } else {
-                    Text("Waiting for the other phone to share.")
-                        .font(.caption)
-                        .foregroundStyle(muted)
-                }
-            }
-            Button("Refresh") { Task { await relay.fetchRemote() } }
-            if let url = URL(string: relay.shareLink), !relay.shareLink.isEmpty {
-                ShareLink(item: url) {
-                    Label("Copy the live link", systemImage: "link")
-                }
-                Text("You already have this. Take over on this phone — don’t send a new link.")
-                    .font(.caption)
-                    .foregroundStyle(muted)
-            }
-            if let f = relay.families.first(where: { $0.id == relay.selected }), f.owner != relay.userID {
-                Button("Leave this family", role: .destructive) { relay.perform { try await relay.leave() } }
-            }
-        }
-        .buttonStyle(.bordered)
-    }
-
-    private func metric(_ title: String, _ value: Double?, _ unit: String) -> some View {
-        VStack(alignment: .leading) { Text(title).font(.caption); Text(value.map { String(format: "%.0f %@", $0, unit) } ?? "—").font(.title2.bold()) }.frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

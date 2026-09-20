@@ -485,6 +485,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         if liveTrace.first?.time ?? cut < cut { liveTrace.removeAll { $0.time < cut } }
     }
     func selectHistoryDay(_ day: Date) {
+        let day = Calendar.current.startOfDay(for: day)
         selectedHistoryDay = day
         do { history = try archive.load(day: day); rememberHistoryIDs(history); historyError = nil }
         catch { history = []; historyError = "This day could not be read. Original history is preserved." }
@@ -1884,7 +1885,6 @@ struct ContentView: View {
     @StateObject private var wifi = WiFiRelay.shared
     @ObservedObject private var family = FamilyRelay.shared
     @Environment(\.scenePhase) private var scenePhase
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("nivvi.profile.name") private var childName = ""
     @AppStorage("nivvi.profile.birthDate") private var childBirthDate = 0.0
     @AppStorage("nivvi.profile.gender") private var childGender = "Prefer not to say"
@@ -1892,7 +1892,6 @@ struct ContentView: View {
     @AppStorage("nivvi.profile.avatarColor") private var avatarColor = "teal"
     @AppStorage("nivvi.place") private var placeRaw = NurseryPlace.home.rawValue
     @AppStorage("nivvi.host.relation") private var hostRelation = ""
-    @AppStorage("nivvi.atmosphere.enabled") private var atmosphereEnabled = true
     @AppStorage("nivvi.nursery.acknowledged") private var nurseryAcknowledged = false
     @State private var skyOffset: CGFloat = 0
     @AppStorage("nivvi.favorite.device.ids") private var favoriteDeviceIDs = ""
@@ -2176,7 +2175,7 @@ struct ContentView: View {
             AtmosphereBackdrop(
                 mode: mode,
                 scroll: skyOffset,
-                animate: atmosphereEnabled && !reduceMotion && scenePhase == .active
+                animate: false
             )
             .ignoresSafeArea()
             .allowsHitTesting(false)
@@ -2326,6 +2325,9 @@ struct ContentView: View {
                 }
             }
         }
+        .onChange(of: tab) { now in
+            if now == 1 { monitor.selectHistoryDay(monitor.selectedHistoryDay) }
+        }
         .onChange(of: monitor.selectedHistoryDay) { _ in selectedHistoryReading = nil }
         .onChange(of: monitor.history.count) { count in if count == 0 { selectedHistoryReading = nil } }
         // Monitoring lifecycle belongs to the long-lived monitor, independent of this view.
@@ -2363,8 +2365,11 @@ struct ContentView: View {
                 Circle().fill(monitor.wearableCharging ? Color.orange : (monitor.connection == .receiving || wifi.remoteFresh || (watchingFamily && family.linkState == .live) ? teal : (connected ? .orange : .gray))).frame(width: 11, height: 11)
                 Text(statusCaption).font(.subheadline.weight(.semibold)).foregroundStyle(ink)
                 Spacer()
-                Text("\(mode.rawValue) mode").font(.caption.weight(.bold)).foregroundStyle(ink).padding(.horizontal, 11).padding(.vertical, 6)
-                    .background(cardFill).clipShape(Capsule())
+                Text(mode == .day ? "Day" : "Night").font(.caption.weight(.bold))
+                    .foregroundStyle(mode == .day ? Color(red: 0.22, green: 0.12, blue: 0.04) : .white)
+                    .padding(.horizontal, 12).padding(.vertical, 7)
+                    .background(mode == .day ? Color(red: 1, green: 0.78, blue: 0.22) : Color.white.opacity(0.16))
+                    .clipShape(Capsule())
             }
             if !ageText.isEmpty { Text(childGender == "Prefer not to say" ? ageText : "\(ageText) · \(childGender)").font(.caption).foregroundStyle(muted) }
             if watchingWifi || watchingFamily {
@@ -2419,7 +2424,7 @@ struct ContentView: View {
 
     private var compactTitle: String {
         switch tab {
-        case 1: return "History"
+        case 1: return monitor.selectedHistoryDay.formatted(date: .abbreviated, time: .omitted)
         case 2: return "Alerts"
         case 3: return "Device"
         default: return displayName
@@ -2730,13 +2735,31 @@ struct ContentView: View {
     }
     private var history: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                DatePicker("Day", selection: Binding(get: { monitor.selectedHistoryDay }, set: {
-                    historySpan = 1
-                    monitor.selectHistoryDay($0)
-                }), in: ...Date(), displayedComponents: .date)
-                .labelsHidden()
-                Spacer()
+            HStack(spacing: 10) {
+                Button { shiftHistory(-1) } label: {
+                    Image(systemName: "chevron.left").font(.headline)
+                        .frame(width: 44, height: 44).background(cardFill).clipShape(Circle())
+                }
+                .accessibilityLabel("Previous day")
+                VStack(spacing: 2) {
+                    Text(monitor.selectedHistoryDay.formatted(Date.FormatStyle().weekday(.wide).month().day()))
+                        .font(.headline)
+                        .foregroundStyle(ink)
+                        .multilineTextAlignment(.center)
+                    DatePicker("Day", selection: Binding(get: { monitor.selectedHistoryDay }, set: {
+                        historySpan = 1
+                        monitor.selectHistoryDay($0)
+                    }), in: ...Date(), displayedComponents: .date)
+                    .labelsHidden()
+                    .tint(accentMint)
+                }
+                .frame(maxWidth: .infinity)
+                Button { shiftHistory(1) } label: {
+                    Image(systemName: "chevron.right").font(.headline)
+                        .frame(width: 44, height: 44).background(cardFill).clipShape(Circle())
+                }
+                .disabled(Calendar.current.isDateInToday(monitor.selectedHistoryDay))
+                .accessibilityLabel("Next day")
                 Button { showParentNote = true } label: { Image(systemName: "plus") }
                     .buttonStyle(.bordered)
                     .accessibilityLabel("Add note")
@@ -2971,12 +2994,6 @@ struct ContentView: View {
                     }
             }
         }
-        panel { VStack(alignment: .leading, spacing: 10) {
-            Text("Sky").font(.headline)
-            Toggle("Animated wallpaper", isOn: $atmosphereEnabled).tint(switchOn)
-            Text("Soft stars at night and distant birds by day. Follows Day/Night at the top of Home. Reduce Motion turns the animation off. It pauses when Nivvi is in the background; monitoring is unchanged.")
-                .font(.caption).foregroundStyle(muted)
-        } }
         panel { DisclosureGroup("Second iPhone on this Wi‑Fi") {
             VStack(alignment: .leading, spacing: 10) {
                 Toggle("Share from this iPhone", isOn: Binding(get: { wifi.hosting }, set: { wifi.setHosting($0) })).tint(switchOn)
@@ -3056,32 +3073,38 @@ struct ContentView: View {
         } }
         Group {
         panel { DisclosureGroup("FAQ") { VStack(alignment: .leading, spacing: 12) {
-            DisclosureGroup("Why does it say connected but waiting?") {
-                Text("Connected means the iPhone has a Bluetooth link. A measurement appears only after Nivvi receives a valid Heart Rate Service (180D/2A37), Pulse Oximeter Service (1822), or explicitly mapped packet. A base station or proprietary monitor may need its documented API or a wearable contact signal.").font(.caption).padding(.top, 6)
+            DisclosureGroup("How do I share with family?") {
+                Text("Settings → Family sharing. Create your own login. The parent with the baby taps Create family code and sends the 6 letters. Others type that same code and choose Mum, Dad, Nan or Carer. Whoever is with the baby taps I’m with [name] — start monitoring. Same Wi‑Fi PIN is only for downstairs in the house.")
+                    .font(.caption).padding(.top, 6)
             }
-            DisclosureGroup("Which devices are compatible?") {
-                Text("Any device that exposes the standard Bluetooth Heart Rate Service or Pulse Oximeter Service may work. Apple Watch, Oura and branded baby monitors need separate authorised integrations; their names alone do not expose readings to a third-party Bluetooth app.").font(.caption).padding(.top, 6)
+            DisclosureGroup("Which devices work?") {
+                Text("Any Bluetooth heart-rate band that uses the standard Heart Rate Service (180D), plus some pulse oximeters (1822) and original Neebo bands. Polar H10, Coospo, Magene and generic 180D straps usually work. Apple Watch, Fitbit Air, Owlet and similar app-locked wearables usually will not appear.")
+                    .font(.caption).padding(.top, 6)
             }
-            DisclosureGroup("What does the repeated-reading warning mean?") {
-                Text("The same received heart-rate value for five minutes triggers a possible repeated-data warning. A gap over 45 seconds restarts the pending duration; missing data is handled separately. Rounded, averaged or cached readings may legitimately repeat: this heuristic is not proof of sensor failure or an SVT detector. Check the sensor and your child and follow the care plan. A changed value clears this warning but does not prove accuracy. Device-specific validation is required.").font(.caption).padding(.top, 6)
+            DisclosureGroup("Why connected but waiting?") {
+                Text("Bluetooth is linked, but no valid heart-rate packet has arrived yet. Check the band is on the skin, charged, and not connected to another app. A battery number is not a heart-rate reading.")
+                    .font(.caption).padding(.top, 6)
             }
-            DisclosureGroup("How do alarms work?") {
-                Text("Low alarms fire strictly below your configured low limit; high alarms fire strictly above the high limit after the selected dwell time. Acknowledgement silences the siren, while a fresh in-range value self-clears the alert and writes a relief event. Configure limits only from your care plan.").font(.caption).padding(.top, 6)
+            DisclosureGroup("Where is History?") {
+                Text("History keeps about one reading every 30 seconds for 30 calendar days on this iPhone. Use the date at the top of History, or the arrows, to change day. Charts and the list follow that date.")
+                    .font(.caption).padding(.top, 6)
             }
-            DisclosureGroup("How much history is kept?") {
-                Text("Readings are sampled into history every 30 seconds while usable data arrives. Alarm checks still use each valid incoming reading. The app keeps 30 calendar days locally and can export CSV files; deletion removes saved readings, events and notes from this app’s storage.").font(.caption).padding(.top, 6)
+            DisclosureGroup("Will alarms always sound?") {
+                Text("The siren can play in the open app even on Silent. Lock-screen banners can still be quiet in Silent, Focus or Sleep. This is not a medical monitor and not a substitute for looking after your child.")
+                    .font(.caption).padding(.top, 6)
             }
-
         }.padding(.top, 12) } }
         panel { DisclosureGroup("Privacy") { VStack(alignment: .leading, spacing: 12) {
-            Text("Local monitoring needs no account. Optional family sharing uses verified email accounts and uploads the latest readings and status only after you enable it. Photos, birth dates, notes and historical readings stay on this phone. No analytics or AI service is used.").font(.caption)
-            Text("Family sharing has its own privacy notice and Stop sharing control. You can remove members and delete the online account. File exports, recipients and iOS backups can retain separate copies.").font(.caption).foregroundStyle(muted)
-
+            Text("Local use needs no account. Readings, notes and the child profile stay on this iPhone for 30 days. Family sharing is optional: a verified email, a 6-letter family code, and the latest live numbers on the Nivvi server in London (family.nivvi.app). Birth dates, avatars and notes are not uploaded. No ads or analytics.")
+                .font(.caption)
+            Text("Anyone with the family code can join that child. Stop sharing with everyone ends the code. Delete account removes the online login, not this phone’s history. Full notice: nivvi.app/privacy")
+                .font(.caption).foregroundStyle(muted)
         }.padding(.top, 12) } }
         panel { DisclosureGroup("Terms") { VStack(alignment: .leading, spacing: 12) {
-            Text("Nivvi displays device readings and records events. It does not provide a diagnosis or emergency response. Bluetooth links, sensors, alarms and notifications can fail or be delayed. Follow your child’s care plan and seek urgent help for serious symptoms; do not wait for this app.").font(.caption)
-            Text("Before public release, the operator name, monitored support address, final privacy notice and jurisdiction-specific terms must be completed in the support documentation.").font(.caption).foregroundStyle(muted)
-
+            Text("Nivvi is a TestFlight family test from Michael Waters, trading as Nivvi, United Kingdom. It shows Bluetooth heart-rate readings. It does not diagnose, treat, or replace looking after your child or emergency care.")
+                .font(.caption)
+            Text("Bluetooth, Wi‑Fi, 4G and notifications can fail. You are responsible for how you use the app. English law of England and Wales. Support: hello.nivvi@outlook.com. Full terms: nivvi.app/terms")
+                .font(.caption).foregroundStyle(muted)
         }.padding(.top, 12) } }
         panel { DisclosureGroup("Connection and support") { VStack(alignment: .leading, spacing: 12) {
             Text("Keeps the Bluetooth session active and attempts reconnection after signal loss. Tap Disconnect to end the session.").font(.caption)
