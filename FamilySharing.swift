@@ -271,10 +271,23 @@ final class FamilyRelay: ObservableObject {
                 families = []; members = []; invitation = nil; pendingSnapshot = nil
                 try? FamilyKeychain.save(nil)
             }
-            let detail = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["detail"] as? String
-            throw FamilyError.message(detail ?? "Sharing request failed (\(response.statusCode)). Please try again.")
+            throw FamilyError.message(Self.serverMessage(data, status: response.statusCode))
         }
-        return try JSONDecoder().decode(T.self, from: data)
+        do {
+            return try JSONDecoder().decode(T.self, from: data)
+        } catch {
+            throw FamilyError.message("Couldn’t read the sharing reply. Update Nivvi from TestFlight to the latest build and try again.")
+        }
+    }
+    private static func serverMessage(_ data: Data, status: Int) -> String {
+        let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        if let text = obj?["detail"] as? String, !text.isEmpty { return text }
+        if let items = obj?["detail"] as? [[String: Any]] {
+            let msgs = items.compactMap { $0["msg"] as? String }
+            if !msgs.isEmpty { return msgs.joined(separator: " ") }
+        }
+        if let text = obj?["message"] as? String, !text.isEmpty { return text }
+        return "Sharing request failed (\(status)). Please try again."
     }
     private func body(_ fields: [String: String]) throws -> Data { try JSONEncoder().encode(fields) }
     func perform(_ operation: @escaping @MainActor () async throws -> Void) {
