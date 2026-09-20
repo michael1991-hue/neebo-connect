@@ -26,6 +26,19 @@ enum MetricText {
     static func number(_ value: Double) -> String { value.formatted(.number.precision(.fractionLength(0...4))) }
 }
 
+enum OxygenReading {
+    /// Pulse-ox displays stop at 99%. A hardware 100 is shown as 99, not discarded.
+    static let displayMax = 99.0
+    static func clamp(_ value: Double) -> Double? {
+        guard value.isFinite, (0...100).contains(value) else { return nil }
+        return min(value, displayMax)
+    }
+    static func clamp(_ value: Int) -> Int? {
+        guard (0...100).contains(value) else { return nil }
+        return min(value, 99)
+    }
+}
+
 enum PulseOximetry {
     static func sfloat(_ word: UInt16) -> Double? {
         // IEEE 11073 signed 12-bit mantissa and signed 4-bit decimal exponent.
@@ -46,7 +59,7 @@ enum PulseOximetry {
         guard bytes.count >= 5, bytes[0] & 0xE0 == 0 else { return nil }
         let flags = bytes[0], continuous = uuid == "2A5F"
         func word(_ i: Int) -> UInt16 { UInt16(bytes[i]) | UInt16(bytes[i + 1]) << 8 }
-        let oxygen = sfloat(word(1)).flatMap { (0...100).contains($0) ? $0 : nil }
+        let oxygen = sfloat(word(1)).flatMap(OxygenReading.clamp)
         let pulse = sfloat(word(3)).flatMap { $0 > 0 && $0 <= 65535 ? $0 : nil }
         var cursor = 5
         var timestamp: String?

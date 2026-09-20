@@ -2,7 +2,7 @@
 
 ## How do I share with family?
 
-Each adult uses their own email. Phone with the baby: Family sharing → Create family code → send the 6 letters. Others type that code and choose Mum, Dad, Nan or Carer. Whoever has the band taps I’m with [child] — start monitoring. Same code when someone else takes over.
+Each person uses their own email. Phone next to the band: Family sharing → Create family code → send the 6 letters. Others type that code and choose Me, Partner, Mum, Dad, Nan or Carer. Whoever has the band taps I’m with [name]. Family also see the band battery. Same code when someone else takes over.
 
 ## Wi‑Fi PIN or family code?
 

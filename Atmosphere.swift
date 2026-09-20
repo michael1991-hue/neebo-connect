@@ -18,6 +18,7 @@ struct AtmosphereBackdrop: View {
                 if mode == .night {
                     drawStars(canvas, size: size, time: time)
                 } else {
+                    drawClouds(canvas, size: size, time: time)
                     drawBirds(canvas, size: size, time: time)
                 }
             }
@@ -29,14 +30,14 @@ struct AtmosphereBackdrop: View {
     private func drawSky(_ canvas: GraphicsContext, size: CGSize) {
         let nightTop = Color(red: 0.01, green: 0.05, blue: 0.12)
         let nightBottom = Color(red: 0.02, green: 0.13, blue: 0.23)
-        let dayTop = Color(red: 1.0, green: 0.78, blue: 0.22)
-        let dayBottom = Color(red: 1.0, green: 0.48, blue: 0.12)
-        let top = mode == .night ? nightTop : dayTop
-        let bottom = mode == .night ? nightBottom : dayBottom
+        let dayTop = Color(red: 0.863, green: 0.933, blue: 1.0)
+        let dayMid = Color(red: 0.929, green: 0.965, blue: 1.0)
+        let dayBottom = Color(red: 0.969, green: 0.980, blue: 1.0)
+        let colors = mode == .night ? [nightTop, nightBottom] : [dayTop, dayMid, dayBottom]
         canvas.fill(
             Path(CGRect(origin: .zero, size: size)),
             with: .linearGradient(
-                Gradient(colors: [top, bottom]),
+                Gradient(colors: colors),
                 startPoint: CGPoint(x: size.width / 2, y: 0),
                 endPoint: CGPoint(x: size.width / 2, y: size.height)
             )
@@ -45,17 +46,34 @@ struct AtmosphereBackdrop: View {
     }
 
     private func drawSun(_ canvas: GraphicsContext, size: CGSize) {
-        let center = CGPoint(x: size.width * 0.82, y: size.height * 0.16)
+        // Small disc, upper-right, clear of settings and the theme toggle.
+        let center = CGPoint(x: size.width * 0.90, y: size.height * 0.09)
         var glow = canvas
-        glow.opacity = 0.45
+        glow.opacity = 0.28
         glow.fill(
-            Path(ellipseIn: CGRect(x: center.x - 54, y: center.y - 54, width: 108, height: 108)),
-            with: .color(Color(red: 1, green: 0.92, blue: 0.45))
+            Path(ellipseIn: CGRect(x: center.x - 22, y: center.y - 22, width: 44, height: 44)),
+            with: .color(Color(red: 1, green: 0.92, blue: 0.62))
         )
         canvas.fill(
-            Path(ellipseIn: CGRect(x: center.x - 28, y: center.y - 28, width: 56, height: 56)),
-            with: .color(Color(red: 1, green: 0.95, blue: 0.62))
+            Path(ellipseIn: CGRect(x: center.x - 9, y: center.y - 9, width: 18, height: 18)),
+            with: .color(Color(red: 1, green: 0.94, blue: 0.72))
         )
+    }
+
+    private func drawClouds(_ canvas: GraphicsContext, size: CGSize, time: Double) {
+        let shift = scroll * 0.04
+        for cloud in Self.clouds {
+            let span = size.width + cloud.width
+            let travel = animateTravel(time: time, speed: cloud.speed, start: cloud.start, span: span)
+            let x = travel - cloud.width * 0.5
+            let y = cloud.y * size.height + shift
+            var ctx = canvas
+            ctx.opacity = cloud.opacity
+            let puff = Color.white
+            ctx.fill(Path(ellipseIn: CGRect(x: x, y: y, width: cloud.width, height: cloud.height)), with: .color(puff))
+            ctx.fill(Path(ellipseIn: CGRect(x: x + cloud.width * 0.22, y: y - cloud.height * 0.35, width: cloud.width * 0.55, height: cloud.height * 0.85)), with: .color(puff))
+            ctx.fill(Path(ellipseIn: CGRect(x: x + cloud.width * 0.48, y: y - cloud.height * 0.12, width: cloud.width * 0.42, height: cloud.height * 0.7)), with: .color(puff))
+        }
     }
 
     private func drawStars(_ canvas: GraphicsContext, size: CGSize, time: Double) {
@@ -71,17 +89,28 @@ struct AtmosphereBackdrop: View {
     }
 
     private func drawBirds(_ canvas: GraphicsContext, size: CGSize, time: Double) {
-        let shift = scroll * 0.14
+        // A pair, only now and then, in open sky — never over the reading cards.
+        let cycle = time.truncatingRemainder(dividingBy: 52)
+        guard cycle < 11 || (cycle > 28 && cycle < 37) else { return }
+        let shift = scroll * 0.10
         for bird in Self.birds {
-            let span = size.width + 160
+            let span = size.width + 180
             let x = ((time * bird.speed) + bird.start).truncatingRemainder(dividingBy: span) - 80
             let y = bird.y * size.height + shift * bird.depth
             let flap = 0.35 + 0.45 * sin(time * bird.flap)
             var ctx = canvas
-            ctx.opacity = 0.18 + 0.10 * bird.depth
+            ctx.opacity = 0.10 + 0.08 * bird.depth
             ctx.translateBy(x: x, y: y)
-            ctx.stroke(Self.wingPath(size: bird.size, flap: flap), with: .color(Color(red: 0.12, green: 0.22, blue: 0.34).opacity(0.45)), style: StrokeStyle(lineWidth: 1.2, lineCap: .round, lineJoin: .round))
+            ctx.stroke(
+                Self.wingPath(size: bird.size, flap: flap),
+                with: .color(Color(red: 0.09, green: 0.17, blue: 0.26).opacity(0.40)),
+                style: StrokeStyle(lineWidth: 1.1, lineCap: .round, lineJoin: .round)
+            )
         }
+    }
+
+    private func animateTravel(time: Double, speed: Double, start: Double, span: CGFloat) -> CGFloat {
+        CGFloat(((time * speed) + start).truncatingRemainder(dividingBy: Double(span)))
     }
 
     private static func wingPath(size: CGFloat, flap: CGFloat) -> Path {
@@ -94,6 +123,7 @@ struct AtmosphereBackdrop: View {
 
     private struct Star { let x: CGFloat; let y: CGFloat; let size: CGFloat; let speed: Double; let phase: Double }
     private struct Bird { let y: CGFloat; let size: CGFloat; let speed: Double; let start: Double; let flap: Double; let depth: CGFloat }
+    private struct Cloud { let y: CGFloat; let width: CGFloat; let height: CGFloat; let speed: Double; let start: Double; let opacity: Double }
 
     private static let stars: [Star] = {
         var list: [Star] = []
@@ -109,10 +139,14 @@ struct AtmosphereBackdrop: View {
     }()
 
     private static let birds: [Bird] = [
-        Bird(y: 0.14, size: 11, speed: 18, start: 40, flap: 3.2, depth: 0.35),
-        Bird(y: 0.22, size: 16, speed: 13, start: 180, flap: 2.6, depth: 0.7),
-        Bird(y: 0.31, size: 9, speed: 22, start: 90, flap: 3.8, depth: 0.25),
-        Bird(y: 0.18, size: 13, speed: 15, start: 260, flap: 2.9, depth: 0.5)
+        Bird(y: 0.17, size: 10, speed: 14, start: 30, flap: 2.8, depth: 0.4),
+        Bird(y: 0.20, size: 8, speed: 14, start: 48, flap: 3.1, depth: 0.35)
+    ]
+
+    private static let clouds: [Cloud] = [
+        Cloud(y: 0.11, width: 92, height: 22, speed: 2.2, start: 40, opacity: 0.22),
+        Cloud(y: 0.26, width: 70, height: 18, speed: 1.6, start: 180, opacity: 0.16),
+        Cloud(y: 0.38, width: 110, height: 24, speed: 1.2, start: 90, opacity: 0.12)
     ]
 }
 

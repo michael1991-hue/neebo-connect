@@ -19,7 +19,7 @@
 		<string>iPhoneOS</string>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>112</string>
+	<string>113</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>NSSupportsLiveActivitiesFrequentUpdates</key>
@@ -35,7 +35,7 @@
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Connect to a compatible Bluetooth device to receive readings, save history and check enabled alerts, including while you use another app or lock your iPhone.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Nivvi can share live readings with another iPhone on this Wi-Fi so you can go downstairs while the nursery phone stays with the wearable.</string>
+	<string>Nivvi can share live readings with another iPhone on this Wi-Fi so you can go to another room while this phone stays with the wearable.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_nivvi-share._tcp</string>

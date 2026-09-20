@@ -27,10 +27,12 @@ struct SharedFamily: Codable, Identifiable {
 struct FamilyMember: Codable, Identifiable { let id: String; let email: String; var role: String?; var relation: String? }
 
 enum FamilyRelation: String, CaseIterable, Identifiable {
-    case mum, dad, nan, auntie, uncle, carer
+    case me, partner, mum, dad, nan, auntie, uncle, carer
     var id: String { rawValue }
     var title: String {
         switch self {
+        case .me: return "Me"
+        case .partner: return "Partner"
         case .mum: return "Mum"
         case .dad: return "Dad"
         case .nan: return "Nan"
@@ -39,11 +41,14 @@ enum FamilyRelation: String, CaseIterable, Identifiable {
         case .carer: return "Carer"
         }
     }
-    var role: String { self == .carer ? "carer" : "watcher" }
+    var role: String { (self == .carer || self == .me) ? "carer" : "watcher" }
     var hint: String {
-        self == .carer
-            ? "Their phone can be the one with the baby."
-            : "They watch live readings on their iPhone."
+        switch self {
+        case .me: return "Your phone stays next to the band."
+        case .carer: return "Their phone can stay next to the band."
+        case .partner: return "They can watch, or be the phone next to the band."
+        default: return "They watch live readings on their iPhone."
+        }
     }
     static func sharedFrom(_ raw: String?, wifi: Bool) -> String {
         let who = FamilyRelation(rawValue: raw ?? "")?.title
@@ -88,12 +93,14 @@ struct FamilySnapshot: Codable {
     var place: String?
     var host_relation: String?
     var acknowledged_by: String?
+    var battery: String?
+    var charging: Bool?
 
     enum CodingKeys: String, CodingKey {
-        case captured, heart_rate, oxygen, heart_rate_at, oxygen_at, source, alarm, connection, history, stream_id, seq, kind, server_received, acknowledged, activity_secret, place, host_relation, acknowledged_by
+        case captured, heart_rate, oxygen, heart_rate_at, oxygen_at, source, alarm, connection, history, stream_id, seq, kind, server_received, acknowledged, activity_secret, place, host_relation, acknowledged_by, battery, charging
     }
 
-    init(captured: Double, heart_rate: Double?, oxygen: Double?, source: String, alarm: String, connection: String, history: [FamilySample] = [], heart_rate_at: Double? = nil, oxygen_at: Double? = nil, stream_id: String? = nil, seq: Int? = nil, kind: String? = "live", acknowledged: Bool = false, activity_secret: String? = nil, place: String? = nil, host_relation: String? = nil) {
+    init(captured: Double, heart_rate: Double?, oxygen: Double?, source: String, alarm: String, connection: String, history: [FamilySample] = [], heart_rate_at: Double? = nil, oxygen_at: Double? = nil, stream_id: String? = nil, seq: Int? = nil, kind: String? = "live", acknowledged: Bool = false, activity_secret: String? = nil, place: String? = nil, host_relation: String? = nil, battery: String? = nil, charging: Bool? = nil) {
         self.captured = captured
         self.heart_rate = heart_rate
         self.oxygen = oxygen
@@ -111,6 +118,8 @@ struct FamilySnapshot: Codable {
         self.place = place
         self.host_relation = host_relation
         self.acknowledged_by = nil
+        self.battery = battery
+        self.charging = charging
     }
 
     init(from decoder: Decoder) throws {
@@ -133,6 +142,8 @@ struct FamilySnapshot: Codable {
         place = try box.decodeIfPresent(String.self, forKey: .place)
         host_relation = try box.decodeIfPresent(String.self, forKey: .host_relation)
         acknowledged_by = try box.decodeIfPresent(String.self, forKey: .acknowledged_by)
+        battery = try box.decodeIfPresent(String.self, forKey: .battery)
+        charging = try box.decodeIfPresent(Bool.self, forKey: .charging)
     }
 }
 struct RemoteReading: Codable {
@@ -257,8 +268,8 @@ final class FamilyRelay: ObservableObject {
         return "\(Int(value.rounded())) bpm"
     }
     var liveOxygen: String? {
-        guard followingFamily, familyOxygenFresh, let value = remote?.snapshot?.oxygen else { return nil }
-        return "\(Int(value.rounded()))%"
+        guard followingFamily, familyOxygenFresh, let value = remote?.snapshot?.oxygen, let shown = OxygenReading.clamp(value) else { return nil }
+        return "\(Int(shown.rounded()))%"
     }
     var privacyURL: URL? {
         guard let s = Bundle.main.object(forInfoDictionaryKey: "NivviFamilyPrivacyURL") as? String, let u = URL(string: s), u.scheme == "https", u.host != nil else { return nil }
@@ -361,7 +372,7 @@ final class FamilyRelay: ObservableObject {
         lastHistoryUpload = nil
         publishStream = reply.stream_id ?? UUID().uuidString
         uploadSeq = 0
-        message = "This phone is with the baby. Family see live numbers on theirs."
+        message = "This phone is next to the band. Family see live numbers on theirs."
         try await refreshShareLink()
         try await pushProfile()
     }
@@ -431,7 +442,7 @@ final class FamilyRelay: ObservableObject {
         invitation = reply.code
         let who = FamilyRelation(rawValue: relation)?.title ?? "family"
         message = relation == "carer"
-            ? "Send this to \(who). Their phone can stay with the baby."
+            ? "Send this to \(who). Their phone can stay next to the band."
             : "Send this to \(who). They open Nivvi, sign up with that email, and paste the code."
         try await refreshMembers()
     }
@@ -450,7 +461,9 @@ final class FamilyRelay: ObservableObject {
         let _: FamilyReply = try await request("invites/accept", method: "POST", body: body(["code": trimmed, "relation": relation]))
         try await refreshFamilies()
         let who = FamilyRelation(rawValue: relation)?.title ?? "family"
-        message = "You’re in as \(who). If you’re with the baby, tap I’m with \(who == "Carer" ? "them" : "the baby") — start monitoring."
+        let name = UserDefaults.standard.string(forKey: "nivvi.profile.name")?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let whoName = (name?.isEmpty == false) ? name! : "them"
+        message = "You’re in as \(who). If you’re next to the band, tap I’m with \(whoName)."
         if !relation.isEmpty { UserDefaults.standard.set(relation, forKey: "nivvi.host.relation") }
         UIApplication.shared.registerForRemoteNotifications()
     }
@@ -914,7 +927,7 @@ struct FamilySharingView: View {
             }
             .accessibilityElement(children: .combine)
             .accessibilityAddTraits(.isHeader)
-            Text("One child. One 6-letter code. That’s it.")
+            Text("One person. One 6-letter code. That’s it.")
         }
         .fixedSize(horizontal: false, vertical: true)
     }
@@ -1058,7 +1071,7 @@ struct FamilySharingView: View {
         VStack(alignment: .leading, spacing: 18) {
             if relay.families.isEmpty {
                 joinCard
-                Text("Or start this child’s family")
+                Text("Or start this family")
                     .font(.headline)
                     .foregroundStyle(ink)
                 Text("One 6-letter code for everyone. Send it once.")
@@ -1326,7 +1339,7 @@ struct FamilySharingView: View {
         let cloud = relay.families.first(where: { $0.id == relay.selected })?.child_name ?? ""
         if !cloud.isEmpty { return cloud }
         if !childName.isEmpty { return childName }
-        return "the baby"
+        return "them"
     }
 
     private func inviteMessage(code: String) -> String {

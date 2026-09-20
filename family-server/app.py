@@ -358,8 +358,10 @@ class Snapshot(BaseModel):
     acknowledged: bool = False
     activity_secret: str | None = Field(default=None, max_length=80)
     place: str | None = Field(default=None, pattern="^(home|carer|exploring)$")
-    host_relation: str | None = Field(default=None, pattern="^(mum|dad|nan|auntie|uncle|carer)$")
+    host_relation: str | None = Field(default=None, pattern="^(me|partner|mum|dad|nan|auntie|uncle|carer)$")
     acknowledged_by: str | None = Field(default=None, max_length=20)
+    battery: str | None = Field(default=None, max_length=20)
+    charging: bool | None = None
 
 
 class Device(BaseModel):
@@ -625,8 +627,9 @@ h1{font-size:1.4rem;margin:0 0 6px}
 <p class="sub">Live family view · Nivvi</p>
 <div class="bpm" id="hr">—</div>
 <p class="o2" id="o2">Oxygen —</p>
+<p class="meta" id="batt">Band battery —</p>
 <p class="meta" id="status">Connecting…</p>
-<p class="foot">Not a medical monitor. Anyone with this link can see the latest reading. The parent can stop sharing in Nivvi.</p>
+<p class="foot">Not a medical monitor. Anyone with this link can see the latest reading. Sharing can be stopped in Nivvi.</p>
 </main>
 <script>
 const live = location.pathname.replace(/\\/+$/,'') + '/live';
@@ -636,7 +639,10 @@ async function tick(){
     const d = await r.json();
     document.getElementById('name').textContent = d.label || 'Nivvi';
     document.getElementById('hr').textContent = d.heart_rate ? Math.round(d.heart_rate) + ' bpm' : '—';
-    document.getElementById('o2').textContent = d.oxygen != null ? 'Oxygen ' + Math.round(d.oxygen) + '%' : 'Oxygen —';
+    document.getElementById('o2').textContent = d.oxygen != null ? 'Oxygen ' + Math.min(99, Math.round(d.oxygen)) + '%' : 'Oxygen —';
+    const batt = document.getElementById('batt');
+    if (d.battery) { batt.textContent = d.charging ? 'Band battery charging · ' + d.battery : 'Band battery ' + d.battery; }
+    else { batt.textContent = 'Band battery —'; }
     const st = document.getElementById('status');
     if(d.waiting){ st.className='meta warn'; st.textContent = d.status; }
     else { st.className='meta ok'; st.textContent = d.status; }
@@ -673,15 +679,20 @@ def join_live(token: str, request: Request):
     stamp = snap.get("heart_rate_at") or snap.get("captured") or info["received"]
     age = time.time() - stamp if stamp else None
     waiting = hr is None or age is None or age > 45
-    who = {"mum": "Mum", "dad": "Dad", "nan": "Nan", "auntie": "Auntie", "uncle": "Uncle", "carer": "Carer"}.get(info.get("host_relation") or "", "family")
+    who = {"me": "Me", "partner": "Partner", "mum": "Mum", "dad": "Dad", "nan": "Nan", "auntie": "Auntie", "uncle": "Uncle", "carer": "Carer"}.get(info.get("host_relation") or "", "family")
     if waiting:
-        status = "Waiting for the phone with the baby to start monitoring"
+        status = "Waiting for the phone next to the band to start monitoring"
     else:
         status = f"Monitoring with {who} · Updated {max(0, int(age))}s ago"
+    ox = o2
+    if isinstance(ox, (int, float)) and ox > 99:
+        ox = 99
     return {
         "label": info["label"],
         "heart_rate": hr,
-        "oxygen": o2,
+        "oxygen": ox,
+        "battery": snap.get("battery"),
+        "charging": bool(snap.get("charging")),
         "age": age,
         "waiting": waiting,
         "status": status,
@@ -705,8 +716,8 @@ def apple_app_site_association():
 @app.post("/families/{family}/host")
 def claim_host(family: str, body: HostClaim, user=Depends(require_user)):
     relation = (body.relation or "").strip().lower()
-    if relation and relation not in {"mum", "dad", "nan", "auntie", "uncle", "carer"}:
-        raise HTTPException(400, "Choose Mum, Dad, Nan, Auntie, Uncle or Carer.")
+    if relation and relation not in {"me", "partner", "mum", "dad", "nan", "auntie", "uncle", "carer"}:
+        raise HTTPException(400, "Choose who you are — Me, Partner, Mum, Dad, Nan, Auntie, Uncle or Carer.")
     stream = secrets.token_hex(16)
     with db() as c:
         publisher(c, family, user)
@@ -732,10 +743,10 @@ def release_host(family: str, user=Depends(require_user)):
 def invite(family: str, body: Address, user=Depends(require_user)):
     throttle("invite:" + user["id"], 20, 3600)
     relation = (body.relation or "").strip().lower()
-    allowed = {"", "mum", "dad", "nan", "auntie", "uncle", "carer"}
+    allowed = {"", "me", "partner", "mum", "dad", "nan", "auntie", "uncle", "carer"}
     if relation not in allowed:
-        raise HTTPException(400, "Choose Mum, Dad, Nan, Auntie, Uncle or Carer")
-    role = "carer" if relation == "carer" or body.role == "carer" else "watcher"
+        raise HTTPException(400, "Choose who you are — Me, Partner, Mum, Dad, Nan, Auntie, Uncle or Carer")
+    role = "carer" if relation in ("carer", "me") or body.role == "carer" else "watcher"
     token = secrets.token_urlsafe(32)
     with db() as c:
         owner(c, family, user)
@@ -757,18 +768,18 @@ def accept(body: Invite, user=Depends(require_user)):
         family = None
         role = "watcher"
         relation = (body.relation or "").strip().lower()
-        allowed = {"", "mum", "dad", "nan", "auntie", "uncle", "carer"}
+        allowed = {"", "me", "partner", "mum", "dad", "nan", "auntie", "uncle", "carer"}
         if relation not in allowed:
-            raise HTTPException(400, "Choose Mum, Dad, Nan, Auntie, Uncle or Carer.")
+            raise HTTPException(400, "Choose who you are — Me, Partner, Mum, Dad, Nan, Auntie, Uncle or Carer.")
         if len(short) == 6 and all(ch in JOIN_ALPHABET for ch in short):
             family = c.execute("SELECT id,owner FROM families WHERE join_code=?", (short,)).fetchone()
             if not family:
                 raise HTTPException(400, "That family code is not recognised.")
             if family["owner"] == user["id"]:
-                raise HTTPException(400, "You’re already the parent of this family.")
+                raise HTTPException(400, "You’re already the owner of this family.")
             if not relation:
-                raise HTTPException(400, "Say who you are to this child — Mum, Dad, Nan, Auntie, Uncle or Carer.")
-            role = "carer" if relation == "carer" else "watcher"
+                raise HTTPException(400, "Say who you are — Me, Partner, Mum, Dad, Nan, Auntie, Uncle or Carer.")
+            role = "carer" if relation in ("carer", "me") else "watcher"
         else:
             row = c.execute("SELECT * FROM invites WHERE token=? AND email=? AND expires>?", (digest(raw), user["email"], time.time())).fetchone()
             if not row:
@@ -814,6 +825,19 @@ def merge_snapshot(old, body: Snapshot, received):
         payload["oxygen_at"] = old.get("oxygen_at") or old.get("captured")
     else:
         payload["oxygen_at"] = payload.get("oxygen_at") or payload["captured"]
+        try:
+            ox = float(payload["oxygen"])
+            if ox > 99:
+                payload["oxygen"] = 99
+        except (TypeError, ValueError):
+            pass
+    if payload.get("battery") in (None, "", "—"):
+        payload["battery"] = old.get("battery")
+        payload["charging"] = payload.get("charging") if payload.get("charging") is not None else old.get("charging")
+    for point in payload.get("history") or []:
+        o2 = point.get("o2") if isinstance(point, dict) else None
+        if isinstance(o2, (int, float)) and o2 > 99:
+            point["o2"] = 99
     if not payload.get("history") and old.get("history"):
         payload["history"] = old["history"]
     payload["server_received"] = received

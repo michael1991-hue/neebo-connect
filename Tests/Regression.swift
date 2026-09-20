@@ -436,6 +436,9 @@ check(missingPLX.pulse == 95 && missingPLX.oxygen == nil, "missing oxygen does n
 let oxygenOnlyPLX = PulseOximetry.decode(Data([0, 98, 0, 0xFF, 0x07]), characteristic: "2A5F")!
 check(oxygenOnlyPLX.oxygen == 98 && oxygenOnlyPLX.pulse == nil, "oxygen-only measurement is not evidence of pulse")
 check(PulseOximetry.decode(Data([0, 101, 0, 0, 0]), characteristic: "2A5F")!.oxygen == nil, "oxygen percentage outside numerical bounds remains missing")
+check(PulseOximetry.decode(Data([0, 100, 0, 95, 0]), characteristic: "2A5F")!.oxygen == 99, "displayed oxygen caps at 99")
+check(OxygenReading.clamp(100) == 99 && OxygenReading.clamp(98) == 98 && OxygenReading.clamp(101) == nil, "oxygen clamp")
+check(BluetoothPolicy.customFrame(Data([0,0,0,0x5F,0,100,0,0x3F,1])).oxygen == 99, "custom adapter 100% oxygen displays as 99")
 check(PulseOximetry.decode(Data([0, 98, 0, 0, 0]), characteristic: "2A5F")!.pulse == nil, "zero is not a usable pulse rate")
 // Exercise every combination and every truncated length of the optional layout.
 for flags in UInt8(0)...UInt8(31) {

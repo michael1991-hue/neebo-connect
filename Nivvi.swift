@@ -119,7 +119,7 @@ enum BluetoothPolicy {
         let bytes = Array(data)
         guard bytes.count == 9, bytes[0...2].allSatisfy({ $0 == 0 }) else { return (nil, nil, nil) }
         let hr = bytes[4] == 0 && (30...240).contains(Int(bytes[3])) ? Int(bytes[3]) : nil
-        let oxygen = bytes[6] == 0 && (70...100).contains(Int(bytes[5])) ? Int(bytes[5]) : nil
+        let oxygen = bytes[6] == 0 && (70...100).contains(Int(bytes[5])) ? OxygenReading.clamp(Int(bytes[5])) : nil
         // Captured NB0 frames put a 1...100 percentage at offset 7.
         let battery = (1...100).contains(Int(bytes[7])) ? Int(bytes[7]) : nil
         return (hr, oxygen, battery)
@@ -343,7 +343,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     private var attentionTitle: String {
         let name = UserDefaults.standard.string(forKey: "nivvi.profile.name")?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return name.isEmpty ? "Your child needs your attention" : "\(name) needs your attention"
+        return name.isEmpty ? "They need your attention" : "\(name) needs your attention"
     }
     private var alarmDetail: String {
         guard let kind = alarmKind else { return "A critical heart-rate alert is active." }
@@ -410,7 +410,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             || lastCustomMeasurement.map { now.timeIntervalSince($0) <= 8 } == true
         let oxFresh = lastOxygenUpdate.map { now.timeIntervalSince($0) <= 30 } == true
         let hr = hrFresh ? (pulseOximeterRate ?? verifiedHeartRate.map(Double.init) ?? customHeartRateCandidate.map(Double.init)) : nil
-        let ox = oxFresh ? (pulseOximeterOxygen ?? verifiedOxygen.map(Double.init) ?? customOxygenCandidate.map(Double.init)) : nil
+        let ox = oxFresh ? OxygenReading.clamp(pulseOximeterOxygen ?? verifiedOxygen.map(Double.init) ?? customOxygenCandidate.map(Double.init) ?? -1) : nil
         let points = history.suffix(120).map { FamilySample(t: $0.time.timeIntervalSince1970, hr: $0.heartRateValue, o2: $0.oxygenValue) }
         let snapshot = FamilySnapshot(
             captured: now.timeIntervalSince1970,
@@ -428,7 +428,9 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             host_relation: {
                 let value = UserDefaults.standard.string(forKey: "nivvi.host.relation") ?? ""
                 return value.isEmpty ? nil : value
-            }()
+            }(),
+            battery: battery,
+            charging: wearableCharging
         )
         Task { @MainActor in FamilyRelay.shared.capture(snapshot) }
         pushLocalShare()
@@ -436,7 +438,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     private func pushLocalShare() {
         guard WiFiRelay.shared.hosting else { return }
         let hr = pulseOximeterRate ?? verifiedHeartRate.map(Double.init) ?? customHeartRateCandidate.map(Double.init)
-        let ox = pulseOximeterOxygen ?? verifiedOxygen.map(Double.init) ?? customOxygenCandidate.map(Double.init)
+        let ox = (pulseOximeterOxygen ?? verifiedOxygen.map(Double.init) ?? customOxygenCandidate.map(Double.init)).flatMap(OxygenReading.clamp)
         WiFiRelay.shared.publish(
             heartRate: hr.map { "\(MetricText.number($0)) bpm" } ?? "No reading",
             oxygen: ox.map { "\(MetricText.number($0))%" } ?? "No reading",
@@ -458,7 +460,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         )
     }
     private func saveMeasurement(heartRate: Int?, oxygen: Int?, source: String, exactHeartRate: Double? = nil, exactOxygen: Double? = nil, segment: UUID? = nil) {
-        let entry = SavedMeasurement(time: Date(), heartRate: heartRate, oxygen: oxygen, source: source, continuityID: segment ?? continuityID, exactHeartRate: exactHeartRate, exactOxygen: exactOxygen)
+        let entry = SavedMeasurement(time: Date(), heartRate: heartRate, oxygen: oxygen.flatMap(OxygenReading.clamp), source: source, continuityID: segment ?? continuityID, exactHeartRate: exactHeartRate, exactOxygen: exactOxygen.flatMap(OxygenReading.clamp))
         appendLiveTrace(entry)
         // Oxygen-only packets must not refresh the live-heart-rate freshness timer.
         // A pulse-oximeter can legally report oxygen without a usable pulse.
@@ -785,7 +787,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     private var displayNameForAlert: String {
         let name = UserDefaults.standard.string(forKey: "nivvi.profile.name")?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return name.isEmpty ? "your child" : name
+        return name.isEmpty ? "them" : name
     }
     private func configureAlarmAudio() throws {
         let audio = AVAudioSession.sharedInstance()
@@ -855,7 +857,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         alarmAcknowledged = false
         notify(
             title: sensor ? "Check sensor data" : attentionTitle,
-            body: sensor ? "The phone with the baby reports no fresh heart-rate data. Check the child and the wearable." : "The phone with the baby has a heart-rate alert. Check \(displayNameForAlert) and follow the care plan.",
+            body: sensor ? "The monitoring phone reports no fresh heart-rate data. Check the wearer and the wearable." : "The monitoring phone has a heart-rate alert. Check \(displayNameForAlert) and follow the care plan.",
             identifier: "nivvi-wifi-share-alarm",
             soundName: sensor ? "NivviSensor.wav" : selectedSiren.notificationFile
         )
@@ -1432,7 +1434,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             staleHeartRateDetected = true
             alarmAcknowledged = false
             let value = MetricText.number(bpm)
-            recordEvent(kind: "measurement", title: "Check sensor data", detail: "The wearable repeated \(value) bpm for five minutes of \(source) readings. Check sensor contact, fit and the child; this may be stale device data.", heartRate: Int(bpm.rounded()))
+            recordEvent(kind: "measurement", title: "Check sensor data", detail: "The wearable repeated \(value) bpm for five minutes of \(source) readings. Check sensor contact and fit; this may be stale device data.", heartRate: Int(bpm.rounded()))
             startSiren(loop: true)
             if !alarmActive {
                 clearAlarmNotifications()
@@ -1515,7 +1517,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             detail = "\(attentionTitle) alert acknowledged by the caregiver. \(kind.title) remains active until a fresh in-range reading."
             alarmEngine.silence()
         } else {
-            detail = "\(attentionTitle) stale-data warning acknowledged by the caregiver. Check the sensor and child; it remains visible until fresh data replaces the repeated value."
+            detail = "\(attentionTitle) stale-data warning acknowledged. Check the sensor; it remains visible until fresh data replaces the repeated value."
         }
         recordEvent(kind: alarmActive ? "critical" : "measurement", title: alarmActive ? "Alarm acknowledged" : "Sensor warning acknowledged", detail: detail)
         alarmAcknowledged = true
@@ -1567,7 +1569,7 @@ struct ProfileSetupView: View {
     @FocusState private var editingName: Bool
     private let save: (String, Date, String, String, String) -> Bool
     private let canCancel: Bool
-    private let genders = ["Girl", "Boy", "Other", "Prefer not to say"]
+    private let genders = ["Girl", "Boy", "Woman", "Man", "Other", "Prefer not to say"]
     private let avatarTints: [(id: String, color: Color)] = [
         ("teal", Color(red: 0.56, green: 0.89, blue: 0.82)),
         ("coral", Color(red: 1, green: 0.56, blue: 0.53)),
@@ -1603,7 +1605,7 @@ struct ProfileSetupView: View {
                         .accessibilityLabel("Selected avatar")
                         Spacer()
                     }
-                    Text("Photos of children cannot be added. Choose an avatar, or create one with an icon and colour.")
+                    Text("Photos cannot be added. Choose an avatar, or create one with an icon and colour.")
                         .font(.caption)
                 } header: { Text("Avatar") }
 
@@ -1699,12 +1701,12 @@ struct NurserySetupView: View {
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 18) {
-                Text("Bluetooth only works in the child’s room.")
+                Text("Bluetooth only works near the band.")
                     .font(.title2.bold())
                 VStack(alignment: .leading, spacing: 12) {
                     label("1", "Leave this iPhone in the room, on charge.")
                     label("2", "Do not swipe Nivvi away. Lock the phone normally.")
-                    label("3", "If you go downstairs, readings stop unless a hub or a second phone is used.")
+                    label("3", "If you leave the room, readings stop unless a hub or a second phone is used.")
                     label("4", "Weak signal means move the phone closer — Nivvi cannot boost Bluetooth.")
                 }
                 Text("Lock Screen shows heart rate and oxygen while this phone is monitoring. That is not a downstairs feed.")
@@ -1885,6 +1887,7 @@ struct ContentView: View {
     @StateObject private var wifi = WiFiRelay.shared
     @ObservedObject private var family = FamilyRelay.shared
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("nivvi.profile.name") private var childName = ""
     @AppStorage("nivvi.profile.birthDate") private var childBirthDate = 0.0
     @AppStorage("nivvi.profile.gender") private var childGender = "Prefer not to say"
@@ -1928,10 +1931,14 @@ struct ContentView: View {
         return (hour >= 20 || hour < 8) ? .night : .day
     }
     private var mode: NivviMode { manualMode ?? automaticMode }
-    private var ink: Color { mode == .night ? .white : Color(red: 0.10, green: 0.14, blue: 0.18) }
-    private var muted: Color { mode == .night ? Color.white.opacity(0.82) : Color(red: 0.22, green: 0.28, blue: 0.30) }
-    private var cardFill: Color { mode == .night ? Color(red: 0.07, green: 0.16, blue: 0.26) : Color(red: 1.0, green: 0.96, blue: 0.86) }
-    private var accentMint: Color { mode == .night ? teal : Color(red: 0.02, green: 0.42, blue: 0.40) }
+    private var ink: Color { mode == .night ? .white : Color(red: 23 / 255, green: 43 / 255, blue: 67 / 255) }
+    private var muted: Color { mode == .night ? Color.white.opacity(0.82) : Color(red: 82 / 255, green: 101 / 255, blue: 122 / 255) }
+    private var cardFill: Color { mode == .night ? Color(red: 0.07, green: 0.16, blue: 0.26) : Color.white }
+    private var cardStroke: Color { mode == .night ? Color.white.opacity(0.10) : Color(red: 0.72, green: 0.79, blue: 0.86).opacity(0.7) }
+    private var accentMint: Color { mode == .night ? teal : Color(red: 0.05, green: 0.42, blue: 0.45) }
+    private var addNoteFill: Color { mode == .night ? coral : Color(red: 0.96, green: 0.72, blue: 0.68) }
+    private var addNoteInk: Color { mode == .night ? .white : Color(red: 23 / 255, green: 43 / 255, blue: 67 / 255) }
+    private var navSelected: Color { mode == .night ? Color.white.opacity(0.12) : Color(red: 0.863, green: 0.933, blue: 1.0) }
     private var switchOn: Color { teal }
     private var stamp: Color { mode == .night ? lavender : Color(red: 0.32, green: 0.28, blue: 0.58) }
     private var connected: Bool { monitor.connection.isConnected }
@@ -1979,6 +1986,21 @@ struct ContentView: View {
         return value.map { "\(MetricText.number($0)) bpm" } ?? "No reading"
     }
     private var batteryLabel: String {
+        if watchingFamily {
+            let remote = family.remote?.snapshot?.battery ?? ""
+            if family.remote?.snapshot?.charging == true {
+                return remote.isEmpty || remote == "—" ? "Charging" : "Charging · \(remote)"
+            }
+            if !remote.isEmpty && remote != "—" { return remote }
+            return "Waiting"
+        }
+        if watchingWifi, wifi.remoteFresh, let remote = wifi.latest {
+            if remote.charging == true {
+                let level = remote.battery ?? ""
+                return level.isEmpty || level == "—" ? "Charging" : "Charging · \(level)"
+            }
+            if let level = remote.battery, !level.isEmpty, level != "—" { return level }
+        }
         if monitor.wearableCharging {
             return (monitor.battery == "—" || monitor.battery.isEmpty) ? "Charging" : "Charging · \(monitor.battery)"
         }
@@ -1990,12 +2012,14 @@ struct ContentView: View {
     private var oxygenDisplay: String {
         if watchingFamily {
             if let remote = family.liveOxygen { return remote }
-            if let value = family.remote?.snapshot?.oxygen { return "\(Int(value.rounded()))%" }
+            if let value = family.remote?.snapshot?.oxygen, let shown = OxygenReading.clamp(value) {
+                return "\(Int(shown.rounded()))%"
+            }
             return "No reading"
         }
         if watchingWifi, wifi.remoteFresh, let remote = wifi.latest { return remote.oxygen }
         let value = monitor.pulseOximeterOxygen ?? monitor.customOxygenCandidate.map(Double.init)
-        return value.map { "\(MetricText.number($0))%" } ?? "No reading"
+        return value.flatMap(OxygenReading.clamp).map { "\(MetricText.number($0))%" } ?? "No reading"
     }
     private var displayedHistory: [SavedMeasurement] {
         SavedMeasurement.uniquelyIdentified(monitor.history.sorted { $0.time < $1.time })
@@ -2004,7 +2028,7 @@ struct ContentView: View {
         if watchingFamily, let name = family.families.first(where: { $0.id == family.selected })?.child_name, !name.isEmpty {
             return name
         }
-        return childName.isEmpty ? "Your child" : childName
+        return childName.isEmpty ? "Someone" : childName
     }
     private var mirroringNursery: Bool { (watchingWifi && wifi.remoteFresh) || watchingFamily }
     private var remoteStamp: Date? {
@@ -2028,8 +2052,8 @@ struct ContentView: View {
     }
     private var nurseryHint: String {
         if BluetoothSignal.isWeak(monitor.signalRSSI) { return "Weak signal — keep this iPhone in the room" }
-        if monitor.connection == .reconnecting { return "Go back to the child’s room" }
-        return "Leave this iPhone in the room"
+        if monitor.connection == .reconnecting { return "Stay near the band" }
+        return "Leave this iPhone near the band"
     }
     private func syncLiveActivity() {
         let ble = monitor.connection.isConnected || monitor.connection == .reconnecting
@@ -2175,7 +2199,7 @@ struct ContentView: View {
             AtmosphereBackdrop(
                 mode: mode,
                 scroll: skyOffset,
-                animate: false
+                animate: scenePhase == .active && !reduceMotion
             )
             .ignoresSafeArea()
             .allowsHitTesting(false)
@@ -2196,7 +2220,7 @@ struct ContentView: View {
         .sheet(isPresented: $showSettings) {
             NavigationStack {
                 ScrollView { settings.padding(20) }
-                    .background((mode == .night ? Color(red: 0.02, green: 0.13, blue: 0.23) : Color(red: 0.93, green: 0.95, blue: 0.94)).ignoresSafeArea())
+                    .background((mode == .night ? Color(red: 0.02, green: 0.13, blue: 0.23) : Color(red: 0.969, green: 0.980, blue: 1.0)).ignoresSafeArea())
                     .navigationTitle("Settings")
                     .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showSettings = false } } }
             }
@@ -2365,10 +2389,10 @@ struct ContentView: View {
                 Circle().fill(monitor.wearableCharging ? Color.orange : (monitor.connection == .receiving || wifi.remoteFresh || (watchingFamily && family.linkState == .live) ? teal : (connected ? .orange : .gray))).frame(width: 11, height: 11)
                 Text(statusCaption).font(.subheadline.weight(.semibold)).foregroundStyle(ink)
                 Spacer()
-                Text(mode == .day ? "Day" : "Night").font(.subheadline.weight(.bold))
-                    .foregroundStyle(mode == .day ? Color(red: 0.28, green: 0.12, blue: 0.02) : .white)
-                    .padding(.horizontal, 14).padding(.vertical, 8)
-                    .background(mode == .day ? Color(red: 1, green: 0.78, blue: 0.12) : Color.white.opacity(0.16))
+                Text(mode == .day ? "Day" : "Night").font(.caption.weight(.semibold))
+                    .foregroundStyle(mode == .day ? ink : .white)
+                    .padding(.horizontal, 10).padding(.vertical, 5)
+                    .background(mode == .day ? Color.white.opacity(0.78) : Color.white.opacity(0.16))
                     .clipShape(Capsule())
             }
             if !ageText.isEmpty { Text(childGender == "Prefer not to say" ? ageText : "\(ageText) · \(childGender)").font(.caption).foregroundStyle(muted) }
@@ -2439,7 +2463,7 @@ struct ContentView: View {
             }
             .accessibilityLabel("Settings")
             Button { manualMode = manualMode == nil ? (mode == .night ? .day : .night) : nil } label: {
-                Image(systemName: mode.symbol).font(.title3).foregroundStyle(mode == .night ? lavender : Color(red: 0.95, green: 0.72, blue: 0.18))
+                Image(systemName: mode.symbol).font(.title3).foregroundStyle(mode == .night ? lavender : Color(red: 0.85, green: 0.62, blue: 0.16))
                     .frame(width: 44, height: 44).background(cardFill).clipShape(Circle())
             }
             .accessibilityLabel("Day or night mode")
@@ -2451,7 +2475,7 @@ struct ContentView: View {
             Circle().fill(avatarTint.opacity(0.35)).frame(width: size, height: size)
             Image(systemName: avatarSymbolName).font(symbolSize).fontWeight(.semibold).foregroundStyle(avatarTint)
         }
-        .accessibilityLabel("Child avatar")
+        .accessibilityLabel("Profile avatar")
     }
 
     private var alarmBanner: some View {
@@ -2477,9 +2501,9 @@ struct ContentView: View {
     }
     private var shareAlarmDetail: String {
         if monitor.shareAlertActive && !monitor.alarmActive {
-            return "Shared from \(FamilyRelation(rawValue: wifi.latest?.hostRelation ?? "")?.title ?? "family") on this Wi‑Fi. Limits are set on that phone. Check the child."
+            return "Shared from \(FamilyRelation(rawValue: wifi.latest?.hostRelation ?? "")?.title ?? "family") on this Wi‑Fi. Limits are set on that phone."
         }
-        return monitor.staleHeartRateDetected ? (monitor.alarmAcknowledged ? "Acknowledged · repeated reading still needs checking." : "Repeated heart-rate value detected. Check sensor contact and your child.") : (monitor.alarmAcknowledged ? "Acknowledged · waiting for a fresh in-range reading." : "Check your child and follow their care plan.")
+        return monitor.staleHeartRateDetected ? (monitor.alarmAcknowledged ? "Acknowledged · repeated reading still needs checking." : "Repeated heart-rate value detected. Check sensor contact.") : (monitor.alarmAcknowledged ? "Acknowledged · waiting for a fresh in-range reading." : "Stay with them and follow their care plan.")
     }
 
     private var home: some View {
@@ -2507,7 +2531,7 @@ struct ContentView: View {
             HStack(spacing: 12) {
                 Button { showParentNote = true } label: {
                     Text("Add note").font(.subheadline.weight(.semibold)).frame(maxWidth: .infinity).padding(14)
-                        .background(coral).foregroundStyle(.white).clipShape(RoundedRectangle(cornerRadius: 16))
+                        .background(addNoteFill).foregroundStyle(addNoteInk).clipShape(RoundedRectangle(cornerRadius: 16))
                 }
                 Button { historySpan = 1; monitor.selectHistoryDay(Date()); tab = 1 } label: {
                     Text("View history").font(.subheadline.weight(.semibold)).frame(maxWidth: .infinity).padding(14)
@@ -2708,6 +2732,13 @@ struct ContentView: View {
                         Text(readingAge(mirroringNursery ? remoteStamp : monitor.lastOxygenUpdate, now: context.date)).font(.caption).foregroundStyle(muted)
                     }
                 }
+                if batteryLabel != "Unavailable" {
+                    HStack {
+                        Label("Band battery", systemImage: "battery.100").foregroundStyle(muted)
+                        Spacer()
+                        Text(batteryLabel).font(.headline).foregroundStyle(ink)
+                    }
+                }
             }
         }
     }
@@ -2718,15 +2749,15 @@ struct ContentView: View {
 
     private var supportiveCard: some View {
         panel { VStack(alignment: .leading, spacing: 10) {
-            Label(monitor.criticalAlertActive ? "One step at a time" : "Here for your little one", systemImage: "heart.text.clipboard").font(.headline)
-            Text(monitor.criticalAlertActive ? "Take a breath and stay close to your little one. Check how they are and follow the plan from their care team." : "You can add a note about how your little one is doing. Small observations can help you explain what happened to their care team.").font(.subheadline)
+            Label(monitor.criticalAlertActive ? "One step at a time" : "Here when you need it", systemImage: "heart.text.clipboard").font(.headline)
+            Text(monitor.criticalAlertActive ? "Take a breath and stay close. Check how they are and follow the plan from their care team." : "You can add a note about how they are doing. Small observations can help you explain what happened to their care team.").font(.subheadline)
             if monitor.criticalAlertActive {
                 Text("If your care team has taught you to check their heart rate with a stethoscope, use their instructions. Do not delay urgent help to take a reading.").font(.caption)
-                Text("If your child is seriously unwell, seek emergency help immediately.").font(.caption.bold())
+                Text("If they are seriously unwell, seek emergency help immediately.").font(.caption.bold())
             }
             DisclosureGroup("Checking a reading") {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Follow the pulse-check method and action limits your care team has given you. A stethoscope check is not a diagnosis. If symptoms worry you, contact the care team; seek emergency help if your child is seriously unwell.").font(.caption)
+                    Text("Follow the pulse-check method and action limits your care team has given you. A stethoscope check is not a diagnosis. If symptoms worry you, contact the care team; seek emergency help if they are seriously unwell.").font(.caption)
                     Link("GOSH: understanding SVT", destination: URL(string: "https://www.gosh.nhs.uk/conditions-and-treatments/conditions-we-treat/supraventricular-tachycardia/")!).font(.caption)
                 }
             }
@@ -2769,14 +2800,14 @@ struct ContentView: View {
                     .accessibilityLabel("Add note")
             }
             if displayedHistory.contains(where: { $0.source == "family-share" || $0.source == "wifi-share" }) {
-                Text("Includes readings this iPhone received from the phone with the baby. About one card every 30 seconds, same as that phone’s History. They stay here for 30 days.")
+                Text("Includes readings this iPhone received while following. About one card every 30 seconds, same as that phone’s History. They stay here for 30 days.")
                     .font(.caption).foregroundStyle(muted)
             }
             if displayedHistory.isEmpty {
                 panel {
                     Text("No readings this day.")
                     if family.viewingRemote || wifi.following {
-                        Text("Shared readings are saved on this iPhone while you follow the phone with the baby. They stay here for 30 days.")
+                        Text("Shared readings are saved on this iPhone while you follow. They stay here for 30 days.")
                             .font(.caption).foregroundStyle(muted)
                     }
                 }
@@ -3009,7 +3040,7 @@ struct ContentView: View {
                 TextField("Downstairs code", text: Binding(get: { wifi.joinPin }, set: { wifi.setJoinPin($0) }))
                     .keyboardType(.numberPad)
                     .font(.title3.monospacedDigit())
-                Toggle("Follow the phone with the baby", isOn: Binding(get: { wifi.following }, set: { wifi.setFollowing($0) })).tint(switchOn)
+                Toggle("Follow the phone next to the band", isOn: Binding(get: { wifi.following }, set: { wifi.setFollowing($0) })).tint(switchOn)
                 Toggle("Play those alerts here", isOn: $wifi.playAlerts).tint(switchOn)
                 Text(wifi.status).font(.caption).foregroundStyle(muted)
                 Text("Same house only — 4-digit PIN on this Wi‑Fi. Nan in another house uses Family sharing above, not this.")
@@ -3019,7 +3050,7 @@ struct ContentView: View {
         panel { VStack(alignment: .leading, spacing: 12) {
             Text("Heart-rate alerts").font(.headline)
             if wifi.following {
-                Text("You are following the phone with the baby. Change Low / High limits on that phone, not here.")
+                Text("You are following the phone next to the band. Change Low / High limits on that phone, not here.")
                     .font(.caption).foregroundStyle(muted)
             }
             HStack { Label("Low", systemImage: "arrow.down.heart"); Spacer(); Text(monitor.alarmSettings.lowEnabled ? monitor.alarmSettings.lowThreshold.map { "Below \($0) bpm" } ?? "Set a limit" : "Off") }.foregroundStyle(coral)
@@ -3079,7 +3110,7 @@ struct ContentView: View {
         Group {
         panel { DisclosureGroup("FAQ") { VStack(alignment: .leading, spacing: 12) {
             DisclosureGroup("How do I share with family?") {
-                Text("Settings → Family sharing. Sign in with your own email. The phone with the baby taps Create family code and sends the 6 letters. Everyone else types that same code and chooses Mum, Dad, Nan or Carer. Whoever is with the baby taps I’m with [name]. Same code when someone else takes over. Same-house Wi‑Fi PIN is only for downstairs.")
+                Text("Settings → Family sharing. Sign in with your own email. The phone next to the band taps Create family code and sends the 6 letters. Everyone else types that same code and chooses who they are. Whoever is with the wearer taps I’m with [name]. Same code when someone else takes over. Same-house Wi‑Fi PIN is only for downstairs.")
                     .font(.caption).padding(.top, 6)
             }
             DisclosureGroup("Which devices work?") {
@@ -3095,18 +3126,18 @@ struct ContentView: View {
                     .font(.caption).padding(.top, 6)
             }
             DisclosureGroup("Will alarms always sound?") {
-                Text("The siren can play in the open app even on Silent. Lock-screen banners can still be quiet in Silent, Focus or Sleep. This is not a medical monitor and not a substitute for looking after your child.")
+                Text("The siren can play in the open app even on Silent. Lock-screen banners can still be quiet in Silent, Focus or Sleep. This is not a medical monitor and not a substitute for being with someone.")
                     .font(.caption).padding(.top, 6)
             }
         }.padding(.top, 12) } }
         panel { DisclosureGroup("Privacy") { VStack(alignment: .leading, spacing: 12) {
-            Text("Local use needs no account. Readings, notes and the child profile stay on this iPhone for 30 days. Family sharing is optional: a verified email, a 6-letter family code, and the latest live numbers on the Nivvi server in London (family.nivvi.app). Birth dates, avatars and notes are not uploaded. No ads or analytics.")
+            Text("Local use needs no account. Readings, notes and the profile stay on this iPhone for 30 days. Family sharing is optional: a verified email, a 6-letter family code, and the latest live numbers — including band battery — on the Nivvi server in London (family.nivvi.app). Birth dates, avatars and notes are not uploaded. No ads or analytics.")
                 .font(.caption)
-            Text("Anyone with the family code can join that child. Stop sharing with everyone ends the code. Delete account removes the online login, not this phone’s history. Full notice: nivvi.app/privacy")
+            Text("Anyone with the family code can join that family. Stop sharing with everyone ends the code. Delete account removes the online login, not this phone’s history. Full notice: nivvi.app/privacy")
                 .font(.caption).foregroundStyle(muted)
         }.padding(.top, 12) } }
         panel { DisclosureGroup("Terms") { VStack(alignment: .leading, spacing: 12) {
-            Text("Nivvi is a TestFlight family test from Michael Waters, trading as Nivvi, United Kingdom. It shows Bluetooth heart-rate readings. It does not diagnose, treat, or replace looking after your child or emergency care.")
+            Text("Nivvi is a TestFlight family test from Michael Waters, trading as Nivvi, United Kingdom. It shows Bluetooth heart-rate readings for babies, children, teens and adults. It does not diagnose, treat, or replace being with someone or emergency care.")
                 .font(.caption)
             Text("Bluetooth, Wi‑Fi, 4G and notifications can fail. You are responsible for how you use the app. English law of England and Wales. Support: hello.nivvi@outlook.com. Full terms: nivvi.app/terms")
                 .font(.caption).foregroundStyle(muted)
@@ -3126,15 +3157,15 @@ struct ContentView: View {
         Text("Nivvi " + (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")).font(.caption).foregroundStyle(.secondary)
     } }
 
-    private var bottomBar: some View { HStack { nav("heart.fill", "Live", 0); nav("chart.xyaxis.line", "History", 1); nav("bell.fill", "Alerts", 2); nav("wave.3.right", "Device", 3) }.padding(8).background(cardFill).clipShape(Capsule()).shadow(color: mode == .night ? .clear : Color.black.opacity(0.10), radius: 8, y: 2).padding(.horizontal, 18).padding(.bottom, 10) }
-    private func nav(_ icon: String, _ title: String, _ index: Int) -> some View { Button { withAnimation(.easeInOut(duration: 0.2)) { tab = index } } label: { VStack(spacing: 4) { Image(systemName: icon); Text(title).font(.caption.weight(.semibold)) }.foregroundStyle(tab == index ? ink : muted).frame(maxWidth: .infinity).padding(.vertical, 8).background(tab == index ? (mode == .night ? Color.white.opacity(0.12) : Color(red: 0.90, green: 0.93, blue: 0.91)) : .clear).clipShape(Capsule()) } }
+    private var bottomBar: some View { HStack { nav("heart.fill", "Live", 0); nav("chart.xyaxis.line", "History", 1); nav("bell.fill", "Alerts", 2); nav("wave.3.right", "Device", 3) }.padding(8).background(mode == .night ? cardFill : Color.white.opacity(0.94)).clipShape(Capsule()).shadow(color: mode == .night ? .clear : Color(red: 0.09, green: 0.17, blue: 0.26).opacity(0.10), radius: 8, y: 2).padding(.horizontal, 18).padding(.bottom, 10) }
+    private func nav(_ icon: String, _ title: String, _ index: Int) -> some View { Button { withAnimation(.easeInOut(duration: 0.2)) { tab = index } } label: { VStack(spacing: 4) { Image(systemName: icon); Text(title).font(.caption.weight(.semibold)) }.foregroundStyle(tab == index ? ink : muted).frame(maxWidth: .infinity).padding(.vertical, 8).background(tab == index ? navSelected : .clear).clipShape(Capsule()) } }
     private func panel<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
         content().padding(16).frame(maxWidth: .infinity, alignment: .leading)
             .foregroundStyle(ink)
             .background(cardFill)
             .clipShape(RoundedRectangle(cornerRadius: 22))
-            .overlay(RoundedRectangle(cornerRadius: 22).stroke(mode == .night ? Color.white.opacity(0.10) : Color.black.opacity(0.10), lineWidth: 1))
-            .shadow(color: mode == .night ? .clear : Color.black.opacity(0.07), radius: 6, y: 2)
+            .overlay(RoundedRectangle(cornerRadius: 22).stroke(cardStroke, lineWidth: 1))
+            .shadow(color: mode == .night ? .clear : Color(red: 0.09, green: 0.17, blue: 0.26).opacity(0.08), radius: 8, y: 3)
     }
     private func readingCard(_ title: String, _ value: String, _ note: String, _ icon: String, _ tint: Color, receivedAt: Date?, animate: Bool = true) -> some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -3150,7 +3181,7 @@ struct ContentView: View {
             .background(cardFill).clipShape(RoundedRectangle(cornerRadius: 22))
     }
     private func readingAge(_ date: Date?, now: Date) -> String {
-        guard let date else { return mirroringNursery ? "Waiting for the baby’s phone" : "No reading received" }
+        guard let date else { return mirroringNursery ? "Waiting for the monitoring phone" : "No reading received" }
         let seconds = Int(now.timeIntervalSince(date))
         if mirroringNursery {
             guard seconds >= 0 else { return "Updated just now" }

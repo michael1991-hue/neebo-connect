@@ -124,6 +124,21 @@ def test_family_latest_fans_out_activity_push(client):
     assert "112" in relay.ACTIVITY_PUSHES[-1]["state"]["heartRate"]
 
 
+def test_oxygen_caps_at_99_and_battery_is_shared(client):
+    owner, _, _ = account(client, "battery@example.com")
+    family = client.post("/families", headers=owner, json={"label": "Band"}).json()["id"]
+    now = time.time()
+    body = snapshot(captured=now, heart_rate=104, heart_rate_at=now, oxygen=100, oxygen_at=now, seq=1)
+    body["battery"] = "63%"
+    body["charging"] = True
+    assert client.put(f"/families/{family}/latest", headers=owner, json=body).status_code == 200
+    data = client.get(f"/families/{family}/latest", headers=owner).json()
+    snap = data.get("snapshot") or data
+    assert snap["oxygen"] == 99
+    assert snap["battery"] == "63%"
+    assert snap["charging"] is True
+
+
 def test_joined_family_can_publish(client):
     owner, _, _ = account(client, "parents@example.com")
     carer, _, _ = account(client, "nan@example.com")

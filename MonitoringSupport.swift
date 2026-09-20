@@ -17,16 +17,16 @@ enum NurseryPlace: String, Identifiable {
         }
     }
     func banner(_ child: String) -> String {
-        let name = child.isEmpty ? "Baby" : child
+        let name = child.isEmpty ? "They" : child
         switch self {
         case .home: return "\(name) is at home"
         case .carer, .exploring: return "\(name) is with a carer"
         }
     }
     func hint(_ child: String) -> String {
-        let name = child.isEmpty ? "the baby" : child
+        let name = child.isEmpty ? "them" : child
         switch self {
-        case .home: return "Leave a phone in \(name)’s room. Downstairs can follow on this Wi‑Fi."
+        case .home: return "Leave a phone near \(name). Downstairs can follow on this Wi‑Fi."
         case .carer, .exploring: return "The carer’s iPhone stays with \(name). Family watch on theirs over the internet."
         }
     }
@@ -126,19 +126,19 @@ enum FamilyLivePolicy {
 struct SharedAlertLog {
     static func event(previous: String, next: String, wasAcknowledged: Bool, acknowledged: Bool) -> (kind: String, title: String, detail: String)? {
         if previous == "none", next == "high" {
-            return ("critical", "High heart-rate alert", "From the phone with the baby. Limits are set on that phone. Saved on this iPhone.")
+            return ("critical", "High heart-rate alert", "From the monitoring phone. Limits are set on that phone. Saved on this iPhone.")
         }
         if previous == "none", next == "low" {
-            return ("critical", "Low heart-rate alert", "From the phone with the baby. Limits are set on that phone. Saved on this iPhone.")
+            return ("critical", "Low heart-rate alert", "From the monitoring phone. Limits are set on that phone. Saved on this iPhone.")
         }
         if previous == "none", next == "sensor" {
-            return ("measurement", "Check sensor data", "The phone with the baby reported no fresh heart-rate data. Saved on this iPhone.")
+            return ("measurement", "Check sensor data", "The monitoring phone reported no fresh heart-rate data. Saved on this iPhone.")
         }
         if (previous == "high" || previous == "low"), next == "none" {
-            return ("critical", "Heart rate back to normal", "Reading on the baby’s phone returned within the configured limits. Saved on this iPhone.")
+            return ("critical", "Heart rate back to normal", "Reading on the monitoring phone returned within the configured limits. Saved on this iPhone.")
         }
         if !wasAcknowledged, acknowledged, next != "none" {
-            return ("critical", "Alarm acknowledged", "Heard it was tapped. The alert on the baby’s phone stays active until a fresh in-range reading. Saved on this iPhone.")
+            return ("critical", "Alarm acknowledged", "Heard it was tapped. The alert on the monitoring phone stays active until a fresh in-range reading. Saved on this iPhone.")
         }
         return nil
     }
