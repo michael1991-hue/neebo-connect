@@ -2992,7 +2992,16 @@ struct ContentView: View {
         panel {
             Button { showFamily = true } label: { Label("Family sharing", systemImage: "person.2.fill") }
             Text("Invite family members to view shared readings securely.").font(.caption)
-        }.sheet(isPresented: $showFamily) { NavigationStack { FamilySharingView().toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showFamily = false } } } } }
+        }.sheet(isPresented: $showFamily) {
+            NavigationStack {
+                FamilySharingView()
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { showFamily = false }
+                        }
+                    }
+            }
+        }
         panel { DisclosureGroup("Connection and support") { VStack(alignment: .leading, spacing: 12) {
             Text("Keeps the Bluetooth session active and attempts reconnection after signal loss. Tap Disconnect to end the session.").font(.caption)
             Text("Background readings require device notifications. Keep Nivvi open if the wearable only responds to reads. Force-quitting the app, Bluetooth being off, an empty battery or iOS restrictions can interrupt monitoring.").font(.caption).foregroundStyle(muted)

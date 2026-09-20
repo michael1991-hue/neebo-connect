@@ -3,6 +3,7 @@ import Security
 import UserNotifications
 import AVFoundation
 import Network
+import UIKit
 
 struct FamilyAccount: Codable { let token: String; let user_id: String; let email: String }
 struct SharedFamily: Codable, Identifiable { let id: String; let label: String; let owner: String; var role: String? }
@@ -622,9 +623,14 @@ final class FamilyRelay: ObservableObject {
 }
 
 struct FamilySharingView: View {
+    private enum AuthStep {
+        case signIn, register, verify, resetRequest, reset
+    }
+
     @ObservedObject private var relay = FamilyRelay.shared
     @ObservedObject private var wifi = WiFiRelay.shared
     @Environment(\.scenePhase) private var phase
+    @Environment(\.colorScheme) private var scheme
     @State private var email = ""
     @State private var password = ""
     @State private var code = ""
@@ -634,48 +640,53 @@ struct FamilySharingView: View {
     @State private var consent = false
     @State private var confirmDelete = false
     @State private var confirmStop = false
+    @State private var showPassword = false
+    @State private var step: AuthStep = .signIn
+    @State private var pendingAction = ""
+    @FocusState private var focus: Field?
+    private enum Field { case email, password, code }
+
+    private var accent: Color { scheme == .dark ? Color(red: 0.56, green: 0.89, blue: 0.82) : Color(red: 0.02, green: 0.42, blue: 0.40) }
+    private var ink: Color { scheme == .dark ? .white : Color(red: 0.10, green: 0.14, blue: 0.18) }
+    private var muted: Color { scheme == .dark ? Color.white.opacity(0.78) : Color(red: 0.28, green: 0.34, blue: 0.36) }
+    private var sheetBg: Color { scheme == .dark ? Color(red: 0.06, green: 0.12, blue: 0.16) : Color(red: 0.93, green: 0.96, blue: 0.95) }
+    private var fieldBg: Color { scheme == .dark ? Color.white.opacity(0.08) : Color.white }
+    private var trimmedEmail: String { email.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var canSubmitPassword: Bool { trimmedEmail.contains("@") && password.count >= 12 }
+    private var messageIsError: Bool {
+        let text = relay.message.lowercased()
+        guard !text.isEmpty else { return false }
+        return text.contains("fail") || text.contains("invalid") || text.contains("unavailable") || text.contains("try again") || text.contains("too many")
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                Text("Family sharing").font(.largeTitle.bold())
+                header
                 if !relay.configured {
-                    Text("Works on this Wi‑Fi tonight").font(.headline)
-                    Text("There is no Apple shortcut and no online server yet. Two iPhones on the same home Wi‑Fi can still share live numbers: one stays in the room on Bluetooth, the other follows downstairs.")
                     wifiShortcut
-                    Text("Seeing it from another house needs a paid always-on server. iCloud Family Sharing does not copy Nivvi readings.")
-                        .font(.caption)
                 } else if !relay.signedIn {
-                    Text("Sign in with your own verified email address. Family members use separate accounts.")
-                    TextField("Email", text: $email).textContentType(.emailAddress).keyboardType(.emailAddress).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    SecureField("Password (12 characters minimum)", text: $password).textContentType(.password)
-                    TextField("Verification or reset code", text: $code).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    HStack { authButton("Sign in", "login"); authButton("Create account", "register") }
-                    authButton("Verify email", "verify")
-                    DisclosureGroup("Forgot password?") {
-                        authButton("Send reset code", "reset-request")
-                        authButton("Set password using code", "reset")
-                    }
+                    authFlow
                 } else {
-                    Text(relay.account?.email ?? "").font(.subheadline)
-                    ownerControls
-                    Divider()
-                    Text("Join a family").font(.headline)
-                    TextField("Private invitation code", text: $joinCode).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    Button("Accept invitation") { relay.perform { try await relay.join(code: joinCode); joinCode = "" } }
-                    if !relay.families.isEmpty { remoteControls }
-                    Button("Enable family notifications") { relay.perform { try await relay.notifications() } }
-                    Text("Remote updates are supplementary. Internet, phone background limits, Silent mode and Focus can delay or prevent alerts. No Critical Alerts permission is included.").font(.caption)
-                    HStack {
-                        Button("Sign out") { relay.perform { try await relay.signOut() } }
-                        Button("Delete online account", role: .destructive) { confirmDelete = true }
-                    }
+                    signedIn
                 }
-                if let privacy = relay.privacyURL { Link("Family-sharing privacy notice", destination: privacy) }
-                if !relay.message.isEmpty { Text(relay.message).font(.callout).accessibilityLabel(relay.message) }
-                if relay.busy { ProgressView() }
-            }.padding().textFieldStyle(.roundedBorder).buttonStyle(.bordered).disabled(relay.busy)
+                if let privacy = relay.privacyURL {
+                    Link("Family-sharing privacy notice", destination: privacy)
+                        .font(.footnote)
+                        .foregroundStyle(muted)
+                        .accessibilityHint("Opens the family sharing privacy notice in Safari")
+                        .padding(.top, 8)
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 8)
+            .padding(.bottom, 28)
         }
-        .navigationTitle("Family")
+        .background(sheetBg.ignoresSafeArea())
+        .scrollDismissesKeyboard(.interactively)
+        .navigationTitle("")
+        .navigationBarTitleDisplayMode(.inline)
+        .disabled(relay.busy)
         .alert("Delete online account?", isPresented: $confirmDelete) {
             Button("Delete account", role: .destructive) { relay.perform { try await relay.signOut(delete: true) } }
             Button("Cancel", role: .cancel) { }
@@ -690,9 +701,322 @@ struct FamilySharingView: View {
             await relay.fetchRemote()
         }
         .onChange(of: relay.selected) { _ in Task { await relay.fetchRemote() } }
+        .onChange(of: relay.signedIn) { signed in
+            if !signed { step = .signIn; pendingAction = ""; code = "" }
+        }
+        .onChange(of: step) { _ in
+            showPassword = false
+            focus = step == .verify || step == .reset ? .code : .email
+        }
     }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Image(systemName: "person.2.fill")
+                    .font(.title3)
+                    .foregroundStyle(accent)
+                    .accessibilityHidden(true)
+                Text("Family Sharing")
+                    .font(.title2.weight(.bold))
+                    .foregroundStyle(ink)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isHeader)
+            Text("Share your child’s readings with the people who care for them.")
+                .font(.body)
+                .foregroundStyle(ink)
+            Text("Each family member needs their own account.")
+                .font(.subheadline)
+                .foregroundStyle(muted)
+        }
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    @ViewBuilder private var authFlow: some View {
+        switch step {
+        case .signIn: signInStep
+        case .register: registerStep
+        case .verify: verifyStep
+        case .resetRequest: resetRequestStep
+        case .reset: resetStep
+        }
+    }
+
+    private var signInStep: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if !relay.message.isEmpty && pendingAction != "login" {
+                Text(relay.message)
+                    .font(.callout)
+                    .foregroundStyle(messageIsError ? Color.orange : accent)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            emailField(contentType: .username)
+            passwordField(contentType: .password, hint: "At least 12 characters.")
+            Button("Forgot password?") {
+                relay.message = ""
+                pendingAction = ""
+                step = .resetRequest
+            }
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(accent)
+                .accessibilityHint("Starts password reset")
+            primaryButton("Sign in", action: "login", enabled: canSubmitPassword)
+            status(for: "login")
+            if relay.message.lowercased().contains("verify") && pendingAction == "login" {
+                Button("I have a verification code") { step = .verify }
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(accent)
+            }
+            Button("New to Nivvi? Create an account") {
+                relay.message = ""
+                pendingAction = ""
+                step = .register
+            }
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(ink)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+                .background(fieldBg)
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(ink.opacity(0.12), lineWidth: 1))
+                .accessibilityHint("Opens account creation")
+        }
+    }
+
+    private var registerStep: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Create an account").font(.headline).foregroundStyle(ink)
+            emailField(contentType: .username)
+            passwordField(contentType: .newPassword, hint: "Choose a password of at least 12 characters.")
+            primaryButton("Create account", action: "register", enabled: canSubmitPassword, next: .verify)
+            status(for: "register")
+            backToSignIn
+        }
+    }
+
+    private var verifyStep: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Verify email").font(.headline).foregroundStyle(ink)
+            Text("Enter the code sent to \(trimmedEmail.isEmpty ? "your email" : trimmedEmail).")
+                .font(.subheadline)
+                .foregroundStyle(muted)
+                .fixedSize(horizontal: false, vertical: true)
+            if pendingAction == "register", !relay.message.isEmpty, !messageIsError {
+                Text(relay.message)
+                    .font(.callout)
+                    .foregroundStyle(accent)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            codeField
+            if password.count < 12 {
+                passwordField(contentType: .password, hint: "The password for this account, at least 12 characters.")
+            }
+            primaryButton("Verify email", action: "verify", enabled: canSubmitPassword && !code.trimmingCharacters(in: .whitespaces).isEmpty, next: .signIn)
+            status(for: "verify")
+            Button("Resend code") { runAuth("register") }
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(accent)
+            status(for: "register")
+            Button("Use a different email") { step = .register }
+                .font(.subheadline)
+                .foregroundStyle(muted)
+            backToSignIn
+        }
+    }
+
+    private var resetRequestStep: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Forgot password").font(.headline).foregroundStyle(ink)
+            Text("We’ll email a reset code if this address has a Nivvi account.")
+                .font(.subheadline)
+                .foregroundStyle(muted)
+            emailField(contentType: .username)
+            primaryButton("Send reset code", action: "reset-request", enabled: trimmedEmail.contains("@"), next: .reset)
+            status(for: "reset-request")
+            backToSignIn
+        }
+    }
+
+    private var resetStep: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Set a new password").font(.headline).foregroundStyle(ink)
+            Text("Enter the code sent to \(trimmedEmail.isEmpty ? "your email" : trimmedEmail).")
+                .font(.subheadline)
+                .foregroundStyle(muted)
+            codeField
+            passwordField(contentType: .newPassword, hint: "New password, at least 12 characters.")
+            primaryButton("Save new password", action: "reset", enabled: canSubmitPassword && !code.trimmingCharacters(in: .whitespaces).isEmpty, next: .signIn)
+            status(for: "reset")
+            Button("Resend reset code") { runAuth("reset-request") }
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(accent)
+            status(for: "reset-request")
+            backToSignIn
+        }
+    }
+
+    private var backToSignIn: some View {
+        Button("Back to sign in") {
+            relay.message = ""
+            pendingAction = ""
+            step = .signIn
+        }
+            .font(.subheadline)
+            .foregroundStyle(muted)
+            .padding(.top, 4)
+            .accessibilityHint("Returns to the sign-in form")
+    }
+
+    private var signedIn: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(relay.account?.email ?? "")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(muted)
+                .textSelection(.enabled)
+            ownerControls
+            Divider()
+            Text("Join a family").font(.headline)
+            labeled("Invitation code") {
+                TextField("Private invitation code", text: $joinCode)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .textContentType(.oneTimeCode)
+            }
+            Button("Accept invitation") { relay.perform { try await relay.join(code: joinCode); joinCode = "" } }
+                .buttonStyle(.bordered)
+            if !relay.families.isEmpty { remoteControls }
+            Button("Enable family notifications") { relay.perform { try await relay.notifications() } }
+                .buttonStyle(.bordered)
+            Text("Remote updates are supplementary. Internet, phone background limits, Silent mode and Focus can delay or prevent alerts. No Critical Alerts permission is included.")
+                .font(.caption)
+                .foregroundStyle(muted)
+            HStack {
+                Button("Sign out") { relay.perform { try await relay.signOut() } }
+                Button("Delete online account", role: .destructive) { confirmDelete = true }
+            }
+            .buttonStyle(.bordered)
+            if !relay.message.isEmpty {
+                Text(relay.message).font(.callout).foregroundStyle(messageIsError ? .orange : ink)
+            }
+            if relay.busy { ProgressView() }
+        }
+    }
+
+    private func emailField(contentType: UITextContentType) -> some View {
+        labeled("Email address") {
+            TextField("name@example.com", text: $email)
+                .textContentType(contentType)
+                .keyboardType(.emailAddress)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .submitLabel(.next)
+                .focused($focus, equals: .email)
+                .onSubmit { focus = .password }
+        }
+    }
+
+    private func passwordField(contentType: UITextContentType, hint: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            labeled("Password") {
+                HStack(spacing: 8) {
+                    Group {
+                        if showPassword {
+                            TextField("Password", text: $password)
+                        } else {
+                            SecureField("Password", text: $password)
+                        }
+                    }
+                    .textContentType(contentType)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .submitLabel(.go)
+                    .focused($focus, equals: .password)
+                    Button {
+                        showPassword.toggle()
+                    } label: {
+                        Image(systemName: showPassword ? "eye.slash" : "eye")
+                            .foregroundStyle(muted)
+                    }
+                    .accessibilityLabel(showPassword ? "Hide password" : "Show password")
+                }
+            }
+            Text(hint).font(.caption).foregroundStyle(muted)
+        }
+    }
+
+    private var codeField: some View {
+        labeled("Verification code") {
+            TextField("6-digit code", text: $code)
+                .textContentType(.oneTimeCode)
+                .keyboardType(.numberPad)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .focused($focus, equals: .code)
+        }
+    }
+
+    private func labeled<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(ink)
+            content()
+                .padding(12)
+                .background(fieldBg)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(ink.opacity(0.12), lineWidth: 1))
+        }
+    }
+
+    private func primaryButton(_ title: String, action: String, enabled: Bool, next: AuthStep? = nil) -> some View {
+        Button {
+            runAuth(action, next: next)
+        } label: {
+            HStack(spacing: 8) {
+                if relay.busy && pendingAction == action { ProgressView().tint(.white) }
+                Text(title).font(.headline)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .foregroundStyle(.white)
+            .background(enabled && !relay.busy ? accent : accent.opacity(0.45))
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+        .disabled(!enabled || relay.busy)
+    }
+
+    @ViewBuilder private func status(for action: String) -> some View {
+        if pendingAction == action {
+            if relay.busy {
+                Label("Please wait", systemImage: "hourglass")
+                    .font(.caption)
+                    .foregroundStyle(muted)
+            } else if !relay.message.isEmpty {
+                Text(relay.message)
+                    .font(.callout)
+                    .foregroundStyle(messageIsError ? Color.orange : accent)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel(relay.message)
+            }
+        }
+    }
+
+    private func runAuth(_ action: String, next: AuthStep? = nil) {
+        pendingAction = action
+        focus = nil
+        relay.perform {
+            try await relay.authenticate(email: email, password: password, code: code, action: action)
+            if action == "login" || action == "reset" { password = ""; code = "" }
+            if action == "verify" { code = "" }
+            if let next { step = next }
+        }
+    }
+
     private var wifiShortcut: some View {
         VStack(alignment: .leading, spacing: 10) {
+            Text("Works on this Wi‑Fi tonight").font(.headline)
+            Text("There is no Apple shortcut and no online server yet. Two iPhones on the same home Wi‑Fi can still share live numbers: one stays in the room on Bluetooth, the other follows downstairs.")
             Toggle("Share from the nursery iPhone", isOn: Binding(get: { wifi.hosting }, set: { wifi.setHosting($0) }))
             if wifi.hosting {
                 Text(wifi.pin).font(.system(size: 36, weight: .bold, design: .rounded)).monospacedDigit()
@@ -703,14 +1027,11 @@ struct FamilySharingView: View {
                 .font(.title3.monospacedDigit())
             Toggle("Follow the nursery iPhone", isOn: Binding(get: { wifi.following }, set: { wifi.setFollowing($0) }))
             Text(wifi.status).font(.caption)
+            Text("Seeing it from another house needs a paid always-on server. iCloud Family Sharing does not copy Nivvi readings.")
+                .font(.caption)
         }
     }
-    private func authButton(_ title: String, _ action: String) -> some View {
-        Button(title) { relay.perform {
-            try await relay.authenticate(email: email, password: password, code: code, action: action)
-            if action == "login" { password = ""; code = "" }
-        } }
-    }
+
     private var ownerControls: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Nursery iPhone").font(.headline)
@@ -729,7 +1050,10 @@ struct FamilySharingView: View {
                 Button("Stop sharing", role: .destructive) { confirmStop = true }
             }
         }
+        .buttonStyle(.bordered)
+        .textFieldStyle(.roundedBorder)
     }
+
     private var remoteControls: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Shared readings").font(.headline)
@@ -758,8 +1082,11 @@ struct FamilySharingView: View {
                 Button("Leave this family", role: .destructive) { relay.perform { try await relay.leave() } }
             }
         }
+        .buttonStyle(.bordered)
     }
+
     private func metric(_ title: String, _ value: Double?, _ unit: String) -> some View {
         VStack(alignment: .leading) { Text(title).font(.caption); Text(value.map { String(format: "%.0f %@", $0, unit) } ?? "—").font(.title2.bold()) }.frame(maxWidth: .infinity, alignment: .leading)
     }
 }
+
