@@ -6,7 +6,7 @@ import Network
 import UIKit
 
 struct FamilyAccount: Codable { let token: String; let user_id: String; let email: String }
-struct SharedFamily: Codable, Identifiable { let id: String; let label: String; let owner: String; var role: String? }
+struct SharedFamily: Codable, Identifiable { let id: String; let label: String; let owner: String; var role: String?; var host_relation: String? }
 struct FamilyMember: Codable, Identifiable { let id: String; let email: String; var role: String?; var relation: String? }
 
 enum FamilyRelation: String, CaseIterable, Identifiable {
@@ -35,6 +35,17 @@ enum FamilyRelation: String, CaseIterable, Identifiable {
         }
         return wifi ? "Shared from family on this Wi‑Fi" : "Shared from family"
     }
+    static func monitoring(_ raw: String?, age: TimeInterval?, live: Bool) -> String {
+        let who = FamilyRelation(rawValue: raw ?? "")?.title ?? "family"
+        if live, let age {
+            return "Monitoring with \(who) · Updated \(max(0, Int(age.rounded())))s ago"
+        }
+        if let age {
+            let minutes = max(1, Int((age / 60).rounded(.down)))
+            return "Sharing interrupted · Last reading \(minutes) min ago"
+        }
+        return "Waiting for \(who) to start monitoring"
+    }
 }
 struct FamilySample: Codable, Equatable {
     var t: Double
@@ -59,9 +70,10 @@ struct FamilySnapshot: Codable {
     var activity_secret: String?
     var place: String?
     var host_relation: String?
+    var acknowledged_by: String?
 
     enum CodingKeys: String, CodingKey {
-        case captured, heart_rate, oxygen, heart_rate_at, oxygen_at, source, alarm, connection, history, stream_id, seq, kind, server_received, acknowledged, activity_secret, place, host_relation
+        case captured, heart_rate, oxygen, heart_rate_at, oxygen_at, source, alarm, connection, history, stream_id, seq, kind, server_received, acknowledged, activity_secret, place, host_relation, acknowledged_by
     }
 
     init(captured: Double, heart_rate: Double?, oxygen: Double?, source: String, alarm: String, connection: String, history: [FamilySample] = [], heart_rate_at: Double? = nil, oxygen_at: Double? = nil, stream_id: String? = nil, seq: Int? = nil, kind: String? = "live", acknowledged: Bool = false, activity_secret: String? = nil, place: String? = nil, host_relation: String? = nil) {
@@ -81,6 +93,7 @@ struct FamilySnapshot: Codable {
         self.activity_secret = activity_secret
         self.place = place
         self.host_relation = host_relation
+        self.acknowledged_by = nil
     }
 
     init(from decoder: Decoder) throws {
@@ -102,6 +115,7 @@ struct FamilySnapshot: Codable {
         activity_secret = try box.decodeIfPresent(String.self, forKey: .activity_secret)
         place = try box.decodeIfPresent(String.self, forKey: .place)
         host_relation = try box.decodeIfPresent(String.self, forKey: .host_relation)
+        acknowledged_by = try box.decodeIfPresent(String.self, forKey: .acknowledged_by)
     }
 }
 struct RemoteReading: Codable {
@@ -111,7 +125,7 @@ struct RemoteReading: Codable {
     var heart_rate_fresh: Bool?
     var oxygen_fresh: Bool?
 }
-struct FamilyReply: Codable { var message: String?; var code: String?; var ok: Bool?; var seq: Int?; var server_received: Double? }
+struct FamilyReply: Codable { var message: String?; var code: String?; var ok: Bool?; var seq: Int?; var server_received: Double?; var stream_id: String?; var host_relation: String? }
 
 enum FamilyKeychain {
     static let service = "com.michael1991.nivvi.family"
@@ -180,9 +194,10 @@ final class FamilyRelay: ObservableObject {
     }
     var isCarer: Bool { families.contains { $0.role == "carer" } }
     var isOwner: Bool { ownFamily != nil }
+    var canPublish: Bool { isOwner || isCarer }
     var signedIn: Bool { account != nil }
     var userID: String? { account?.user_id }
-    var followingFamily: Bool { signedIn && selected != nil && selected != ownFamily?.id }
+    var followingFamily: Bool { signedIn && selected != nil && !publishing }
     var familyHeartFresh: Bool {
         FamilyLivePolicy.metricFresh(at: Date(), stamped: remote?.snapshot?.heart_rate_at ?? remote?.snapshot?.captured, hasValue: remote?.snapshot?.heart_rate != nil)
     }
@@ -203,11 +218,14 @@ final class FamilyRelay: ObservableObject {
         )
     }
     var statusLine: String {
+        let who = remote?.snapshot?.host_relation ?? families.first(where: { $0.id == selected })?.host_relation
+        let stamp = remote?.snapshot?.heart_rate_at ?? remote?.snapshot?.captured
+        let age = stamp.map { Date().timeIntervalSince1970 - $0 }
         switch linkState {
-        case .live: return FamilyRelation.sharedFrom(remote?.snapshot?.host_relation, wifi: false) + " · live"
-        case .hostStale: return "Shared reading is stale · not live"
-        case .sensorDisconnected: return "Sensor on the baby’s phone disconnected"
-        case .viewerOffline: return "This phone lost the family link · not live"
+        case .live: return FamilyRelation.monitoring(who, age: age, live: true)
+        case .hostStale: return FamilyRelation.monitoring(who, age: age, live: false)
+        case .sensorDisconnected: return "Connecting to the sensor…"
+        case .viewerOffline: return FamilyRelation.monitoring(who, age: age, live: false)
         case .idle: return "Family sharing"
         }
     }
@@ -282,23 +300,29 @@ final class FamilyRelay: ObservableObject {
         if ownFamily == nil && !families.contains(where: { $0.role == "carer" }) { publishing = false }
     }
     func enable(label: String) async throws {
-        if ownFamily == nil, families.contains(where: { $0.id == selected && $0.role == "carer" }) {
-            publishing = true
-            lastUpload = nil
-            lastHistoryUpload = nil
-            publishStream = UUID().uuidString
-            uploadSeq = 0
-            message = "This phone is with the baby. Parents see live numbers on theirs."
-            return
+        if ownFamily == nil && !isCarer {
+            let _: SharedFamily = try await request("families", method: "POST", body: body(["label": label]))
+            try await refreshFamilies()
         }
-        let _: SharedFamily = try await request("families", method: "POST", body: body(["label": label]))
-        try await refreshFamilies()
+        try await claimHost()
+    }
+    func claimHost() async throws {
+        guard let familyID = publishFamilyID ?? selected else { throw FamilyError.message("Join or create the family first.") }
+        let relation = UserDefaults.standard.string(forKey: "nivvi.host.relation") ?? ""
+        let reply: FamilyReply = try await request("families/\(familyID)/host", method: "POST", body: body(["relation": relation]))
         publishing = true
         lastUpload = nil
         lastHistoryUpload = nil
-        publishStream = UUID().uuidString
+        publishStream = reply.stream_id ?? UUID().uuidString
         uploadSeq = 0
-        message = "Sharing enabled on this phone. Keep it near the wearable and connected to the internet."
+        message = "This phone is with the baby. Family see live numbers on theirs."
+    }
+    func releaseHost() async throws {
+        publishing = false
+        if let familyID = publishFamilyID ?? selected {
+            let _: FamilyReply = try await request("families/\(familyID)/host", method: "DELETE")
+        }
+        message = "This phone stopped monitoring. Family stays; someone else can take over."
     }
     func stop() async throws {
         publishing = false; generation = UUID(); invitation = nil
@@ -307,8 +331,8 @@ final class FamilyRelay: ObservableObject {
             try await refreshFamilies(); clearRemote(); members = []
             message = "Sharing stopped. Online snapshot, invitations and member access removed."
         } else {
+            try await releaseHost()
             try await refreshFamilies()
-            message = "This phone is no longer with the baby. Parents keep the family."
         }
     }
     func invite(email: String, role: String = "watcher", relation: String = "") async throws {
@@ -444,6 +468,11 @@ final class FamilyRelay: ObservableObject {
                 if includeHistory { lastHistoryUpload = Date() }
             } catch {
                 let text = error.localizedDescription
+                if text.contains("Another phone") {
+                    publishing = false
+                    message = "Another phone took over monitoring."
+                    return
+                }
                 if text.contains("(409)") {
                     uploadSeq += 1
                     pendingSnapshot?.seq = uploadSeq
@@ -549,6 +578,15 @@ final class FamilyRelay: ObservableObject {
         if type == "revoked" {
             dropSocket(); clearRemote()
             self.message = "Family access ended."
+            return
+        }
+        if type == "host" {
+            let stream = raw["stream_id"] as? String ?? ""
+            let who = FamilyRelation(rawValue: raw["host_relation"] as? String ?? "")?.title ?? "Family"
+            if publishing, !stream.isEmpty, stream != publishStream {
+                publishing = false
+                message = "\(who) took over monitoring on another phone."
+            }
             return
         }
         if type == "ack" {
@@ -1081,7 +1119,7 @@ struct FamilySharingView: View {
     private var ownerControls: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Share with family").font(.headline)
-            Text("This phone stays with the baby. Family open Nivvi on theirs.")
+            Text("Whoever is with \(childName.isEmpty ? "the baby" : childName) starts monitoring. Everyone else watches.")
                 .font(.subheadline)
                 .foregroundStyle(muted)
             labeled("This phone is") {
@@ -1095,19 +1133,27 @@ struct FamilySharingView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             Toggle("I can share these readings", isOn: $consent)
-            if relay.isCarer && !relay.isOwner {
+            if relay.canPublish || relay.families.isEmpty {
                 Button {
                     relay.perform { try await relay.enable(label: label) }
                 } label: {
-                    Text("I’m with the baby")
+                    Text(relay.publishing
+                         ? "Monitoring on this phone"
+                         : (relay.remote?.snapshot != nil
+                            ? "Take over monitoring"
+                            : "I’m with \(childName.isEmpty ? "the baby" : childName) — start monitoring"))
                         .font(.headline)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 12)
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(accent)
-                .disabled(!consent || relay.busy)
-            } else {
+                .disabled(!consent || relay.busy || relay.publishing)
+                if relay.publishing {
+                    Button("Stop monitoring") { relay.perform { try await relay.releaseHost() } }
+                }
+            }
+            if relay.isOwner || relay.families.isEmpty {
                 VStack(alignment: .leading, spacing: 14) {
                     labeled("Who are they?") {
                         Picker("Relationship", selection: $inviteRelation) {
@@ -1161,13 +1207,15 @@ struct FamilySharingView: View {
                             .font(.subheadline.weight(.semibold))
                         Text(member.email).font(.caption).foregroundStyle(muted)
                         Spacer()
-                        Button("Remove", role: .destructive) { relay.perform { try await relay.revoke(member) } }
-                            .font(.caption)
+                        if relay.isOwner {
+                            Button("Remove", role: .destructive) { relay.perform { try await relay.revoke(member) } }
+                                .font(.caption)
+                        }
                     }
                 }
             }
             if relay.isOwner {
-                Button("Stop sharing", role: .destructive) { confirmStop = true }
+                Button("Stop sharing with everyone", role: .destructive) { confirmStop = true }
             }
         }
     }
@@ -1211,8 +1259,14 @@ struct FamilySharingView: View {
                         .font(.caption)
                         .foregroundStyle(muted)
                     if relay.linkState == .live && snapshot.alarm != "none" {
-                        Text(snapshot.alarm == "sensor" ? "Check the sensor on the other phone." : "Alert on the other phone.")
-                            .foregroundStyle(Color.orange)
+                        if snapshot.acknowledged == true {
+                            let who = FamilyRelation(rawValue: snapshot.acknowledged_by ?? "")?.title ?? "family"
+                            Text("Heard it by \(who). Alarm stays on until a fresh in-range reading.")
+                                .foregroundStyle(Color.orange)
+                        } else {
+                            Text(snapshot.alarm == "sensor" ? "Check the sensor on the other phone." : "Alert on the other phone.")
+                                .foregroundStyle(Color.orange)
+                        }
                     }
                 } else {
                     Text("Waiting for the other phone to share.")

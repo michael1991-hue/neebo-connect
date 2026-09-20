@@ -124,6 +124,9 @@ def initialize():
             "ALTER TABLE invites ADD COLUMN role TEXT NOT NULL DEFAULT 'watcher'",
             "ALTER TABLE members ADD COLUMN relation TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE invites ADD COLUMN relation TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE families ADD COLUMN host_user TEXT",
+            "ALTER TABLE families ADD COLUMN host_stream TEXT",
+            "ALTER TABLE families ADD COLUMN host_relation TEXT",
         ):
             try:
                 c.execute(stmt)
@@ -248,6 +251,10 @@ class Address(BaseModel):
     relation: str = Field(default="", max_length=20)
 
 
+class HostClaim(BaseModel):
+    relation: str = Field(default="", max_length=20)
+
+
 class Family(BaseModel):
     label: str = Field(min_length=1, max_length=40)
 
@@ -280,6 +287,7 @@ class Snapshot(BaseModel):
     activity_secret: str | None = Field(default=None, max_length=80)
     place: str | None = Field(default=None, pattern="^(home|carer|exploring)$")
     host_relation: str | None = Field(default=None, pattern="^(mum|dad|nan|auntie|uncle|carer)$")
+    acknowledged_by: str | None = Field(default=None, max_length=20)
 
 
 class Device(BaseModel):
@@ -431,7 +439,8 @@ def families(user=Depends(require_user)):
     with db() as c:
         return [dict(r) for r in c.execute(
             """SELECT id,label,owner,
-                      CASE WHEN owner=? THEN 'owner' ELSE COALESCE((SELECT role FROM members WHERE family=families.id AND user_id=?),'watcher') END AS role
+                      CASE WHEN owner=? THEN 'owner' ELSE COALESCE((SELECT role FROM members WHERE family=families.id AND user_id=?),'watcher') END AS role,
+                      host_relation
                FROM families WHERE owner=? OR id IN(SELECT family FROM members WHERE user_id=?)""",
             (user["id"], user["id"], user["id"], user["id"]))]
 
@@ -439,7 +448,7 @@ def families(user=Depends(require_user)):
 @app.post("/families")
 def create_family(body: Family, user=Depends(require_user)):
     with db() as c:
-        c.execute("INSERT OR IGNORE INTO families VALUES(?,?,?)", (secrets.token_hex(16), user["id"], body.label.strip() or "Family"))
+        c.execute("INSERT OR IGNORE INTO families(id, owner, label) VALUES(?,?,?)", (secrets.token_hex(16), user["id"], body.label.strip() or "Family"))
         return dict(c.execute("SELECT id,label,owner FROM families WHERE owner=?", (user["id"],)).fetchone())
 
 
@@ -449,6 +458,31 @@ def stop_sharing(family: str, user=Depends(require_user)):
         owner(c, family, user)
         c.execute("DELETE FROM families WHERE id=?", (family,))
     HUB.drop_family(family)
+    return {"ok": True}
+
+
+@app.post("/families/{family}/host")
+def claim_host(family: str, body: HostClaim, user=Depends(require_user)):
+    relation = (body.relation or "").strip().lower()
+    if relation and relation not in {"mum", "dad", "nan", "auntie", "uncle", "carer"}:
+        raise HTTPException(400, "Choose Mum, Dad, Nan, Auntie, Uncle or Carer.")
+    stream = secrets.token_hex(16)
+    with db() as c:
+        publisher(c, family, user)
+        c.execute("UPDATE families SET host_user=?, host_stream=?, host_relation=? WHERE id=?", (user["id"], stream, relation, family))
+    HUB.emit(family, {"type": "host", "stream_id": stream, "host_relation": relation, "host_user": user["id"]})
+    return {"ok": True, "stream_id": stream, "host_relation": relation}
+
+
+@app.delete("/families/{family}/host")
+def release_host(family: str, user=Depends(require_user)):
+    with db() as c:
+        publisher(c, family, user)
+        row = c.execute("SELECT host_user FROM families WHERE id=?", (family,)).fetchone()
+        if row and row["host_user"] and row["host_user"] != user["id"]:
+            raise HTTPException(409, "Another phone is monitoring.")
+        c.execute("UPDATE families SET host_user=NULL, host_stream=NULL WHERE id=?", (family,))
+    HUB.emit(family, {"type": "host", "stream_id": "", "host_relation": "", "host_user": ""})
     return {"ok": True}
 
 
@@ -538,6 +572,12 @@ def publish(family: str, body: Snapshot, user=Depends(require_user)):
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
         publisher(c, family, user)
+        host = c.execute("SELECT host_user, host_stream FROM families WHERE id=?", (family,)).fetchone()
+        if host and host["host_stream"] and host["host_user"] != user["id"] and body.stream_id != host["host_stream"]:
+            raise HTTPException(409, "Another phone is monitoring. Take over from Family sharing.")
+        if host and (not host["host_user"] or host["host_user"] == user["id"]):
+            stream = body.stream_id or host["host_stream"]
+            c.execute("UPDATE families SET host_user=?, host_stream=COALESCE(?, host_stream) WHERE id=?", (user["id"], stream, family))
         previous = c.execute("SELECT payload FROM latest WHERE family=?", (family,)).fetchone()
         old = json.loads(previous[0]) if previous else {}
         old_seq = int(old.get("seq") or 0)
@@ -574,6 +614,9 @@ def acknowledge_alarm(family: str, user=Depends(require_user)):
             raise HTTPException(404, "No live reading to acknowledge")
         payload = json.loads(row[0])
         payload["acknowledged"] = True
+        who = c.execute("SELECT host_relation FROM families WHERE id=?", (family,)).fetchone()
+        member_row = c.execute("SELECT relation FROM members WHERE family=? AND user_id=?", (family, user["id"])).fetchone()
+        payload["acknowledged_by"] = (member_row["relation"] if member_row and member_row["relation"] else None) or (who["host_relation"] if who else None) or ""
         c.execute("INSERT OR REPLACE INTO latest VALUES(?,?,?)", (family, json.dumps(payload), time.time()))
     live = {key: value for key, value in payload.items() if key != "history"}
     live["type"] = "ack"
@@ -595,8 +638,8 @@ def latest(family: str, user=Depends(require_user)):
     o2_at = data.get("oxygen_at") or data.get("captured")
     hr_age = now - hr_at if hr_at is not None else None
     o2_age = now - o2_at if o2_at is not None else None
-    hr_fresh = data.get("heart_rate") is not None and hr_age is not None and -5 <= hr_age <= 30
-    o2_fresh = data.get("oxygen") is not None and o2_age is not None and -5 <= o2_age <= 30
+    hr_fresh = data.get("heart_rate") is not None and hr_age is not None and -5 <= hr_age <= 45
+    o2_fresh = data.get("oxygen") is not None and o2_age is not None and -5 <= o2_age <= 45
     age = hr_age if hr_age is not None else now - data["captured"]
     return {
         "fresh": hr_fresh,

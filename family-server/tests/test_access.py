@@ -81,7 +81,7 @@ def test_stale_ordering_and_recovery(client):
     assert client.put(path, headers=owner, json=snapshot(hr=None)).status_code == 200
     with relay.db() as c:
         assert c.execute("SELECT kind FROM pushes").fetchone()[0] == "attention"
-        data = snapshot(captured=now-40)
+        data = snapshot(captured=now-50)
         import json
         c.execute("UPDATE latest SET payload=?", (json.dumps(data),))
     assert client.get(path, headers=owner).json()["fresh"] is False
@@ -176,4 +176,43 @@ def test_invite_stores_family_relation(client):
     roles = {row["email"]: row for row in people}
     assert roles["carer@example.com"]["role"] == "carer"
     assert roles["carer@example.com"]["relation"] == "carer"
+
+
+def test_monitoring_handover_is_exclusive(client):
+    owner, _ = account(client, "mum@example.com")
+    carer, _ = account(client, "nan@example.com")
+    family = group(client, owner)
+    code = client.post(
+        f"/families/{family}/invites",
+        headers=owner,
+        json={"email": "nan@example.com", "relation": "carer"},
+    ).json()["code"]
+    assert client.post("/invites/accept", headers=carer, json={"code": code}).status_code == 200
+    first = client.post(f"/families/{family}/host", headers=owner, json={"relation": "mum"}).json()
+    assert first["stream_id"]
+    packed = snapshot()
+    packed["stream_id"] = first["stream_id"]
+    packed["seq"] = 1
+    assert client.put(f"/families/{family}/latest", headers=owner, json=packed).status_code == 200
+    second = client.post(f"/families/{family}/host", headers=carer, json={"relation": "nan"}).json()
+    stale = snapshot()
+    stale["stream_id"] = first["stream_id"]
+    stale["seq"] = 2
+    assert client.put(f"/families/{family}/latest", headers=owner, json=stale).status_code == 409
+    live = snapshot()
+    live["stream_id"] = second["stream_id"]
+    live["seq"] = 1
+    assert client.put(f"/families/{family}/latest", headers=carer, json=live).status_code == 200
+    assert client.post(f"/families/{family}/ack", headers=owner).status_code == 200
+    remote = client.get(f"/families/{family}/latest", headers=owner).json()["snapshot"]
+    assert remote["acknowledged"] is True
+    watcher, _ = account(client, "auntie@example.com")
+    watch_code = client.post(
+        f"/families/{family}/invites",
+        headers=owner,
+        json={"email": "auntie@example.com", "relation": "auntie"},
+    ).json()["code"]
+    assert client.post("/invites/accept", headers=watcher, json={"code": watch_code}).status_code == 200
+    assert client.post(f"/families/{family}/host", headers=watcher, json={"relation": "auntie"}).status_code == 404
+
 
