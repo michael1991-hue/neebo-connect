@@ -1959,8 +1959,16 @@ struct ContentView: View {
     private func eventLabel(_ kind: String) -> String {
         kind == "critical" ? "Critical" : kind.capitalized
     }
-    private var watchingFamily: Bool { family.viewingRemote }
-    private var watchingWifi: Bool { wifi.following && !family.viewingRemote }
+    private var localHeartLive: Bool {
+        !monitor.staleHeartRateDetected && (
+            monitor.connection == .receiving
+                || monitor.pulseOximeterRate != nil
+                || monitor.verifiedHeartRate != nil
+                || monitor.customHeartRateCandidate != nil
+        )
+    }
+    private var watchingFamily: Bool { family.viewingRemote && !localHeartLive }
+    private var watchingWifi: Bool { wifi.following && !watchingFamily && !localHeartLive }
     private var heartRateDisplay: String {
         if watchingFamily {
             if let remote = family.liveHeartRate { return remote }
@@ -2007,6 +2015,9 @@ struct ContentView: View {
     }
     private var statusCaption: String {
         if monitor.wearableCharging && monitor.connection != .receiving { return "Charging" }
+        if localHeartLive && family.signedIn && !family.publishing {
+            return "\(monitor.connection.label) · not sharing with family yet"
+        }
         if watchingFamily { return family.statusLine }
         if watchingWifi { return wifi.remoteFresh ? "Shared over Wi‑Fi" : wifi.status }
         return monitor.connection.label
