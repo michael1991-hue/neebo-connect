@@ -279,6 +279,7 @@ class Snapshot(BaseModel):
     acknowledged: bool = False
     activity_secret: str | None = Field(default=None, max_length=80)
     place: str | None = Field(default=None, pattern="^(home|carer|exploring)$")
+    host_relation: str | None = Field(default=None, pattern="^(mum|dad|nan|auntie|uncle|carer)$")
 
 
 class Device(BaseModel):

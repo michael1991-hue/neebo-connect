@@ -424,7 +424,11 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             oxygen_at: ox == nil ? nil : lastOxygenUpdate?.timeIntervalSince1970,
             acknowledged: alarmAcknowledged,
             activity_secret: LiveActivityPush.secret,
-            place: UserDefaults.standard.string(forKey: "nivvi.place")
+            place: UserDefaults.standard.string(forKey: "nivvi.place"),
+            host_relation: {
+                let value = UserDefaults.standard.string(forKey: "nivvi.host.relation") ?? ""
+                return value.isEmpty ? nil : value
+            }()
         )
         Task { @MainActor in FamilyRelay.shared.capture(snapshot) }
         pushLocalShare()
@@ -1886,6 +1890,7 @@ struct ContentView: View {
     @AppStorage("nivvi.profile.avatarSymbol") private var avatarSymbol = "star.fill"
     @AppStorage("nivvi.profile.avatarColor") private var avatarColor = "teal"
     @AppStorage("nivvi.place") private var placeRaw = NurseryPlace.home.rawValue
+    @AppStorage("nivvi.host.relation") private var hostRelation = ""
     @AppStorage("nivvi.atmosphere.enabled") private var atmosphereEnabled = true
     @AppStorage("nivvi.nursery.acknowledged") private var nurseryAcknowledged = false
     @State private var skyOffset: CGFloat = 0
@@ -2415,7 +2420,7 @@ struct ContentView: View {
     }
     private var shareAlarmDetail: String {
         if monitor.shareAlertActive && !monitor.alarmActive {
-            return "From the phone with the baby on this Wi‑Fi. Limits are set on that phone. Check the child."
+            return "Shared from \(FamilyRelation(rawValue: wifi.latest?.hostRelation ?? "")?.title ?? "family") on this Wi‑Fi. Limits are set on that phone. Check the child."
         }
         return monitor.staleHeartRateDetected ? (monitor.alarmAcknowledged ? "Acknowledged · repeated reading still needs checking." : "Repeated heart-rate value detected. Check sensor contact and your child.") : (monitor.alarmAcknowledged ? "Acknowledged · waiting for a fresh in-range reading." : "Check your child and follow their care plan.")
     }
@@ -2488,6 +2493,23 @@ struct ContentView: View {
                 .accessibilityAddTraits(currentPlace == option ? [.isSelected] : [])
             }
         }
+        hostPicker
+    }
+    private var hostPicker: some View {
+        HStack {
+            Text("This phone is").font(.caption.weight(.semibold)).foregroundStyle(muted)
+            Spacer()
+            Picker("This phone is", selection: $hostRelation) {
+                Text("Choose…").tag("")
+                ForEach(FamilyRelation.allCases) { relation in
+                    Text(relation.title).tag(relation.rawValue)
+                }
+            }
+            .pickerStyle(.menu)
+            .tint(accentMint)
+        }
+        .padding(.horizontal, 4)
+        .accessibilityLabel("Who is using this phone")
     }
     private func applyPlace() {
         switch currentPlace {
@@ -2524,6 +2546,7 @@ struct ContentView: View {
         }
     }
     private var liveChartCaption: String {
+        if wifi.remoteFresh { return "Live · Wi‑Fi" }
         if family.viewingRemote {
             switch family.linkState {
             case .live: return "Live"
@@ -2533,7 +2556,7 @@ struct ContentView: View {
             case .idle: return "Family share"
             }
         }
-        if wifi.following { return wifi.remoteFresh ? "Live · Wi‑Fi" : "Wi‑Fi stale · not live" }
+        if wifi.following { return "Wi‑Fi stale · not live" }
         if monitor.staleHeartRateDetected { return "Not live" }
         return "Live"
     }
@@ -2601,7 +2624,7 @@ struct ContentView: View {
                         .foregroundStyle((family.viewingRemote && family.linkState != .live) || (monitor.staleHeartRateDetected && !mirroringNursery) ? coral : accentMint)
                 }
                 if wifi.remoteFresh {
-                    Text("From the phone with the baby on this Wi‑Fi").font(.caption).foregroundStyle(accentMint)
+                    Text(FamilyRelation.sharedFrom(wifi.latest?.hostRelation, wifi: true)).font(.caption).foregroundStyle(accentMint)
                 } else if family.viewingRemote {
                     Text(family.statusLine).font(.caption).foregroundStyle(family.linkState == .live ? accentMint : coral)
                 }

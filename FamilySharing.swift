@@ -28,6 +28,13 @@ enum FamilyRelation: String, CaseIterable, Identifiable {
             ? "Their phone can be the one with the baby."
             : "They watch live readings on their iPhone."
     }
+    static func sharedFrom(_ raw: String?, wifi: Bool) -> String {
+        let who = FamilyRelation(rawValue: raw ?? "")?.title
+        if let who {
+            return wifi ? "Shared from \(who) on this Wi‑Fi" : "Shared from \(who)"
+        }
+        return wifi ? "Shared from family on this Wi‑Fi" : "Shared from family"
+    }
 }
 struct FamilySample: Codable, Equatable {
     var t: Double
@@ -51,12 +58,13 @@ struct FamilySnapshot: Codable {
     var acknowledged: Bool?
     var activity_secret: String?
     var place: String?
+    var host_relation: String?
 
     enum CodingKeys: String, CodingKey {
-        case captured, heart_rate, oxygen, heart_rate_at, oxygen_at, source, alarm, connection, history, stream_id, seq, kind, server_received, acknowledged, activity_secret, place
+        case captured, heart_rate, oxygen, heart_rate_at, oxygen_at, source, alarm, connection, history, stream_id, seq, kind, server_received, acknowledged, activity_secret, place, host_relation
     }
 
-    init(captured: Double, heart_rate: Double?, oxygen: Double?, source: String, alarm: String, connection: String, history: [FamilySample] = [], heart_rate_at: Double? = nil, oxygen_at: Double? = nil, stream_id: String? = nil, seq: Int? = nil, kind: String? = "live", acknowledged: Bool = false, activity_secret: String? = nil, place: String? = nil) {
+    init(captured: Double, heart_rate: Double?, oxygen: Double?, source: String, alarm: String, connection: String, history: [FamilySample] = [], heart_rate_at: Double? = nil, oxygen_at: Double? = nil, stream_id: String? = nil, seq: Int? = nil, kind: String? = "live", acknowledged: Bool = false, activity_secret: String? = nil, place: String? = nil, host_relation: String? = nil) {
         self.captured = captured
         self.heart_rate = heart_rate
         self.oxygen = oxygen
@@ -72,6 +80,7 @@ struct FamilySnapshot: Codable {
         self.acknowledged = acknowledged
         self.activity_secret = activity_secret
         self.place = place
+        self.host_relation = host_relation
     }
 
     init(from decoder: Decoder) throws {
@@ -92,6 +101,7 @@ struct FamilySnapshot: Codable {
         acknowledged = try box.decodeIfPresent(Bool.self, forKey: .acknowledged)
         activity_secret = try box.decodeIfPresent(String.self, forKey: .activity_secret)
         place = try box.decodeIfPresent(String.self, forKey: .place)
+        host_relation = try box.decodeIfPresent(String.self, forKey: .host_relation)
     }
 }
 struct RemoteReading: Codable {
@@ -194,8 +204,8 @@ final class FamilyRelay: ObservableObject {
     }
     var statusLine: String {
         switch linkState {
-        case .live: return "From the phone with the baby · live"
-        case .hostStale: return "The baby’s phone reading is stale · not live"
+        case .live: return FamilyRelation.sharedFrom(remote?.snapshot?.host_relation, wifi: false) + " · live"
+        case .hostStale: return "Shared reading is stale · not live"
         case .sensorDisconnected: return "Sensor on the baby’s phone disconnected"
         case .viewerOffline: return "This phone lost the family link · not live"
         case .idle: return "Family sharing"
@@ -665,6 +675,7 @@ struct FamilySharingView: View {
     @State private var inviteRelation: FamilyRelation = .mum
     @State private var joinCode = ""
     @AppStorage("nivvi.profile.name") private var childName = ""
+    @AppStorage("nivvi.host.relation") private var hostRelation = ""
     @State private var consent = false
     @State private var confirmDelete = false
     @State private var confirmStop = false
@@ -1089,6 +1100,16 @@ struct FamilySharingView: View {
             Text("This phone stays with the baby. Family open Nivvi on theirs.")
                 .font(.subheadline)
                 .foregroundStyle(muted)
+            labeled("This phone is") {
+                Picker("This phone is", selection: $hostRelation) {
+                    Text("Choose…").tag("")
+                    ForEach(FamilyRelation.allCases) { relation in
+                        Text(relation.title).tag(relation.rawValue)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
             Toggle("I can share these readings", isOn: $consent)
             if relay.isCarer && !relay.isOwner {
                 Button {
