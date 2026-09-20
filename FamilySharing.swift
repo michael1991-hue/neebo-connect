@@ -172,9 +172,9 @@ final class FamilyRelay: ObservableObject {
     }
     var statusLine: String {
         switch linkState {
-        case .live: return "From the nursery iPhone · live"
-        case .hostStale: return "Nursery reading is stale · not live"
-        case .sensorDisconnected: return "Nursery sensor disconnected"
+        case .live: return "From the phone with the baby · live"
+        case .hostStale: return "The baby’s phone reading is stale · not live"
+        case .sensorDisconnected: return "Sensor on the baby’s phone disconnected"
         case .viewerOffline: return "This phone lost the family link · not live"
         case .idle: return "Family sharing"
         }
@@ -256,7 +256,7 @@ final class FamilyRelay: ObservableObject {
             lastHistoryUpload = nil
             publishStream = UUID().uuidString
             uploadSeq = 0
-            message = "This phone is the nursery while you have the baby. Parents see live numbers on theirs."
+            message = "This phone is with the baby. Parents see live numbers on theirs."
             return
         }
         let _: SharedFamily = try await request("families", method: "POST", body: body(["label": label]))
@@ -276,7 +276,7 @@ final class FamilyRelay: ObservableObject {
             message = "Sharing stopped. Online snapshot, invitations and member access removed."
         } else {
             try await refreshFamilies()
-            message = "This phone is no longer the nursery. Parents keep the family."
+            message = "This phone is no longer with the baby. Parents keep the family."
         }
     }
     func invite(email: String, role: String = "watcher") async throws {
@@ -284,7 +284,7 @@ final class FamilyRelay: ObservableObject {
         let reply: FamilyReply = try await request("families/\(family.id)/invites", method: "POST", body: body(["email": email, "role": role]))
         invitation = reply.code
         message = role == "carer"
-            ? "Give this code to Nan. She can be the nursery phone when she has the baby."
+            ? "Give this code to Nan. Her iPhone can be the one with the baby."
             : "Give this private code to that person. It expires in 24 hours and only their verified email can accept it."
     }
     func join(code: String) async throws {
@@ -1017,15 +1017,15 @@ struct FamilySharingView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Works on this Wi‑Fi tonight").font(.headline)
             Text("There is no Apple shortcut and no online server yet. Two iPhones on the same home Wi‑Fi can still share live numbers: one stays in the room on Bluetooth, the other follows downstairs.")
-            Toggle("Share from the nursery iPhone", isOn: Binding(get: { wifi.hosting }, set: { wifi.setHosting($0) }))
+            Toggle("Share from this iPhone", isOn: Binding(get: { wifi.hosting }, set: { wifi.setHosting($0) }))
             if wifi.hosting {
                 Text(wifi.pin).font(.system(size: 36, weight: .bold, design: .rounded)).monospacedDigit()
-                Text("Do not type on this phone. Open Nivvi on the downstairs iPhone and enter this code.")
+                Text("Do not type on this phone. Open Nivvi on the other iPhone and enter this code.")
             }
-            TextField("4-digit code from nursery", text: Binding(get: { wifi.joinPin }, set: { wifi.setJoinPin($0) }))
+            TextField("4-digit code from the other iPhone", text: Binding(get: { wifi.joinPin }, set: { wifi.setJoinPin($0) }))
                 .keyboardType(.numberPad)
                 .font(.title3.monospacedDigit())
-            Toggle("Follow the nursery iPhone", isOn: Binding(get: { wifi.following }, set: { wifi.setFollowing($0) }))
+            Toggle("Follow the phone with the baby", isOn: Binding(get: { wifi.following }, set: { wifi.setFollowing($0) }))
             Text(wifi.status).font(.caption)
             Text("Seeing it from another house needs a paid always-on server. iCloud Family Sharing does not copy Nivvi readings.")
                 .font(.caption)
@@ -1034,10 +1034,10 @@ struct FamilySharingView: View {
 
     private var ownerControls: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Nursery iPhone").font(.headline)
+            Text("Phone with the baby").font(.headline)
             Text("This phone stays on Bluetooth and sends live numbers plus today’s history to invited emails.").font(.caption)
             Toggle("I have authority to share these readings", isOn: $consent)
-            Button(relay.publishing ? "This phone is the nursery" : (relay.isCarer ? "I’m looking after the baby" : "Start sharing")) { relay.perform { try await relay.enable(label: label) } }.disabled(!consent || relay.publishing)
+            Button(relay.publishing ? "This phone is with the baby" : (relay.isCarer ? "I’m looking after the baby" : "Start sharing")) { relay.perform { try await relay.enable(label: label) } }.disabled(!consent || relay.publishing)
             if relay.families.contains(where: { $0.owner == relay.userID }) {
                 TextField("Family member’s email", text: $inviteEmail).keyboardType(.emailAddress).textInputAutocapitalization(.never).autocorrectionDisabled()
                 Button("Invite to watch") { relay.perform { try await relay.invite(email: inviteEmail, role: "watcher") } }

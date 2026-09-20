@@ -129,19 +129,19 @@ enum FamilyLivePolicy {
 struct SharedAlertLog {
     static func event(previous: String, next: String, wasAcknowledged: Bool, acknowledged: Bool) -> (kind: String, title: String, detail: String)? {
         if previous == "none", next == "high" {
-            return ("critical", "High heart-rate alert", "From the nursery iPhone. Limits are set on that phone. Saved on this iPhone.")
+            return ("critical", "High heart-rate alert", "From the phone with the baby. Limits are set on that phone. Saved on this iPhone.")
         }
         if previous == "none", next == "low" {
-            return ("critical", "Low heart-rate alert", "From the nursery iPhone. Limits are set on that phone. Saved on this iPhone.")
+            return ("critical", "Low heart-rate alert", "From the phone with the baby. Limits are set on that phone. Saved on this iPhone.")
         }
         if previous == "none", next == "sensor" {
-            return ("measurement", "Check sensor data", "The nursery iPhone reported no fresh heart-rate data. Saved on this iPhone.")
+            return ("measurement", "Check sensor data", "The phone with the baby reported no fresh heart-rate data. Saved on this iPhone.")
         }
         if (previous == "high" || previous == "low"), next == "none" {
-            return ("critical", "Heart rate back to normal", "Nursery reading returned within the configured limits. Saved on this iPhone.")
+            return ("critical", "Heart rate back to normal", "Reading on the baby’s phone returned within the configured limits. Saved on this iPhone.")
         }
         if !wasAcknowledged, acknowledged, next != "none" {
-            return ("critical", "Alarm acknowledged", "Heard it was tapped. The nursery alert stays active until a fresh in-range reading. Saved on this iPhone.")
+            return ("critical", "Alarm acknowledged", "Heard it was tapped. The alert on the baby’s phone stays active until a fresh in-range reading. Saved on this iPhone.")
         }
         return nil
     }

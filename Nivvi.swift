@@ -850,7 +850,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         alarmAcknowledged = false
         notify(
             title: sensor ? "Check sensor data" : attentionTitle,
-            body: sensor ? "The nursery iPhone reports no fresh heart-rate data. Check the child and the wearable." : "The nursery iPhone has a heart-rate alert. Check \(displayNameForAlert) and follow the care plan.",
+            body: sensor ? "The phone with the baby reports no fresh heart-rate data. Check the child and the wearable." : "The phone with the baby has a heart-rate alert. Check \(displayNameForAlert) and follow the care plan.",
             identifier: "nivvi-wifi-share-alarm",
             soundName: sensor ? "NivviSensor.wav" : selectedSiren.notificationFile
         )
@@ -1714,7 +1714,7 @@ struct NurserySetupView: View {
                 .frame(maxWidth: .infinity)
             }
             .padding(24)
-            .navigationTitle("Nursery setup")
+            .navigationTitle("Room setup")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Later") { dismiss() } } }
         }
@@ -2415,7 +2415,7 @@ struct ContentView: View {
     }
     private var shareAlarmDetail: String {
         if monitor.shareAlertActive && !monitor.alarmActive {
-            return "From the nursery iPhone on this Wi‑Fi. Limits are set on that phone. Check the child."
+            return "From the phone with the baby on this Wi‑Fi. Limits are set on that phone. Check the child."
         }
         return monitor.staleHeartRateDetected ? (monitor.alarmAcknowledged ? "Acknowledged · repeated reading still needs checking." : "Repeated heart-rate value detected. Check sensor contact and your child.") : (monitor.alarmAcknowledged ? "Acknowledged · waiting for a fresh in-range reading." : "Check your child and follow their care plan.")
     }
@@ -2439,7 +2439,7 @@ struct ContentView: View {
                 Text(nurseryHint)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(coral)
-                Button("Nursery setup") { showNursery = true }
+                Button("Room setup") { showNursery = true }
                     .font(.caption.weight(.semibold))
             }
             HStack(spacing: 12) {
@@ -2601,7 +2601,7 @@ struct ContentView: View {
                         .foregroundStyle((family.viewingRemote && family.linkState != .live) || (monitor.staleHeartRateDetected && !mirroringNursery) ? coral : accentMint)
                 }
                 if wifi.remoteFresh {
-                    Text("From the nursery iPhone on this Wi‑Fi").font(.caption).foregroundStyle(accentMint)
+                    Text("From the phone with the baby on this Wi‑Fi").font(.caption).foregroundStyle(accentMint)
                 } else if family.viewingRemote {
                     Text(family.statusLine).font(.caption).foregroundStyle(family.linkState == .live ? accentMint : coral)
                 }
@@ -2663,14 +2663,14 @@ struct ContentView: View {
                     .accessibilityLabel("Add note")
             }
             if displayedHistory.contains(where: { $0.source == "family-share" || $0.source == "wifi-share" }) {
-                Text("Includes readings this iPhone received from the nursery phone. About one card every 30 seconds, same as nursery History. They stay here for 30 days.")
+                Text("Includes readings this iPhone received from the phone with the baby. About one card every 30 seconds, same as that phone’s History. They stay here for 30 days.")
                     .font(.caption).foregroundStyle(muted)
             }
             if displayedHistory.isEmpty {
                 panel {
                     Text("No readings this day.")
                     if family.viewingRemote || wifi.following {
-                        Text("Shared readings are saved on this iPhone while you follow the nursery phone. They stay here for 30 days.")
+                        Text("Shared readings are saved on this iPhone while you follow the phone with the baby. They stay here for 30 days.")
                             .font(.caption).foregroundStyle(muted)
                     }
                 }
@@ -2877,6 +2877,21 @@ struct ContentView: View {
             Text("\(displayName)\(ageText.isEmpty ? "" : " · \(ageText)")").font(.headline)
             Text("Stored on this iPhone by default.").font(.caption).foregroundStyle(muted)
         } }
+        panel {
+            Button { showFamily = true } label: { Label("Family sharing", systemImage: "person.2.fill") }
+            Text("Watch live readings on another iPhone — at home, Nan’s, or when you’re out.")
+                .font(.caption)
+                .foregroundStyle(muted)
+        }.sheet(isPresented: $showFamily) {
+            NavigationStack {
+                FamilySharingView()
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { showFamily = false }
+                        }
+                    }
+            }
+        }
         panel { VStack(alignment: .leading, spacing: 10) {
             Text("Sky").font(.headline)
             Toggle("Animated wallpaper", isOn: $atmosphereEnabled).tint(switchOn)
@@ -2893,8 +2908,8 @@ struct ContentView: View {
                 TextField("Downstairs code", text: Binding(get: { wifi.joinPin }, set: { wifi.setJoinPin($0) }))
                     .keyboardType(.numberPad)
                     .font(.title3.monospacedDigit())
-                Toggle("Follow the nursery iPhone", isOn: Binding(get: { wifi.following }, set: { wifi.setFollowing($0) })).tint(switchOn)
-                Toggle("Play nursery alerts here", isOn: $wifi.playAlerts).tint(switchOn)
+                Toggle("Follow the phone with the baby", isOn: Binding(get: { wifi.following }, set: { wifi.setFollowing($0) })).tint(switchOn)
+                Toggle("Play those alerts here", isOn: $wifi.playAlerts).tint(switchOn)
                 Text(wifi.status).font(.caption).foregroundStyle(muted)
                 Text("Use the same home Wi‑Fi, not Guest. Turn Low Power Mode off on both phones. Leave Nivvi in the app switcher — do not swipe it away. Lock-screen numbers while the downstairs phone is locked need internet so Apple can push Live Activity updates.")
                     .font(.caption).foregroundStyle(muted)
@@ -2903,7 +2918,7 @@ struct ContentView: View {
         panel { VStack(alignment: .leading, spacing: 12) {
             Text("Heart-rate alerts").font(.headline)
             if wifi.following {
-                Text("You are following the nursery iPhone. Change Low / High limits on that phone, not here.")
+                Text("You are following the phone with the baby. Change Low / High limits on that phone, not here.")
                     .font(.caption).foregroundStyle(muted)
             }
             HStack { Label("Low", systemImage: "arrow.down.heart"); Spacer(); Text(monitor.alarmSettings.lowEnabled ? monitor.alarmSettings.lowThreshold.map { "Below \($0) bpm" } ?? "Set a limit" : "Off") }.foregroundStyle(coral)
@@ -2989,19 +3004,6 @@ struct ContentView: View {
             Text("Before public release, the operator name, monitored support address, final privacy notice and jurisdiction-specific terms must be completed in the support documentation.").font(.caption).foregroundStyle(muted)
 
         }.padding(.top, 12) } }
-        panel {
-            Button { showFamily = true } label: { Label("Family sharing", systemImage: "person.2.fill") }
-            Text("Invite family members to view shared readings securely.").font(.caption)
-        }.sheet(isPresented: $showFamily) {
-            NavigationStack {
-                FamilySharingView()
-                    .toolbar {
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("Done") { showFamily = false }
-                        }
-                    }
-            }
-        }
         panel { DisclosureGroup("Connection and support") { VStack(alignment: .leading, spacing: 12) {
             Text("Keeps the Bluetooth session active and attempts reconnection after signal loss. Tap Disconnect to end the session.").font(.caption)
             Text("Background readings require device notifications. Keep Nivvi open if the wearable only responds to reads. Force-quitting the app, Bluetooth being off, an empty battery or iOS restrictions can interrupt monitoring.").font(.caption).foregroundStyle(muted)
@@ -3041,7 +3043,7 @@ struct ContentView: View {
             .background(cardFill).clipShape(RoundedRectangle(cornerRadius: 22))
     }
     private func readingAge(_ date: Date?, now: Date) -> String {
-        guard let date else { return mirroringNursery ? "Waiting for nursery" : "No reading received" }
+        guard let date else { return mirroringNursery ? "Waiting for the baby’s phone" : "No reading received" }
         let seconds = Int(now.timeIntervalSince(date))
         if mirroringNursery {
             guard seconds >= 0 else { return "Updated just now" }

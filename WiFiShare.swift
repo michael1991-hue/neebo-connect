@@ -138,7 +138,7 @@ final class WiFiRelay: ObservableObject {
         if on { UserDefaults.standard.set(false, forKey: "nivvi.wifi.host") }
         if on {
             guard joinPin.count == 4 else {
-                status = "Type the 4-digit code from the nursery iPhone first."
+                status = "Type the 4-digit code from the phone with the baby first."
                 following = false
                 wantFollow = false
                 UserDefaults.standard.set(false, forKey: "nivvi.wifi.follow")
@@ -232,7 +232,7 @@ final class WiFiRelay: ObservableObject {
             if browser == nil { startBrowser() }
             let now = Date()
             if WiFiSharePolicy.shouldDrop(now: now, lastPacket: lastPacketAt, connectedAt: viewerStartedAt) {
-                dropViewer(reason: "Lost the nursery iPhone. Reconnecting…")
+                dropViewer(reason: "Lost the phone with the baby. Reconnecting…")
             }
             if viewer == nil { reconnectViewer() }
         }
@@ -336,7 +336,7 @@ final class WiFiRelay: ObservableObject {
     private func startViewer() {
         stopHost()
         following = true
-        status = "Looking for the nursery iPhone on this Wi‑Fi…"
+        status = "Looking for the phone with the baby on this Wi‑Fi…"
         startBrowser()
         reconnectViewer()
     }
@@ -350,7 +350,7 @@ final class WiFiRelay: ObservableObject {
                 if case .failed = state {
                     self.browser?.cancel()
                     self.browser = nil
-                    self.status = "Looking for the nursery iPhone on this Wi‑Fi…"
+                    self.status = "Looking for the phone with the baby on this Wi‑Fi…"
                 }
             }
         }
@@ -387,7 +387,7 @@ final class WiFiRelay: ObservableObject {
         if let next = nextReconnectAt, Date() < next { return }
         let endpoint = nextEndpoint()
         guard let endpoint else {
-            status = "Looking for the nursery iPhone on this Wi‑Fi…"
+            status = "Looking for the phone with the baby on this Wi‑Fi…"
             return
         }
         knownEndpoint = endpoint
@@ -436,7 +436,7 @@ final class WiFiRelay: ObservableObject {
                 case .ready:
                     self.status = "Linked on this Wi‑Fi"
                 case .failed, .cancelled:
-                    self.dropViewer(reason: "Lost the nursery iPhone. Reconnecting…")
+                    self.dropViewer(reason: "Lost the phone with the baby. Reconnecting…")
                 default:
                     break
                 }
@@ -444,7 +444,7 @@ final class WiFiRelay: ObservableObject {
         }
         receive(connection)
         connection.start(queue: .main)
-        status = "Looking for the nursery iPhone on this Wi‑Fi…"
+        status = "Looking for the phone with the baby on this Wi‑Fi…"
     }
 
     private func receive(_ connection: NWConnection) {
@@ -482,12 +482,12 @@ final class WiFiRelay: ObservableObject {
                                 session: snap.childName
                             )
                         } else if let snap = try? JSONDecoder().decode(WiFiSnapshot.self, from: line), snap.pin != self.joinPin {
-                            self.status = "Wrong share code. Match the nursery iPhone."
+                            self.status = "Wrong share code. Match the phone with the baby."
                         }
                     }
                 }
                 if isComplete || error != nil {
-                    self.dropViewer(reason: "Lost the nursery iPhone. Reconnecting…")
+                    self.dropViewer(reason: "Lost the phone with the baby. Reconnecting…")
                     return
                 }
                 self.receive(connection)
