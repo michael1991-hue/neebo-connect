@@ -418,7 +418,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             oxygen: ox,
             source: profile.rawValue,
             alarm: alarmKind.map { $0 == .high ? "high" : "low" } ?? (staleHeartRateDetected ? "sensor" : "none"),
-            connection: connection.label,
+            connection: connection.rawValue,
             history: Array(points),
             heart_rate_at: hr == nil ? nil : (lastHeartRateUpdate ?? lastCustomMeasurement)?.timeIntervalSince1970,
             oxygen_at: ox == nil ? nil : lastOxygenUpdate?.timeIntervalSince1970,
@@ -2059,7 +2059,7 @@ struct ContentView: View {
             connection: connection,
             signal: signal,
             nurseryHint: hint,
-            monitoring: ble || wifi.following || family.viewingRemote
+            monitoring: ble || wifi.following || watchingFamily
         )
     }
     private func publishWiFiShare() {
@@ -2083,7 +2083,7 @@ struct ContentView: View {
         return "none"
     }
     private func persistSharedHistory() {
-        if family.viewingRemote {
+        if watchingFamily {
             var rows = family.trail
             if let samples = family.remote?.snapshot?.history {
                 rows.append(contentsOf: samples.map {
@@ -2352,7 +2352,7 @@ struct ContentView: View {
                 headerButtons
             }
             HStack(spacing: 10) {
-                Circle().fill(monitor.wearableCharging ? Color.orange : (monitor.connection == .receiving || wifi.remoteFresh || family.viewingRemote ? teal : (connected ? .orange : .gray))).frame(width: 11, height: 11)
+                Circle().fill(monitor.wearableCharging ? Color.orange : (monitor.connection == .receiving || wifi.remoteFresh || (watchingFamily && family.linkState == .live) ? teal : (connected ? .orange : .gray))).frame(width: 11, height: 11)
                 Text(statusCaption).font(.subheadline.weight(.semibold)).foregroundStyle(ink)
                 Spacer()
                 Text("\(mode.rawValue) mode").font(.caption.weight(.bold)).foregroundStyle(ink).padding(.horizontal, 11).padding(.vertical, 6)

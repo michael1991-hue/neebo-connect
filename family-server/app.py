@@ -566,7 +566,7 @@ def merge_snapshot(old, body: Snapshot, received):
 @app.put("/families/{family}/latest")
 def publish(family: str, body: Snapshot, user=Depends(require_user)):
     now = time.time()
-    if not now - 30 <= body.captured <= now + 5:
+    if not now - 90 <= body.captured <= now + 15:
         raise HTTPException(400, "Only fresh snapshots can be shared; check the phone clock")
     throttle("publish:" + user["id"], 240, 60)
     with db() as c:

@@ -73,7 +73,7 @@ def test_stale_ordering_and_recovery(client):
     owner, _ = account(client, "owner@example.com")
     family = group(client, owner)
     path = f"/families/{family}/latest"
-    assert client.put(path, headers=owner, json=snapshot(captured=time.time()-60)).status_code == 400
+    assert client.put(path, headers=owner, json=snapshot(captured=time.time()-120)).status_code == 400
     assert client.put(path, headers=owner, json=snapshot(captured=time.time()+60)).status_code == 400
     now = time.time()
     assert client.put(path, headers=owner, json=snapshot("high", now)).status_code == 200
