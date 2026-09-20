@@ -357,12 +357,12 @@ final class FamilyRelay: ObservableObject {
         try await refreshShareLink()
         try await pushProfile()
     }
-    func refreshShareLink() async {
+    func refreshShareLink() async throws {
         guard let familyID = ownFamily?.id else { return }
         let reply: FamilyReply = try await request("families/\(familyID)/share-link", method: "POST")
         if let url = reply.url { shareLink = url }
     }
-    func pushProfile() async {
+    func pushProfile() async throws {
         guard let familyID = ownFamily?.id else { return }
         var payload: [String: Any] = [
             "child_name": UserDefaults.standard.string(forKey: "nivvi.profile.name") ?? "",
