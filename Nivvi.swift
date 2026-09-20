@@ -2491,7 +2491,10 @@ struct ContentView: View {
         }
     }
 
-    private var currentPlace: NurseryPlace { NurseryPlace(rawValue: placeRaw) ?? .home }
+    private var currentPlace: NurseryPlace {
+        let place = NurseryPlace(rawValue: placeRaw) ?? .home
+        return place == .exploring ? .carer : place
+    }
     private var remotePlace: NurseryPlace {
         let raw = wifi.latest?.place ?? family.remote?.snapshot?.place ?? placeRaw
         return NurseryPlace(rawValue: raw) ?? .home
