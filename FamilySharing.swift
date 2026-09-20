@@ -153,15 +153,16 @@ enum FamilyError: LocalizedError {
 @MainActor
 final class FamilyRelay: ObservableObject {
     static let shared = FamilyRelay()
-    @Published private(set) var account = FamilyKeychain.read()
+    nonisolated(unsafe) static var keepBackgroundHold = false
+    @Published private(set) var account = FamilyKeychain.read() { didSet { noteHold() } }
     @Published private(set) var families: [SharedFamily] = []
     @Published private(set) var members: [FamilyMember] = []
     @Published private(set) var remote: RemoteReading?
     @Published private(set) var remoteFetched: Date?
-    @Published var selected: String?
+    @Published var selected: String? { didSet { noteHold() } }
     @Published var message = ""
     @Published var busy = false
-    @Published private(set) var publishing = false
+    @Published private(set) var publishing = false { didSet { noteHold() } }
     @Published private(set) var invitation: String?
     @Published private(set) var socketConnected = false
     @Published private(set) var lastLatency: TimeInterval?
@@ -206,6 +207,9 @@ final class FamilyRelay: ObservableObject {
     }
     var familyFresh: Bool { familyHeartFresh }
     var viewingRemote: Bool { followingFamily }
+    private func noteHold() {
+        Self.keepBackgroundHold = publishing || viewingRemote
+    }
     var linkState: FamilyLinkState {
         FamilyLivePolicy.link(
             following: followingFamily,

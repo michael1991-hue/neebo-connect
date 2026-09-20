@@ -820,7 +820,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         refreshBackgroundHold()
     }
     func refreshBackgroundHold() {
-        let need = session.enabled || WiFiRelay.shared.hosting || WiFiRelay.shared.following || FamilyRelay.shared.publishing || FamilyRelay.shared.viewingRemote
+        let need = session.enabled || WiFiRelay.shared.hosting || WiFiRelay.shared.following || FamilyRelay.keepBackgroundHold
         if !need || testingSiren || (criticalAlertActive && !alarmAcknowledged) {
             holdPlayer?.stop(); holdPlayer = nil
             return
