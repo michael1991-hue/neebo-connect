@@ -2475,25 +2475,27 @@ struct ContentView: View {
         return NurseryPlace(rawValue: raw) ?? .home
     }
     private var placePicker: some View {
-        HStack(spacing: 8) {
-            ForEach(NurseryPlace.allCases) { option in
-                Button { placeRaw = option.rawValue } label: {
-                    VStack(spacing: 4) {
-                        Image(systemName: option.symbol)
-                        Text(option.title).font(.caption2.weight(.bold)).multilineTextAlignment(.center)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                ForEach(NurseryPlace.allCases) { option in
+                    Button { placeRaw = option.rawValue } label: {
+                        VStack(spacing: 4) {
+                            Image(systemName: option.symbol)
+                            Text(option.title).font(.caption2.weight(.bold)).multilineTextAlignment(.center)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(currentPlace == option ? teal.opacity(0.35) : cardFill)
+                        .foregroundStyle(ink)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
-                    .background(currentPlace == option ? teal.opacity(0.35) : cardFill)
-                    .foregroundStyle(ink)
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(option.title)
+                    .accessibilityAddTraits(currentPlace == option ? [.isSelected] : [])
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel(option.title)
-                .accessibilityAddTraits(currentPlace == option ? [.isSelected] : [])
             }
+            hostPicker
         }
-        hostPicker
     }
     private var hostPicker: some View {
         HStack {

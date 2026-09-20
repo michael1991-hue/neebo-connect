@@ -1124,50 +1124,50 @@ struct FamilySharingView: View {
                 .tint(accent)
                 .disabled(!consent || relay.busy)
             } else {
-            labeled("Who are they?") {
-                Picker("Relationship", selection: $inviteRelation) {
-                    ForEach(FamilyRelation.allCases) { relation in
-                        Text(relation.title).tag(relation)
+                VStack(alignment: .leading, spacing: 14) {
+                    labeled("Who are they?") {
+                        Picker("Relationship", selection: $inviteRelation) {
+                            ForEach(FamilyRelation.allCases) { relation in
+                                Text(relation.title).tag(relation)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    Text(inviteRelation.hint).font(.caption).foregroundStyle(muted)
+                    labeled("Their email") {
+                        TextField("name@example.com", text: $inviteEmail)
+                            .keyboardType(.emailAddress)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .textContentType(.emailAddress)
+                    }
+                    Button {
+                        relay.perform {
+                            if !relay.isOwner && !relay.isCarer { try await relay.enable(label: label) }
+                            try await relay.invite(email: inviteEmail, role: inviteRelation.role, relation: inviteRelation.rawValue)
+                        }
+                    } label: {
+                        Text("Invite \(inviteRelation.title)")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(accent)
+                    .disabled(!consent || !inviteEmail.contains("@") || relay.busy)
+                    if let invitation = relay.invitation {
+                        Text("Send this in Messages. They must use \(inviteEmail.isEmpty ? "that email" : inviteEmail).")
+                            .font(.caption)
+                            .foregroundStyle(muted)
+                        ShareLink(item: inviteMessage(code: invitation)) {
+                            Label("Send to \(inviteRelation.title)", systemImage: "square.and.arrow.up")
+                                .font(.headline)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 12)
+                        }
                     }
                 }
-                .pickerStyle(.menu)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            Text(inviteRelation.hint).font(.caption).foregroundStyle(muted)
-            labeled("Their email") {
-                TextField("name@example.com", text: $inviteEmail)
-                    .keyboardType(.emailAddress)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .textContentType(.emailAddress)
-            }
-            Button {
-                relay.perform {
-                    if !relay.isOwner && !relay.isCarer { try await relay.enable(label: label) }
-                    try await relay.invite(email: inviteEmail, role: inviteRelation.role, relation: inviteRelation.rawValue)
-                }
-            } label: {
-                Text("Invite \(inviteRelation.title)")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(accent)
-            .disabled(!consent || !inviteEmail.contains("@") || relay.busy)
-            if let invitation = relay.invitation {
-                Text("Send this in Messages. They must use \(inviteEmail.isEmpty ? "that email" : inviteEmail).")
-                    .font(.caption)
-                    .foregroundStyle(muted)
-                ShareLink(item: inviteMessage(code: invitation)) {
-                    Label("Send to \(inviteRelation.title)", systemImage: "square.and.arrow.up")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(accent)
-            }
             }
             if !relay.members.isEmpty {
                 Text("Family").font(.subheadline.weight(.semibold))
