@@ -332,7 +332,10 @@ final class FamilyRelay: ObservableObject {
         families = result
         if !result.contains(where: { $0.id == selected }) { selected = result.first?.id; clearRemote() }
         if ownFamily == nil && !families.contains(where: { $0.role == "carer" }) { publishing = false }
-        if let token = ownFamily?.share_token, let server {
+        if let token = (result.first { $0.id == selected }?.share_token)
+            ?? ownFamily?.share_token
+            ?? result.first?.share_token,
+           let server {
             shareLink = server.appendingPathComponent("join").appendingPathComponent(token).absoluteString
         }
         applyCloudProfileIfWatching()
@@ -1246,7 +1249,7 @@ struct FamilySharingView: View {
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 12)
                     }
-                    Text("Anyone with the link can see live readings on iPhone or Mac. Stop sharing to kill it.")
+                    Text("Send this once. If someone else takes over on their iPhone, this same link still works — don’t make a new one.")
                         .font(.caption)
                         .foregroundStyle(muted)
                 }
@@ -1314,6 +1317,9 @@ struct FamilySharingView: View {
             }
             if relay.isOwner {
                 Button("Stop sharing with everyone", role: .destructive) { confirmStop = true }
+                Text("That ends the family and kills the live link. To hand over, the other phone taps Take over — don’t stop sharing.")
+                    .font(.caption)
+                    .foregroundStyle(muted)
             }
         }
     }
@@ -1326,12 +1332,14 @@ struct FamilySharingView: View {
         Watch on iPhone or Mac:
         \(relay.shareLink.isEmpty ? "Open Nivvi Family sharing after they send the live link." : relay.shareLink)
 
+        The live link stays the same if someone else takes over. Don’t wait for a new one.
+
         For the iPhone app, create an account with this email: \(inviteEmail)
         Then Settings → Family sharing → paste this code:
 
         \(code)
 
-        The code lasts 24 hours. The live link works until they stop sharing.
+        The code lasts 24 hours. Stop sharing with everyone is the only thing that kills the live link.
         """
     }
 
@@ -1375,6 +1383,14 @@ struct FamilySharingView: View {
                 }
             }
             Button("Refresh") { Task { await relay.fetchRemote() } }
+            if let url = URL(string: relay.shareLink), !relay.shareLink.isEmpty {
+                ShareLink(item: url) {
+                    Label("Send the same live link", systemImage: "link")
+                }
+                Text("Same link if you take over. Don’t ask for a new one.")
+                    .font(.caption)
+                    .foregroundStyle(muted)
+            }
             if let f = relay.families.first(where: { $0.id == relay.selected }), f.owner != relay.userID {
                 Button("Leave this family", role: .destructive) { relay.perform { try await relay.leave() } }
             }

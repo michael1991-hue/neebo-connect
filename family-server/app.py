@@ -492,11 +492,11 @@ def families(user=Depends(require_user)):
             """SELECT id,label,owner,
                       CASE WHEN owner=? THEN 'owner' ELSE COALESCE((SELECT role FROM members WHERE family=families.id AND user_id=?),'watcher') END AS role,
                       host_relation,
-                      CASE WHEN owner=? THEN share_token ELSE NULL END AS share_token,
+                      share_token,
                       child_name, child_gender, child_birth, place,
                       high_enabled, low_enabled, high_threshold, low_threshold, duration_seconds
                FROM families WHERE owner=? OR id IN(SELECT family FROM members WHERE user_id=?)""",
-            (user["id"], user["id"], user["id"], user["id"], user["id"]))]
+            (user["id"], user["id"], user["id"], user["id"]))]
     for row in rows:
         row["high_enabled"] = bool(row.get("high_enabled"))
         row["low_enabled"] = bool(row.get("low_enabled"))
