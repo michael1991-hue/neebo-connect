@@ -200,12 +200,24 @@ def send_code(address, purpose):
 
 
 def _deliver_code(address, purpose, token):
+    subject = "Nivvi account verification" if purpose == "verify" else "Nivvi password reset"
+    text = f"Paste this code in Nivvi to {purpose} your account:\n\n{token}\n\nIt expires in 15 minutes. If you did not request it, ignore this message."
+    sender = os.environ.get("NIVVI_SMTP_FROM", "")
     try:
+        if os.environ.get("NIVVI_RESEND_KEY"):
+            response = httpx.post(
+                "https://api.resend.com/emails",
+                headers={"Authorization": "Bearer " + os.environ["NIVVI_RESEND_KEY"]},
+                json={"from": sender, "to": [address], "subject": subject, "text": text},
+                timeout=12,
+            )
+            response.raise_for_status()
+            return
         msg = EmailMessage()
-        msg["From"] = os.environ["NIVVI_SMTP_FROM"]
+        msg["From"] = sender
         msg["To"] = address
-        msg["Subject"] = "Nivvi account verification" if purpose == "verify" else "Nivvi password reset"
-        msg.set_content(f"Paste this code in Nivvi to {purpose} your account:\n\n{token}\n\nIt expires in 15 minutes. If you did not request it, ignore this message.")
+        msg["Subject"] = subject
+        msg.set_content(text)
         with smtplib.SMTP(os.environ["NIVVI_SMTP_HOST"], int(os.environ.get("NIVVI_SMTP_PORT", "587")), timeout=12) as smtp:
             smtp.starttls(context=ssl.create_default_context())
             smtp.login(os.environ["NIVVI_SMTP_USER"], os.environ["NIVVI_SMTP_PASSWORD"])
@@ -289,9 +301,13 @@ class ActivityPublish(BaseModel):
 @asynccontextmanager
 async def lifespan(app):
     if not TEST:
-        for key in ["NIVVI_SMTP_HOST", "NIVVI_SMTP_FROM", "NIVVI_SMTP_USER", "NIVVI_SMTP_PASSWORD"]:
-            if not os.environ.get(key):
-                raise RuntimeError(f"Missing required configuration: {key}")
+        if os.environ.get("NIVVI_RESEND_KEY"):
+            if not os.environ.get("NIVVI_SMTP_FROM"):
+                raise RuntimeError("Missing required configuration: NIVVI_SMTP_FROM")
+        else:
+            for key in ["NIVVI_SMTP_HOST", "NIVVI_SMTP_FROM", "NIVVI_SMTP_USER", "NIVVI_SMTP_PASSWORD"]:
+                if not os.environ.get(key):
+                    raise RuntimeError(f"Missing required configuration: {key}")
     initialize()
     HUB.bind(asyncio.get_running_loop())
     worker = asyncio.create_task(push_worker())
