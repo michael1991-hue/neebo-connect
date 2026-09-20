@@ -941,8 +941,8 @@ struct FamilySharingView: View {
 
     private var watchControls: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Watch live readings").font(.headline)
             if relay.families.isEmpty {
+                Text("Watch live readings").font(.headline)
                 Text("Someone sends you a code. Sign up with the same email they invited, then paste it here.")
                     .font(.subheadline)
                     .foregroundStyle(muted)
@@ -1205,28 +1205,38 @@ struct FamilySharingView: View {
 
     private var remoteControls: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Shared readings").font(.headline)
-            Picker("Family", selection: $relay.selected) {
-                ForEach(relay.families) { family in Text(family.label).tag(Optional(family.id)) }
+            Text("Watching live readings").font(.headline)
+            if relay.families.count > 1 {
+                Picker("Family", selection: $relay.selected) {
+                    ForEach(relay.families) { family in Text(family.label).tag(Optional(family.id)) }
+                }
             }
             TimelineView(.periodic(from: .now, by: 1)) { _ in
-                Text(relay.statusLine).font(.headline).foregroundStyle(relay.linkState == .live ? .green : .orange)
+                Text(relay.statusLine)
+                    .font(.headline)
+                    .foregroundStyle(relay.linkState == .live ? accent : Color.orange)
                 if let snapshot = relay.remote?.snapshot {
                     HStack {
                         metric("Heart rate", relay.familyHeartFresh ? snapshot.heart_rate : nil, "bpm")
                         metric("Oxygen", relay.familyOxygenFresh ? snapshot.oxygen : nil, "%")
                     }
-                    Text("Heart rate \(relay.familyHeartFresh ? "fresh" : "stale") · oxygen \(relay.familyOxygenFresh ? "fresh" : "stale")").font(.caption)
-                    Text("Recorded \(Date(timeIntervalSince1970: snapshot.heart_rate_at ?? snapshot.captured).formatted(date: .abbreviated, time: .standard))").font(.caption.bold())
-                    Text(snapshot.connection).font(.caption)
-                    Text("Source: \(snapshot.source) · seq \(snapshot.seq.map(String.init) ?? "—")").font(.caption)
-                    if let delay = relay.lastLatency {
-                        Text(String(format: "Last hop %.2fs after the server", delay)).font(.caption)
+                    let stamp = Date(timeIntervalSince1970: snapshot.heart_rate_at ?? snapshot.captured)
+                    Text(relay.linkState == .live
+                         ? "Live now"
+                         : "Last live \(stamp.formatted(date: .omitted, time: .shortened)). Open Nivvi on the other phone.")
+                        .font(.caption)
+                        .foregroundStyle(muted)
+                    if relay.linkState == .live && snapshot.alarm != "none" {
+                        Text(snapshot.alarm == "sensor" ? "Check the sensor on the other phone." : "Alert on the other phone.")
+                            .foregroundStyle(Color.orange)
                     }
-                    if relay.linkState == .live && snapshot.alarm != "none" { Text(snapshot.alarm == "sensor" ? "Check sensor data" : "Shared monitor needs attention").foregroundStyle(.orange) }
+                } else {
+                    Text("Waiting for the other phone to share.")
+                        .font(.caption)
+                        .foregroundStyle(muted)
                 }
             }
-            Button("Refresh now") { Task { await relay.fetchRemote() } }
+            Button("Refresh") { Task { await relay.fetchRemote() } }
             if let f = relay.families.first(where: { $0.id == relay.selected }), f.owner != relay.userID {
                 Button("Leave this family", role: .destructive) { relay.perform { try await relay.leave() } }
             }
