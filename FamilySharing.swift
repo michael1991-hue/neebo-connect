@@ -214,7 +214,7 @@ final class FamilyRelay: ObservableObject {
     }
     var isCarer: Bool { families.contains { $0.role == "carer" } }
     var isOwner: Bool { ownFamily != nil }
-    var canPublish: Bool { isOwner || isCarer }
+    var canPublish: Bool { signedIn && selected != nil }
     var signedIn: Bool { account != nil }
     var userID: String? { account?.user_id }
     var followingFamily: Bool { signedIn && selected != nil && !publishing }
@@ -333,7 +333,7 @@ final class FamilyRelay: ObservableObject {
         guard token == generation else { return }
         families = result
         if !result.contains(where: { $0.id == selected }) { selected = result.first?.id; clearRemote() }
-        if ownFamily == nil && !families.contains(where: { $0.role == "carer" }) { publishing = false }
+        if families.isEmpty { publishing = false }
         if let token = (result.first { $0.id == selected }?.share_token)
             ?? ownFamily?.share_token
             ?? result.first?.share_token,
@@ -346,7 +346,7 @@ final class FamilyRelay: ObservableObject {
         applyCloudProfileIfWatching()
     }
     func enable(label: String) async throws {
-        if ownFamily == nil && !isCarer {
+        if families.isEmpty {
             let _: SharedFamily = try await request("families", method: "POST", body: body(["label": label]))
             try await refreshFamilies()
         }
@@ -450,7 +450,8 @@ final class FamilyRelay: ObservableObject {
         let _: FamilyReply = try await request("invites/accept", method: "POST", body: body(["code": trimmed, "relation": relation]))
         try await refreshFamilies()
         let who = FamilyRelation(rawValue: relation)?.title ?? "family"
-        message = "You’re in as \(who). Live numbers appear when someone is monitoring."
+        message = "You’re in as \(who). If you’re with the baby, tap I’m with \(who == "Carer" ? "them" : "the baby") — start monitoring."
+        if !relation.isEmpty { UserDefaults.standard.set(relation, forKey: "nivvi.host.relation") }
         UIApplication.shared.registerForRemoteNotifications()
     }
     func refreshMembers() async throws {
@@ -1066,9 +1067,7 @@ struct FamilySharingView: View {
                 .foregroundStyle(muted)
                 .textSelection(.enabled)
             joinCard
-            if relay.isOwner || relay.isCarer || relay.publishing || relay.families.isEmpty {
-                ownerControls
-            }
+            ownerControls
             if !relay.families.isEmpty {
                 remoteControls
             }
@@ -1230,13 +1229,20 @@ struct FamilySharingView: View {
         }
     }
 
+    private var familyChildName: String {
+        let cloud = relay.families.first(where: { $0.id == relay.selected })?.child_name ?? ""
+        if !cloud.isEmpty { return cloud }
+        if !childName.isEmpty { return childName }
+        return "the baby"
+    }
+
     private var ownerControls: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("This child’s family").font(.headline)
             Text("One 6-letter code. Everyone who types it is on this child. They pick Mum, Dad, Nan or Carer when they join.")
                 .font(.subheadline)
                 .foregroundStyle(muted)
-            if relay.familyCode.isEmpty {
+            if relay.familyCode.isEmpty && (relay.isOwner || relay.families.isEmpty) {
                 Button {
                     relay.perform { try await relay.createProfile(label: label) }
                 } label: {
@@ -1283,7 +1289,7 @@ struct FamilySharingView: View {
                          ? "Monitoring on this phone"
                          : (relay.remote?.snapshot != nil
                             ? "Take over monitoring"
-                            : "I’m with \(childName.isEmpty ? "the baby" : childName) — start monitoring"))
+                            : "I’m with \(familyChildName) — start monitoring"))
                         .font(.headline)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 12)

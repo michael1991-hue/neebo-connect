@@ -251,12 +251,7 @@ def family_for_share(token):
 
 
 def publisher(c, family, user):
-    if c.execute("SELECT 1 FROM families WHERE id=? AND owner=?", (family, user["id"])).fetchone():
-        return
-    row = c.execute("SELECT role FROM members WHERE family=? AND user_id=?", (family, user["id"])).fetchone()
-    if row and row[0] == "carer":
-        return
-    raise HTTPException(404, "Only the nursery or a carer can send live readings")
+    member(c, family, user)
 
 def send_code(address, purpose):
     token = secrets.token_urlsafe(24)

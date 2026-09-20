@@ -124,7 +124,7 @@ def test_family_latest_fans_out_activity_push(client):
     assert "112" in relay.ACTIVITY_PUSHES[-1]["state"]["heartRate"]
 
 
-def test_carer_can_publish_watcher_cannot(client):
+def test_joined_family_can_publish(client):
     owner, _, _ = account(client, "parents@example.com")
     carer, _, _ = account(client, "nan@example.com")
     watcher, _, _ = account(client, "aunt@example.com")
@@ -136,6 +136,6 @@ def test_carer_can_publish_watcher_cannot(client):
     now = time.time()
     body = snapshot(captured=now, heart_rate=108, heart_rate_at=now, seq=1, place="carer")
     assert client.put(f"/families/{family}/latest", headers=carer, json=body).status_code == 200
-    assert client.put(f"/families/{family}/latest", headers=watcher, json=snapshot(captured=now + 0.2, seq=2)).status_code == 404
+    assert client.put(f"/families/{family}/latest", headers=watcher, json=snapshot(captured=now + 0.2, seq=2)).status_code == 200
     listed = client.get("/families", headers=carer).json()
     assert listed[0]["role"] == "carer"

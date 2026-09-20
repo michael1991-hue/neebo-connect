@@ -55,7 +55,7 @@ def test_access_isolation_invites_and_revocation(client):
     assert client.post("/invites/accept", headers=outsider, json={"code": code}).status_code == 400
     assert client.post("/invites/accept", headers=reader, json={"code": code}).status_code == 200
     assert client.post("/invites/accept", headers=reader, json={"code": code}).status_code == 400
-    assert client.put(path + "/latest", headers=reader, json=snapshot()).status_code == 404
+    assert client.put(path + "/latest", headers=reader, json=snapshot()).status_code == 200
     assert client.delete(path, headers=reader).status_code == 404
     assert client.post(path + "/invites", headers=reader, json={"email": "other@example.com"}).status_code == 404
     assert client.put(path + "/latest", headers=owner, json=snapshot()).status_code == 200
@@ -213,7 +213,7 @@ def test_monitoring_handover_is_exclusive(client):
         json={"email": "auntie@example.com", "relation": "auntie"},
     ).json()["code"]
     assert client.post("/invites/accept", headers=watcher, json={"code": watch_code}).status_code == 200
-    assert client.post(f"/families/{family}/host", headers=watcher, json={"relation": "auntie"}).status_code == 404
+    assert client.post(f"/families/{family}/host", headers=watcher, json={"relation": "auntie"}).status_code == 200
 
 
 def test_share_link_live_view(client):
