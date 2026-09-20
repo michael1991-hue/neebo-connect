@@ -6,7 +6,7 @@ import Network
 import UIKit
 
 struct FamilyAccount: Codable { let token: String; let user_id: String; let email: String }
-struct SharedFamily: Codable, Identifiable { let id: String; let label: String; let owner: String; var role: String?; var host_relation: String? }
+struct SharedFamily: Codable, Identifiable { let id: String; let label: String; let owner: String; var role: String?; var host_relation: String?; var share_token: String? }
 struct FamilyMember: Codable, Identifiable { let id: String; let email: String; var role: String?; var relation: String? }
 
 enum FamilyRelation: String, CaseIterable, Identifiable {
@@ -125,7 +125,7 @@ struct RemoteReading: Codable {
     var heart_rate_fresh: Bool?
     var oxygen_fresh: Bool?
 }
-struct FamilyReply: Codable { var message: String?; var code: String?; var ok: Bool?; var seq: Int?; var server_received: Double?; var stream_id: String?; var host_relation: String? }
+struct FamilyReply: Codable { var message: String?; var code: String?; var ok: Bool?; var seq: Int?; var server_received: Double?; var stream_id: String?; var host_relation: String?; var token: String?; var url: String? }
 
 enum FamilyKeychain {
     static let service = "com.michael1991.nivvi.family"
@@ -163,6 +163,7 @@ final class FamilyRelay: ObservableObject {
     @Published var message = ""
     @Published var busy = false
     @Published private(set) var publishing = false { didSet { noteHold() } }
+    @Published var shareLink = ""
     @Published private(set) var invitation: String?
     @Published private(set) var socketConnected = false
     @Published private(set) var lastLatency: TimeInterval?
@@ -315,6 +316,9 @@ final class FamilyRelay: ObservableObject {
         families = result
         if !result.contains(where: { $0.id == selected }) { selected = result.first?.id; clearRemote() }
         if ownFamily == nil && !families.contains(where: { $0.role == "carer" }) { publishing = false }
+        if let token = ownFamily?.share_token, let server {
+            shareLink = server.appendingPathComponent("join").appendingPathComponent(token).absoluteString
+        }
     }
     func enable(label: String) async throws {
         if ownFamily == nil && !isCarer {
@@ -333,6 +337,12 @@ final class FamilyRelay: ObservableObject {
         publishStream = reply.stream_id ?? UUID().uuidString
         uploadSeq = 0
         message = "This phone is with the baby. Family see live numbers on theirs."
+        try await refreshShareLink()
+    }
+    func refreshShareLink() async {
+        guard let familyID = ownFamily?.id else { return }
+        let reply: FamilyReply = try await request("families/\(familyID)/share-link", method: "POST")
+        if let url = reply.url { shareLink = url }
     }
     func releaseHost() async throws {
         publishing = false
@@ -1175,6 +1185,17 @@ struct FamilySharingView: View {
                 if relay.publishing {
                     Button("Stop monitoring") { relay.perform { try await relay.releaseHost() } }
                 }
+                if let url = URL(string: relay.shareLink), !relay.shareLink.isEmpty {
+                    ShareLink(item: url) {
+                        Label("Send live link", systemImage: "link")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                    }
+                    Text("Anyone with the link can see live readings on iPhone or Mac. Stop sharing to kill it.")
+                        .font(.caption)
+                        .foregroundStyle(muted)
+                }
             }
             if relay.isOwner || relay.families.isEmpty {
                 VStack(alignment: .leading, spacing: 14) {
@@ -1248,13 +1269,15 @@ struct FamilySharingView: View {
         return """
         You’re invited to Nivvi as \(inviteRelation.title), to see \(child)’s live heart rate.
 
-        1. Install Nivvi
-        2. Create an account with this email: \(inviteEmail)
-        3. Settings → Family sharing → paste this code:
+        Watch on iPhone or Mac:
+        \(relay.shareLink.isEmpty ? "Open Nivvi Family sharing after they send the live link." : relay.shareLink)
+
+        For the iPhone app, create an account with this email: \(inviteEmail)
+        Then Settings → Family sharing → paste this code:
 
         \(code)
 
-        The code lasts 24 hours.
+        The code lasts 24 hours. The live link works until they stop sharing.
         """
     }
 

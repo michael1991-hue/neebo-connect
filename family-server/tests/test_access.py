@@ -216,3 +216,25 @@ def test_monitoring_handover_is_exclusive(client):
     assert client.post(f"/families/{family}/host", headers=watcher, json={"relation": "auntie"}).status_code == 404
 
 
+def test_share_link_live_view(client):
+    owner, _ = account(client, "mum@example.com")
+    family = group(client, owner)
+    link = client.post(f"/families/{family}/share-link", headers=owner).json()
+    token = link["token"]
+    assert "/join/" + token in link["url"]
+    page = client.get("/join/" + token)
+    assert page.status_code == 200
+    assert "Nivvi" in page.text
+    waiting = client.get("/join/" + token + "/live").json()
+    assert waiting["waiting"] is True
+    packed = snapshot()
+    packed["stream_id"] = "s1"
+    packed["seq"] = 1
+    assert client.put(f"/families/{family}/latest", headers=owner, json=packed).status_code == 200
+    live = client.get("/join/" + token + "/live").json()
+    assert live["heart_rate"] == 100
+    assert live["waiting"] is False
+    assert client.get("/join/not-a-real-token/live").status_code == 404
+
+
+

@@ -13,11 +13,13 @@ import threading
 import time
 from contextlib import contextmanager, asynccontextmanager
 from email.message import EmailMessage
+from html import escape
 from pathlib import Path
 
 import httpx
 import jwt
 from fastapi import FastAPI, HTTPException, Request, Depends, WebSocket
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 DB = os.environ.get("NIVVI_DATABASE", "/data/nivvi.sqlite")
@@ -127,6 +129,7 @@ def initialize():
             "ALTER TABLE families ADD COLUMN host_user TEXT",
             "ALTER TABLE families ADD COLUMN host_stream TEXT",
             "ALTER TABLE families ADD COLUMN host_relation TEXT",
+            "ALTER TABLE families ADD COLUMN share_token TEXT",
         ):
             try:
                 c.execute(stmt)
@@ -184,6 +187,33 @@ def owner(c, family, user):
 def member(c, family, user):
     if not c.execute("SELECT 1 FROM families WHERE id=? AND (owner=? OR EXISTS(SELECT 1 FROM members WHERE family=families.id AND user_id=?))", (family, user["id"], user["id"])).fetchone():
         raise HTTPException(404, "Family unavailable")
+
+
+def public_root():
+    return (os.environ.get("NIVVI_PUBLIC_URL") or "https://family.nivvi.app").rstrip("/")
+
+
+def ensure_share_token(c, family):
+    row = c.execute("SELECT share_token FROM families WHERE id=?", (family,)).fetchone()
+    if row and row["share_token"]:
+        return row["share_token"]
+    token = secrets.token_urlsafe(16)
+    c.execute("UPDATE families SET share_token=? WHERE id=?", (token, family))
+    return token
+
+
+def family_for_share(token):
+    token = (token or "").strip()
+    if not token or len(token) > 80:
+        return None
+    with db() as c:
+        row = c.execute("SELECT id,label,host_relation FROM families WHERE share_token=?", (token,)).fetchone()
+        if not row:
+            return None
+        latest = c.execute("SELECT payload,received FROM latest WHERE family=?", (row["id"],)).fetchone()
+    snap = json.loads(latest["payload"]) if latest else None
+    received = latest["received"] if latest else None
+    return {"id": row["id"], "label": row["label"], "host_relation": row["host_relation"], "snapshot": snap, "received": received}
 
 
 def publisher(c, family, user):
@@ -440,16 +470,19 @@ def families(user=Depends(require_user)):
         return [dict(r) for r in c.execute(
             """SELECT id,label,owner,
                       CASE WHEN owner=? THEN 'owner' ELSE COALESCE((SELECT role FROM members WHERE family=families.id AND user_id=?),'watcher') END AS role,
-                      host_relation
+                      host_relation,
+                      CASE WHEN owner=? THEN share_token ELSE NULL END AS share_token
                FROM families WHERE owner=? OR id IN(SELECT family FROM members WHERE user_id=?)""",
-            (user["id"], user["id"], user["id"], user["id"]))]
+            (user["id"], user["id"], user["id"], user["id"], user["id"]))]
 
 
 @app.post("/families")
 def create_family(body: Family, user=Depends(require_user)):
     with db() as c:
         c.execute("INSERT OR IGNORE INTO families(id, owner, label) VALUES(?,?,?)", (secrets.token_hex(16), user["id"], body.label.strip() or "Family"))
-        return dict(c.execute("SELECT id,label,owner FROM families WHERE owner=?", (user["id"],)).fetchone())
+        family = dict(c.execute("SELECT id,label,owner FROM families WHERE owner=?", (user["id"],)).fetchone())
+        family["share_token"] = ensure_share_token(c, family["id"])
+        return family
 
 
 @app.delete("/families/{family}")
@@ -459,6 +492,117 @@ def stop_sharing(family: str, user=Depends(require_user)):
         c.execute("DELETE FROM families WHERE id=?", (family,))
     HUB.drop_family(family)
     return {"ok": True}
+
+
+@app.post("/families/{family}/share-link")
+def share_link(family: str, user=Depends(require_user)):
+    with db() as c:
+        owner(c, family, user)
+        token = ensure_share_token(c, family)
+    return {"ok": True, "token": token, "url": public_root() + "/join/" + token}
+
+
+JOIN_PAGE = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Nivvi · __LABEL__</title>
+<style>
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;background:#071016;color:#e8f2ef;min-height:100vh;display:flex;align-items:center;justify-content:center}
+main{width:min(420px,92vw);padding:28px 22px;background:#102027;border-radius:24px;box-shadow:0 12px 40px #0008}
+h1{font-size:1.4rem;margin:0 0 6px}
+.sub{opacity:.7;margin:0 0 22px}
+.bpm{font-size:4.2rem;font-weight:700;letter-spacing:-2px;margin:8px 0}
+.o2{font-size:1.3rem;margin:0 0 12px;color:#7ee0c8}
+.meta{opacity:.7;font-size:.95rem;line-height:1.45}
+.warn{color:#ff8a7a;font-weight:600}
+.ok{color:#7ee0c8;font-weight:600}
+.foot{margin-top:22px;font-size:.8rem;opacity:.55;line-height:1.4}
+</style>
+</head>
+<body>
+<main>
+<h1 id="name">__LABEL__</h1>
+<p class="sub">Live family view · Nivvi</p>
+<div class="bpm" id="hr">—</div>
+<p class="o2" id="o2">Oxygen —</p>
+<p class="meta" id="status">Connecting…</p>
+<p class="foot">Not a medical monitor. Anyone with this link can see the latest reading. The parent can stop sharing in Nivvi.</p>
+</main>
+<script>
+const live = location.pathname.replace(/\\/+$/,'') + '/live';
+async function tick(){
+  try{
+    const r = await fetch(live, {cache:'no-store'});
+    const d = await r.json();
+    document.getElementById('name').textContent = d.label || 'Nivvi';
+    document.getElementById('hr').textContent = d.heart_rate ? Math.round(d.heart_rate) + ' bpm' : '—';
+    document.getElementById('o2').textContent = d.oxygen != null ? 'Oxygen ' + Math.round(d.oxygen) + '%' : 'Oxygen —';
+    const st = document.getElementById('status');
+    if(d.waiting){ st.className='meta warn'; st.textContent = d.status; }
+    else { st.className='meta ok'; st.textContent = d.status; }
+  }catch(e){
+    const st = document.getElementById('status');
+    st.className='meta warn'; st.textContent = 'Could not reach Nivvi. Check the link.';
+  }
+}
+tick(); setInterval(tick, 3000);
+</script>
+</body>
+</html>
+"""
+
+
+@app.get("/join/{token}", response_class=HTMLResponse)
+def join_page(token: str, request: Request):
+    throttle("join-page:" + request.client.host, 60, 60)
+    info = family_for_share(token)
+    if not info:
+        raise HTTPException(404, "This live link is invalid or sharing has stopped.")
+    return JOIN_PAGE.replace("__LABEL__", escape(info["label"] or "Nivvi"))
+
+
+@app.get("/join/{token}/live")
+def join_live(token: str, request: Request):
+    throttle("join-live:" + request.client.host, 120, 60)
+    info = family_for_share(token)
+    if not info:
+        raise HTTPException(404, "This live link is invalid or sharing has stopped.")
+    snap = info["snapshot"] or {}
+    hr = snap.get("heart_rate")
+    o2 = snap.get("oxygen")
+    stamp = snap.get("heart_rate_at") or snap.get("captured") or info["received"]
+    age = time.time() - stamp if stamp else None
+    waiting = hr is None or age is None or age > 45
+    who = {"mum": "Mum", "dad": "Dad", "nan": "Nan", "auntie": "Auntie", "uncle": "Uncle", "carer": "Carer"}.get(info.get("host_relation") or "", "family")
+    if waiting:
+        status = "Waiting for the phone with the baby to start monitoring"
+    else:
+        status = f"Monitoring with {who} · Updated {max(0, int(age))}s ago"
+    return {
+        "label": info["label"],
+        "heart_rate": hr,
+        "oxygen": o2,
+        "age": age,
+        "waiting": waiting,
+        "status": status,
+        "connection": snap.get("connection"),
+        "alarm": snap.get("alarm") or "none",
+        "host_relation": info.get("host_relation"),
+    }
+
+
+@app.get("/.well-known/apple-app-site-association")
+def apple_app_site_association():
+    team = os.environ.get("NIVVI_APNS_TEAM", "")
+    app_id = f"{team}.com.michael1991.nivvi" if team else "com.michael1991.nivvi"
+    return JSONResponse(
+        {"applinks": {"apps": [], "details": [{"appID": app_id, "paths": ["/join/*"]}]}},
+        media_type="application/json",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.post("/families/{family}/host")
