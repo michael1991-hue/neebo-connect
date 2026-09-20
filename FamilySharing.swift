@@ -277,6 +277,7 @@ final class FamilyRelay: ObservableObject {
             try await refreshFamilies()
             message = "This phone is no longer the nursery. Parents keep the family."
         }
+    }
     func invite(email: String, role: String = "watcher") async throws {
         guard let family = ownFamily else { throw FamilyError.message("Enable sharing first.") }
         let reply: FamilyReply = try await request("families/\(family.id)/invites", method: "POST", body: body(["email": email, "role": role]))
