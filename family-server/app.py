@@ -438,7 +438,7 @@ async def privacy_headers(request, call_next):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "push_configured": bool(os.environ.get("NIVVI_APNS_KEY"))}
+    return {"status": "ok", "push_configured": bool(os.environ.get("NIVVI_APNS_KEY")), "join_codes": True}
 
 
 @app.post("/auth/register")
