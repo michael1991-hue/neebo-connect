@@ -437,11 +437,13 @@ final class FamilyRelay: ObservableObject {
     }
     func createProfile(label: String) async throws {
         if ownFamily == nil {
-            let _: SharedFamily = try await request("families", method: "POST", body: body(["label": label]))
+            let created: SharedFamily = try await request("families", method: "POST", body: body(["label": label]))
+            if let code = created.join_code, code.count == 6 { familyCode = code }
             try await refreshFamilies()
         }
         try await refreshShareLink()
-        message = familyCode.isEmpty ? "Family is ready." : "Family code \(familyCode). Send it once."
+        if familyCode.isEmpty { throw FamilyError.message("Could not create a family code. Pull the latest Nivvi server, then try again.") }
+        message = "Family code \(familyCode). Send it once."
     }
     func join(code: String, relation: String) async throws {
         let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -885,6 +887,7 @@ struct FamilySharingView: View {
             do {
                 try await relay.refreshFamilies()
                 try await relay.refreshMembers()
+                try await relay.refreshShareLink()
             } catch { relay.message = error.localizedDescription }
             await relay.fetchRemote()
         }
@@ -1062,11 +1065,12 @@ struct FamilySharingView: View {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(muted)
                 .textSelection(.enabled)
+            joinCard
             if relay.isOwner || relay.isCarer || relay.publishing || relay.families.isEmpty {
                 ownerControls
             }
-            if relay.followingFamily || relay.families.isEmpty {
-                watchControls
+            if !relay.families.isEmpty {
+                remoteControls
             }
             Button("Turn on family alerts") { relay.perform { try await relay.notifications() } }
                 .buttonStyle(.bordered)
@@ -1085,39 +1089,35 @@ struct FamilySharingView: View {
         }
     }
 
-    private var watchControls: some View {
+    private var joinCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if relay.families.isEmpty {
-                Text("Watch live readings").font(.headline)
-                Text("Your own login, then the 6-letter family code, and who you are.")
-                    .font(.subheadline)
-                    .foregroundStyle(muted)
-                labeled("Family code") {
-                    TextField("e.g. K7M4QP", text: $joinCode)
-                        .textInputAutocapitalization(.characters)
-                        .autocorrectionDisabled()
-                        .keyboardType(.asciiCapable)
-                }
-                labeled("I am") {
-                    Picker("I am", selection: $joinRelation) {
-                        ForEach(FamilyRelation.allCases) { relation in
-                            Text(relation.title).tag(relation)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                Button {
-                    relay.perform { try await relay.join(code: joinCode, relation: joinRelation.rawValue); joinCode = "" }
-                } label: {
-                    Text("Join as \(joinRelation.title)").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 12)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(accent)
-                .disabled(joinCode.trimmingCharacters(in: .whitespacesAndNewlines).count < 6 || relay.busy)
-            } else {
-                remoteControls
+            Text("Join a family").font(.headline)
+            Text("If someone sent you a 6-letter code, type it here and say who you are.")
+                .font(.subheadline)
+                .foregroundStyle(muted)
+            labeled("Family code") {
+                TextField("e.g. K7M4QP", text: $joinCode)
+                    .textInputAutocapitalization(.characters)
+                    .autocorrectionDisabled()
+                    .keyboardType(.asciiCapable)
             }
+            labeled("I am") {
+                Picker("I am", selection: $joinRelation) {
+                    ForEach(FamilyRelation.allCases) { relation in
+                        Text(relation.title).tag(relation)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Button {
+                relay.perform { try await relay.join(code: joinCode, relation: joinRelation.rawValue); joinCode = "" }
+            } label: {
+                Text("Join as \(joinRelation.title)").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 12)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(accent)
+            .disabled(joinCode.trimmingCharacters(in: .whitespacesAndNewlines).count < 6 || relay.busy)
         }
     }
 

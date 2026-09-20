@@ -541,9 +541,11 @@ def families(user=Depends(require_user)):
                       high_enabled, low_enabled, high_threshold, low_threshold, duration_seconds
                FROM families WHERE owner=? OR id IN(SELECT family FROM members WHERE user_id=?)""",
             (user["id"], user["id"], user["id"], user["id"]))]
-    for row in rows:
-        row["high_enabled"] = bool(row.get("high_enabled"))
-        row["low_enabled"] = bool(row.get("low_enabled"))
+        for row in rows:
+            if row["owner"] == user["id"] and not row.get("join_code"):
+                row["join_code"] = ensure_join_code(c, row["id"])
+            row["high_enabled"] = bool(row.get("high_enabled"))
+            row["low_enabled"] = bool(row.get("low_enabled"))
     return rows
 
 
