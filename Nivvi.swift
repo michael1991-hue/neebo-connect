@@ -2366,6 +2366,7 @@ struct ContentView: View {
                 placePicker
                 Text(currentPlace.hint(displayName)).font(.caption).foregroundStyle(muted)
             }
+            if family.signedIn { familySendBanner }
             if monitor.lowPowerMode {
                 Text("Low Power Mode is on. Turn it off so Nivvi can keep reading overnight.")
                     .font(.caption.weight(.semibold)).foregroundStyle(coral)
@@ -2375,6 +2376,27 @@ struct ContentView: View {
                     .font(.caption.weight(.semibold)).foregroundStyle(coral)
             }
         }.padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 8)
+    }
+
+    @ViewBuilder private var familySendBanner: some View {
+        if family.publishing {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                if let sent = family.lastUpload {
+                    let age = Int(context.date.timeIntervalSince(sent))
+                    Text(age < 20 ? "Family send OK · \(age)s ago" : "Family send stalled · \(age)s ago")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(age < 20 ? accentMint : coral)
+                } else {
+                    Text(family.message.isEmpty ? "Starting family send…" : family.message)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(coral)
+                }
+            }
+        } else if localHeartLive {
+            Text("Band is live here. Family won’t see it until you tap I’m with \(displayName) — start monitoring.")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(coral)
+        }
     }
 
     private var compactHeader: some View {

@@ -169,7 +169,7 @@ final class FamilyRelay: ObservableObject {
     @Published private(set) var trail: [SavedMeasurement] = []
     @Published private(set) var alarmCatchup = true
     @Published private(set) var inboundAck = false
-    private var lastUpload: Date?
+    @Published private(set) var lastUpload: Date?
     private var lastHistoryUpload: Date?
     private var lastAlarm = "none"
     private var appliedAlarm = "none"
