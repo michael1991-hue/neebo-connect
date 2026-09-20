@@ -848,11 +848,28 @@ async def deliver_pushes():
         for event in pending:
             with db() as c:
                 # Fetch membership at send time; never use a cached invitation recipient list.
-                tokens = [r[0] for r in c.execute("SELECT token FROM devices JOIN members ON devices.user_id=members.user_id WHERE family=?", (event["family"],))]
+                tokens = [r[0] for r in c.execute(
+                    """SELECT token FROM devices WHERE user_id IN (
+                           SELECT owner FROM families WHERE id=?
+                           UNION
+                           SELECT user_id FROM members WHERE family=?
+                       ) AND user_id IS NOT (
+                           SELECT host_user FROM families WHERE id=? AND host_user IS NOT NULL
+                       )""",
+                    (event["family"], event["family"], event["family"]),
+                )]
             failed = False
             for token in tokens:
                 with db() as c:
-                    allowed = c.execute("SELECT 1 FROM devices JOIN members ON devices.user_id=members.user_id JOIN pushes ON pushes.family=members.family WHERE token=? AND pushes.id=?", (token,event["id"])).fetchone()
+                    allowed = c.execute(
+                        """SELECT 1 FROM devices
+                           WHERE token=? AND user_id IN (
+                               SELECT owner FROM families WHERE id=?
+                               UNION
+                               SELECT user_id FROM members WHERE family=?
+                           )""",
+                        (token, event["family"], event["family"]),
+                    ).fetchone()
                 if not allowed:
                     continue
                 recovery = event["kind"] == "recovery"
