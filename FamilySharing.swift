@@ -586,6 +586,12 @@ final class FamilyRelay: ObservableObject {
         }
         if type == "host" {
             let stream = raw["stream_id"] as? String ?? ""
+            let hostUser = raw["host_user"] as? String ?? ""
+            if let me = userID, !hostUser.isEmpty, hostUser == me {
+                if !stream.isEmpty { publishStream = stream }
+                publishing = true
+                return
+            }
             let who = FamilyRelation(rawValue: raw["host_relation"] as? String ?? "")?.title ?? "Family"
             if publishing, !stream.isEmpty, stream != publishStream {
                 publishing = false
