@@ -337,6 +337,7 @@ class Family(BaseModel):
 
 class Invite(BaseModel):
     code: str = Field(min_length=6, max_length=128)
+    relation: str = Field(default="", max_length=20)
 
 
 class HistoryPoint(BaseModel):
@@ -758,13 +759,19 @@ def accept(body: Invite, user=Depends(require_user)):
         c.execute("BEGIN IMMEDIATE")
         family = None
         role = "watcher"
-        relation = ""
+        relation = (body.relation or "").strip().lower()
+        allowed = {"", "mum", "dad", "nan", "auntie", "uncle", "carer"}
+        if relation not in allowed:
+            raise HTTPException(400, "Choose Mum, Dad, Nan, Auntie, Uncle or Carer.")
         if len(short) == 6 and all(ch in JOIN_ALPHABET for ch in short):
             family = c.execute("SELECT id,owner FROM families WHERE join_code=?", (short,)).fetchone()
             if not family:
                 raise HTTPException(400, "That family code is not recognised.")
             if family["owner"] == user["id"]:
                 raise HTTPException(400, "You’re already the parent of this family.")
+            if not relation:
+                raise HTTPException(400, "Say who you are to this child — Mum, Dad, Nan, Auntie, Uncle or Carer.")
+            role = "carer" if relation == "carer" else "watcher"
         else:
             row = c.execute("SELECT * FROM invites WHERE token=? AND email=? AND expires>?", (digest(raw), user["email"], time.time())).fetchone()
             if not row:

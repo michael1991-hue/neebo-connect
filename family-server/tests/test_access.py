@@ -250,11 +250,11 @@ def test_one_short_family_code_joins_everyone(client):
     family = group(client, mum)
     code = client.get("/families", headers=mum).json()[0]["join_code"]
     assert len(code) == 6
-    assert client.post("/invites/accept", headers=dad, json={"code": code}).status_code == 200
-    assert client.post("/invites/accept", headers=nan, json={"code": code.lower()}).status_code == 200
+    assert client.post("/invites/accept", headers=dad, json={"code": code, "relation": "dad"}).status_code == 200
+    assert client.post("/invites/accept", headers=nan, json={"code": code.lower(), "relation": "nan"}).status_code == 200
     people = client.get(f"/families/{family}/members", headers=mum).json()
-    emails = {row["email"] for row in people}
-    assert emails == {"dad@example.com", "nan@example.com"}
+    emails = {row["email"]: row["relation"] for row in people}
+    assert emails == {"dad@example.com": "dad", "nan@example.com": "nan"}
     assert client.post("/invites/accept", headers=mum, json={"code": code}).status_code == 400
 
 

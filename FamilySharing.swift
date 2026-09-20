@@ -435,10 +435,20 @@ final class FamilyRelay: ObservableObject {
             : "Send this to \(who). They open Nivvi, sign up with that email, and paste the code."
         try await refreshMembers()
     }
-    func join(code: String) async throws {
-        let _: FamilyReply = try await request("invites/accept", method: "POST", body: body(["code": code]))
+    func createProfile(label: String) async throws {
+        if ownFamily == nil {
+            let _: SharedFamily = try await request("families", method: "POST", body: body(["label": label]))
+            try await refreshFamilies()
+        }
+        try await refreshShareLink()
+        message = familyCode.isEmpty ? "Family is ready." : "Family code \(familyCode). Send it once."
+    }
+    func join(code: String, relation: String) async throws {
+        let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
+        let _: FamilyReply = try await request("invites/accept", method: "POST", body: body(["code": trimmed, "relation": relation]))
         try await refreshFamilies()
-        message = "You’re in. You’re on this child’s family now. Live numbers appear when someone is monitoring."
+        let who = FamilyRelation(rawValue: relation)?.title ?? "family"
+        message = "You’re in as \(who). Live numbers appear when someone is monitoring."
         UIApplication.shared.registerForRemoteNotifications()
     }
     func refreshMembers() async throws {
@@ -806,9 +816,8 @@ struct FamilySharingView: View {
     @State private var password = ""
     @State private var code = ""
     @State private var label = "Family"
-    @State private var inviteEmail = ""
-    @State private var inviteRelation: FamilyRelation = .mum
     @State private var joinCode = ""
+    @State private var joinRelation: FamilyRelation = .mum
     @AppStorage("nivvi.profile.name") private var childName = ""
     @AppStorage("nivvi.host.relation") private var hostRelation = ""
     @State private var consent = false
@@ -1080,7 +1089,7 @@ struct FamilySharingView: View {
         VStack(alignment: .leading, spacing: 12) {
             if relay.families.isEmpty {
                 Text("Watch live readings").font(.headline)
-                Text("Create your own Nivvi login, then type the 6-letter family code. The same code joins everyone to one child.")
+                Text("Your own login, then the 6-letter family code, and who you are.")
                     .font(.subheadline)
                     .foregroundStyle(muted)
                 labeled("Family code") {
@@ -1089,10 +1098,19 @@ struct FamilySharingView: View {
                         .autocorrectionDisabled()
                         .keyboardType(.asciiCapable)
                 }
+                labeled("I am") {
+                    Picker("I am", selection: $joinRelation) {
+                        ForEach(FamilyRelation.allCases) { relation in
+                            Text(relation.title).tag(relation)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
                 Button {
-                    relay.perform { try await relay.join(code: joinCode); joinCode = "" }
+                    relay.perform { try await relay.join(code: joinCode, relation: joinRelation.rawValue); joinCode = "" }
                 } label: {
-                    Text("Join family").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 12)
+                    Text("Join as \(joinRelation.title)").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 12)
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(accent)
@@ -1214,10 +1232,38 @@ struct FamilySharingView: View {
 
     private var ownerControls: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Share with family").font(.headline)
-            Text("Whoever is with \(childName.isEmpty ? "the baby" : childName) taps Take over. People already watching keep the same link — you do not send it again.")
+            Text("This child’s family").font(.headline)
+            Text("One 6-letter code. Everyone who types it is on this child. They pick Mum, Dad, Nan or Carer when they join.")
                 .font(.subheadline)
                 .foregroundStyle(muted)
+            if relay.familyCode.isEmpty {
+                Button {
+                    relay.perform { try await relay.createProfile(label: label) }
+                } label: {
+                    Text("Create family code")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(accent)
+                .disabled(relay.busy)
+            } else {
+                Text("Family code").font(.subheadline.weight(.semibold))
+                Text(relay.familyCode)
+                    .font(.system(size: 40, weight: .bold, design: .rounded))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity)
+                ShareLink(item: inviteMessage(code: relay.familyCode)) {
+                    Label("Send family code", systemImage: "square.and.arrow.up")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                }
+                Text("Send this once. Same code forever until you stop sharing with everyone.")
+                    .font(.caption)
+                    .foregroundStyle(muted)
+            }
             labeled("This phone is") {
                 Picker("This phone is", selection: $hostRelation) {
                     Text("Choose…").tag("")
@@ -1247,78 +1293,6 @@ struct FamilySharingView: View {
                 .disabled(!consent || relay.busy || relay.publishing)
                 if relay.publishing {
                     Button("Stop monitoring") { relay.perform { try await relay.releaseHost() } }
-                }
-                if !relay.familyCode.isEmpty {
-                    Text("Family code").font(.subheadline.weight(.semibold))
-                    Text(relay.familyCode)
-                        .font(.system(size: 34, weight: .bold, design: .rounded))
-                        .textSelection(.enabled)
-                    ShareLink(item: inviteMessage(code: relay.familyCode)) {
-                        Label("Send family code", systemImage: "square.and.arrow.up")
-                            .font(.headline)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                    }
-                    Text("Same 6 letters for everyone. They sign up with their own email, type this code, they’re on this child. Take over later — don’t send a new code.")
-                        .font(.caption)
-                        .foregroundStyle(muted)
-                }
-                if let url = URL(string: relay.shareLink), !relay.shareLink.isEmpty {
-                    ShareLink(item: url) {
-                        Label("Copy the live link", systemImage: "link")
-                            .font(.headline)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                    }
-                    Text("Send this the first time only. After that, Take over is enough. Same link.")
-                        .font(.caption)
-                        .foregroundStyle(muted)
-                }
-            }
-            if relay.isOwner || relay.families.isEmpty {
-                VStack(alignment: .leading, spacing: 14) {
-                    labeled("Who are they?") {
-                        Picker("Relationship", selection: $inviteRelation) {
-                            ForEach(FamilyRelation.allCases) { relation in
-                                Text(relation.title).tag(relation)
-                            }
-                        }
-                        .pickerStyle(.menu)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    Text(inviteRelation.hint).font(.caption).foregroundStyle(muted)
-                    labeled("Their email") {
-                        TextField("name@example.com", text: $inviteEmail)
-                            .keyboardType(.emailAddress)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .textContentType(.emailAddress)
-                    }
-                    Button {
-                        relay.perform {
-                            if !relay.isOwner && !relay.isCarer { try await relay.enable(label: label) }
-                            try await relay.invite(email: inviteEmail, role: inviteRelation.role, relation: inviteRelation.rawValue)
-                        }
-                    } label: {
-                        Text("Invite \(inviteRelation.title)")
-                            .font(.headline)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(accent)
-                    .disabled(!consent || !inviteEmail.contains("@") || relay.busy)
-                    if let invitation = relay.invitation {
-                        Text("Send this in Messages. They must use \(inviteEmail.isEmpty ? "that email" : inviteEmail).")
-                            .font(.caption)
-                            .foregroundStyle(muted)
-                        ShareLink(item: inviteMessage(code: invitation)) {
-                            Label("Send to \(inviteRelation.title)", systemImage: "square.and.arrow.up")
-                                .font(.headline)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 12)
-                        }
-                    }
                 }
             }
             if !relay.members.isEmpty {
