@@ -1750,7 +1750,7 @@ struct HistoryChartsView: View {
     let caption: Color
     let ink: Color
     @State private var hours = 1
-    @State private var span: TimeInterval = 900
+    @State private var span: TimeInterval = 0
     @State private var windowEnd: Date?
     @State private var pinchStart: TimeInterval?
     private var domain: ClosedRange<Date> {
@@ -1809,7 +1809,7 @@ struct HistoryChartsView: View {
                 .onEnded { _ in pinchStart = nil }
         )
         .onChange(of: span) { _ in selected = nil }
-        .onChange(of: day) { _ in selected = nil; windowEnd = nil; span = 900 }
+        .onChange(of: day) { _ in selected = nil; windowEnd = nil; span = 0 }
     }
     private var dayEnd: Date { Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: day))! }
     private func moveWindow(_ direction: Int) {
@@ -1930,7 +1930,7 @@ struct ContentView: View {
     private var mode: NivviMode { manualMode ?? automaticMode }
     private var ink: Color { mode == .night ? .white : Color(red: 0.10, green: 0.14, blue: 0.18) }
     private var muted: Color { mode == .night ? Color.white.opacity(0.82) : Color(red: 0.22, green: 0.28, blue: 0.30) }
-    private var cardFill: Color { mode == .night ? Color(red: 0.07, green: 0.16, blue: 0.26) : Color.white }
+    private var cardFill: Color { mode == .night ? Color(red: 0.07, green: 0.16, blue: 0.26) : Color(red: 1.0, green: 0.96, blue: 0.86) }
     private var accentMint: Color { mode == .night ? teal : Color(red: 0.02, green: 0.42, blue: 0.40) }
     private var switchOn: Color { teal }
     private var stamp: Color { mode == .night ? lavender : Color(red: 0.32, green: 0.28, blue: 0.58) }
@@ -2365,10 +2365,10 @@ struct ContentView: View {
                 Circle().fill(monitor.wearableCharging ? Color.orange : (monitor.connection == .receiving || wifi.remoteFresh || (watchingFamily && family.linkState == .live) ? teal : (connected ? .orange : .gray))).frame(width: 11, height: 11)
                 Text(statusCaption).font(.subheadline.weight(.semibold)).foregroundStyle(ink)
                 Spacer()
-                Text(mode == .day ? "Day" : "Night").font(.caption.weight(.bold))
-                    .foregroundStyle(mode == .day ? Color(red: 0.22, green: 0.12, blue: 0.04) : .white)
-                    .padding(.horizontal, 12).padding(.vertical, 7)
-                    .background(mode == .day ? Color(red: 1, green: 0.78, blue: 0.22) : Color.white.opacity(0.16))
+                Text(mode == .day ? "Day" : "Night").font(.subheadline.weight(.bold))
+                    .foregroundStyle(mode == .day ? Color(red: 0.28, green: 0.12, blue: 0.02) : .white)
+                    .padding(.horizontal, 14).padding(.vertical, 8)
+                    .background(mode == .day ? Color(red: 1, green: 0.78, blue: 0.12) : Color.white.opacity(0.16))
                     .clipShape(Capsule())
             }
             if !ageText.isEmpty { Text(childGender == "Prefer not to say" ? ageText : "\(ageText) · \(childGender)").font(.caption).foregroundStyle(muted) }
@@ -2741,17 +2741,21 @@ struct ContentView: View {
                         .frame(width: 44, height: 44).background(cardFill).clipShape(Circle())
                 }
                 .accessibilityLabel("Previous day")
-                VStack(spacing: 2) {
+                VStack(spacing: 4) {
                     Text(monitor.selectedHistoryDay.formatted(Date.FormatStyle().weekday(.wide).month().day()))
-                        .font(.headline)
+                        .font(.title3.bold())
                         .foregroundStyle(ink)
                         .multilineTextAlignment(.center)
-                    DatePicker("Day", selection: Binding(get: { monitor.selectedHistoryDay }, set: {
+                        .minimumScaleFactor(0.75)
+                        .lineLimit(1)
+                    DatePicker("Choose day", selection: Binding(get: { monitor.selectedHistoryDay }, set: {
                         historySpan = 1
                         monitor.selectHistoryDay($0)
                     }), in: ...Date(), displayedComponents: .date)
                     .labelsHidden()
+                    .datePickerStyle(.compact)
                     .tint(accentMint)
+                    .id(monitor.selectedHistoryDay)
                 }
                 .frame(maxWidth: .infinity)
                 Button { shiftHistory(1) } label: {
@@ -2779,6 +2783,7 @@ struct ContentView: View {
             } else {
                 panel {
                     HistoryChartsView(entries: displayedHistory, day: monitor.selectedHistoryDay, selected: $selectedHistoryReading, coral: coral, teal: accentMint, lavender: stamp, caption: muted, ink: ink)
+                        .id(Calendar.current.startOfDay(for: monitor.selectedHistoryDay))
                 }
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
                     ForEach(Array(displayedHistory.suffix(15).reversed())) { sample in
@@ -3074,7 +3079,7 @@ struct ContentView: View {
         Group {
         panel { DisclosureGroup("FAQ") { VStack(alignment: .leading, spacing: 12) {
             DisclosureGroup("How do I share with family?") {
-                Text("Settings → Family sharing. Create your own login. The parent with the baby taps Create family code and sends the 6 letters. Others type that same code and choose Mum, Dad, Nan or Carer. Whoever is with the baby taps I’m with [name] — start monitoring. Same Wi‑Fi PIN is only for downstairs in the house.")
+                Text("Settings → Family sharing. Sign in with your own email. The phone with the baby taps Create family code and sends the 6 letters. Everyone else types that same code and chooses Mum, Dad, Nan or Carer. Whoever is with the baby taps I’m with [name]. Same code when someone else takes over. Same-house Wi‑Fi PIN is only for downstairs.")
                     .font(.caption).padding(.top, 6)
             }
             DisclosureGroup("Which devices work?") {
@@ -3086,7 +3091,7 @@ struct ContentView: View {
                     .font(.caption).padding(.top, 6)
             }
             DisclosureGroup("Where is History?") {
-                Text("History keeps about one reading every 30 seconds for 30 calendar days on this iPhone. Use the date at the top of History, or the arrows, to change day. Charts and the list follow that date.")
+                Text("History keeps about one reading every 30 seconds for 30 calendar days on this iPhone. Change the date at the top, or use the arrows. Charts and the list always follow that calendar day — the chart opens on the full day.")
                     .font(.caption).padding(.top, 6)
             }
             DisclosureGroup("Will alarms always sound?") {

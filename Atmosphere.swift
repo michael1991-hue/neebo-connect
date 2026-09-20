@@ -29,8 +29,8 @@ struct AtmosphereBackdrop: View {
     private func drawSky(_ canvas: GraphicsContext, size: CGSize) {
         let nightTop = Color(red: 0.01, green: 0.05, blue: 0.12)
         let nightBottom = Color(red: 0.02, green: 0.13, blue: 0.23)
-        let dayTop = Color(red: 0.98, green: 0.86, blue: 0.52)
-        let dayBottom = Color(red: 1.0, green: 0.72, blue: 0.38)
+        let dayTop = Color(red: 1.0, green: 0.78, blue: 0.22)
+        let dayBottom = Color(red: 1.0, green: 0.48, blue: 0.12)
         let top = mode == .night ? nightTop : dayTop
         let bottom = mode == .night ? nightBottom : dayBottom
         canvas.fill(
@@ -40,6 +40,21 @@ struct AtmosphereBackdrop: View {
                 startPoint: CGPoint(x: size.width / 2, y: 0),
                 endPoint: CGPoint(x: size.width / 2, y: size.height)
             )
+        )
+        if mode == .day { drawSun(canvas, size: size) }
+    }
+
+    private func drawSun(_ canvas: GraphicsContext, size: CGSize) {
+        let center = CGPoint(x: size.width * 0.82, y: size.height * 0.16)
+        var glow = canvas
+        glow.opacity = 0.45
+        glow.fill(
+            Path(ellipseIn: CGRect(x: center.x - 54, y: center.y - 54, width: 108, height: 108)),
+            with: .color(Color(red: 1, green: 0.92, blue: 0.45))
+        )
+        canvas.fill(
+            Path(ellipseIn: CGRect(x: center.x - 28, y: center.y - 28, width: 56, height: 56)),
+            with: .color(Color(red: 1, green: 0.95, blue: 0.62))
         )
     }
 

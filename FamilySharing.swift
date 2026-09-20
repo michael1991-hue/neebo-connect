@@ -823,7 +823,6 @@ struct FamilySharingView: View {
     @State private var joinRelation: FamilyRelation = .mum
     @AppStorage("nivvi.profile.name") private var childName = ""
     @AppStorage("nivvi.host.relation") private var hostRelation = ""
-    @State private var consent = false
     @State private var confirmDelete = false
     @State private var confirmStop = false
     @State private var showPassword = false
@@ -915,7 +914,7 @@ struct FamilySharingView: View {
             }
             .accessibilityElement(children: .combine)
             .accessibilityAddTraits(.isHeader)
-            Text("Share live readings with family. One 6-letter code.")
+            Text("One child. One 6-letter code. That’s it.")
         }
         .fixedSize(horizontal: false, vertical: true)
     }
@@ -1057,19 +1056,21 @@ struct FamilySharingView: View {
 
     private var signedIn: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text(relay.account?.email ?? "")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(muted)
-                .textSelection(.enabled)
             if relay.families.isEmpty {
                 joinCard
-                Text("Or start this child’s family").font(.headline)
+                Text("Or start this child’s family")
+                    .font(.headline)
+                    .foregroundStyle(ink)
+                Text("One 6-letter code for everyone. Send it once.")
+                    .font(.subheadline)
+                    .foregroundStyle(muted)
                 Button {
                     relay.perform { try await relay.createProfile(label: label) }
                 } label: {
-                    Text("Create family code").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 12)
+                    Text("Create family code").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 14)
                 }
                 .buttonStyle(.borderedProminent).tint(accent).disabled(relay.busy)
+                accountMenu
             } else {
                 if relay.families.count > 1 {
                     Picker("Family", selection: $relay.selected) {
@@ -1079,70 +1080,62 @@ struct FamilySharingView: View {
                     }
                 }
                 if !relay.familyCode.isEmpty {
-                    Text("Family code").font(.subheadline.weight(.semibold))
-                    Text(relay.familyCode)
-                        .font(.system(size: 40, weight: .bold, design: .rounded))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity)
-                    ShareLink(item: inviteMessage(code: relay.familyCode)) {
-                        Label("Send family code", systemImage: "square.and.arrow.up")
-                            .font(.headline)
+                    VStack(spacing: 8) {
+                        Text("Family code")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(muted)
+                        Text(relay.familyCode)
+                            .font(.system(size: 42, weight: .bold, design: .rounded))
+                            .tracking(3)
+                            .textSelection(.enabled)
                             .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                    }
-                }
-                labeled("This phone is") {
-                    Picker("This phone is", selection: $hostRelation) {
-                        Text("Choose…").tag("")
-                        ForEach(FamilyRelation.allCases) { relation in
-                            Text(relation.title).tag(relation.rawValue)
+                            .accessibilityLabel("Family code \(relay.familyCode)")
+                        ShareLink(item: inviteMessage(code: relay.familyCode)) {
+                            Label("Send code", systemImage: "square.and.arrow.up")
+                                .font(.headline)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 12)
                         }
                     }
-                    .pickerStyle(.menu)
-                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                Toggle("I can share these readings", isOn: $consent)
-                Button {
-                    relay.perform { try await relay.enable(label: label) }
-                } label: {
-                    Text(relay.publishing
-                         ? "Monitoring on this phone"
-                         : (relay.remote?.snapshot != nil
-                            ? "Take over monitoring"
-                            : "I’m with \(familyChildName) — start monitoring"))
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(accent)
-                .disabled(!consent || relay.busy || relay.publishing)
                 if relay.publishing {
-                    Button("Stop monitoring") { relay.perform { try await relay.releaseHost() } }
-                }
-                TimelineView(.periodic(from: .now, by: 1)) { _ in
-                    Text(relay.statusLine)
+                    Text("You’re with \(familyChildName). Family can follow from their phones.")
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(relay.linkState == .live ? accent : Color.orange)
-                }
-                Button("Refresh") { Task { await relay.fetchRemote() } }
-                    .buttonStyle(.bordered)
-                if relay.isOwner {
-                    Button("Stop sharing with everyone", role: .destructive) { confirmStop = true }
+                        .foregroundStyle(ink)
+                    TimelineView(.periodic(from: .now, by: 1)) { _ in
+                        Text(relay.statusLine)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(relay.linkState == .live ? accent : Color.orange)
+                    }
+                    Button("Stop monitoring") { relay.perform { try await relay.releaseHost() } }
+                        .buttonStyle(.bordered)
                 } else {
-                    Button("Leave this family", role: .destructive) { relay.perform { try await relay.leave() } }
+                    Button {
+                        relay.perform { try await relay.enable(label: label) }
+                    } label: {
+                        Text(relay.remote?.snapshot != nil
+                             ? "I’m with \(familyChildName) — take over"
+                             : "I’m with \(familyChildName)")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(accent)
+                    .disabled(relay.busy)
+                    Text("Tap this on the phone next to the band so the rest of the family can watch.")
+                        .font(.caption)
+                        .foregroundStyle(muted)
+                    TimelineView(.periodic(from: .now, by: 1)) { _ in
+                        Text(relay.statusLine)
+                            .font(.subheadline)
+                            .foregroundStyle(muted)
+                    }
                 }
-                DisclosureGroup("Join another family") { joinCard.padding(.top, 8) }
+                accountMenu
             }
-            Button("Turn on family alerts") { relay.perform { try await relay.notifications() } }
-                .buttonStyle(.bordered)
             Text("Alarms can miss if a phone is locked, on Silent, or offline. Not a medical monitor.")
                 .font(.caption).foregroundStyle(muted)
-            HStack {
-                Button("Sign out") { relay.perform { try await relay.signOut() } }
-                Button("Delete account", role: .destructive) { confirmDelete = true }
-            }
-            .buttonStyle(.bordered)
             if !relay.message.isEmpty {
                 Text(relay.message).font(.callout).foregroundStyle(messageIsError ? .orange : ink)
             }
@@ -1150,10 +1143,48 @@ struct FamilySharingView: View {
         }
     }
 
+    private var accountMenu: some View {
+        DisclosureGroup("Account") {
+            VStack(alignment: .leading, spacing: 12) {
+                if let email = relay.account?.email, !email.isEmpty {
+                    Text(email)
+                        .font(.subheadline)
+                        .foregroundStyle(muted)
+                        .textSelection(.enabled)
+                }
+                if !relay.families.isEmpty {
+                    labeled("This phone is") {
+                        Picker("This phone is", selection: $hostRelation) {
+                            Text("Choose…").tag("")
+                            ForEach(FamilyRelation.allCases) { relation in
+                                Text(relation.title).tag(relation.rawValue)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    DisclosureGroup("Join another family") { joinCard.padding(.top, 8) }
+                    Button("Turn on family alerts") { relay.perform { try await relay.notifications() } }
+                    if relay.isOwner {
+                        Button("Stop sharing with everyone", role: .destructive) { confirmStop = true }
+                    } else {
+                        Button("Leave this family", role: .destructive) { relay.perform { try await relay.leave() } }
+                    }
+                }
+                HStack {
+                    Button("Sign out") { relay.perform { try await relay.signOut() } }
+                    Button("Delete account", role: .destructive) { confirmDelete = true }
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding(.top, 8)
+        }
+    }
+
     private var joinCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Join a family").font(.headline)
-            Text("If someone sent you a 6-letter code, type it here and say who you are.")
+            Text("Type the 6-letter code and who you are.")
                 .font(.subheadline)
                 .foregroundStyle(muted)
             labeled("Family code") {

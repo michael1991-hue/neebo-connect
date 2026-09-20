@@ -18,7 +18,7 @@ Bluetooth is up; no heart-rate packet yet. Band on, charged, not in another app.
 
 ## Where is history for another day?
 
-History tab: date at the top, or the arrows. Charts follow that calendar day. 30 days on the iPhone.
+History tab: date at the top, or the arrows. The chart opens on the full calendar day. Charts and the list follow that date. 30 days on the iPhone.
 
 ## Will alarms always sound?
 
