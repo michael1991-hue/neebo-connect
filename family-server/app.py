@@ -122,6 +122,8 @@ def initialize():
         for stmt in (
             "ALTER TABLE members ADD COLUMN role TEXT NOT NULL DEFAULT 'watcher'",
             "ALTER TABLE invites ADD COLUMN role TEXT NOT NULL DEFAULT 'watcher'",
+            "ALTER TABLE members ADD COLUMN relation TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE invites ADD COLUMN relation TEXT NOT NULL DEFAULT ''",
         ):
             try:
                 c.execute(stmt)
@@ -243,6 +245,7 @@ class Reset(Code):
 class Address(BaseModel):
     email: str = Field(max_length=254)
     role: str = Field(default="watcher", pattern="^(watcher|carer)$")
+    relation: str = Field(default="", max_length=20)
 
 
 class Family(BaseModel):
@@ -451,11 +454,19 @@ def stop_sharing(family: str, user=Depends(require_user)):
 @app.post("/families/{family}/invites")
 def invite(family: str, body: Address, user=Depends(require_user)):
     throttle("invite:" + user["id"], 20, 3600)
+    relation = (body.relation or "").strip().lower()
+    allowed = {"", "mum", "dad", "nan", "auntie", "uncle", "carer"}
+    if relation not in allowed:
+        raise HTTPException(400, "Choose Mum, Dad, Nan, Auntie, Uncle or Carer")
+    role = "carer" if relation == "carer" or body.role == "carer" else "watcher"
     token = secrets.token_urlsafe(32)
     with db() as c:
         owner(c, family, user)
         c.execute("DELETE FROM invites WHERE family=? AND email=?", (family, email(body.email)))
-        c.execute("INSERT INTO invites VALUES(?,?,?,?,?)", (digest(token), family, email(body.email), time.time()+86400, body.role))
+        c.execute(
+            "INSERT INTO invites(token,family,email,expires,role,relation) VALUES(?,?,?,?,?,?)",
+            (digest(token), family, email(body.email), time.time() + 86400, role, relation),
+        )
     return {"code": token}
 
 
@@ -467,7 +478,10 @@ def accept(body: Invite, user=Depends(require_user)):
         row = c.execute("SELECT * FROM invites WHERE token=? AND email=? AND expires>?", (digest(body.code.strip()), user["email"], time.time())).fetchone()
         if not row:
             raise HTTPException(400, "Invitation unavailable, expired or addressed to another account")
-        c.execute("INSERT OR IGNORE INTO members VALUES(?,?,?)", (row["family"], user["id"], row["role"] if "role" in row.keys() else "watcher"))
+        c.execute(
+            "INSERT OR IGNORE INTO members(family,user_id,role,relation) VALUES(?,?,?,?)",
+            (row["family"], user["id"], row["role"] if "role" in row.keys() else "watcher", row["relation"] if "relation" in row.keys() else ""),
+        )
         c.execute("DELETE FROM invites WHERE token=?", (row["token"],))
     return {"ok": True}
 
@@ -476,7 +490,7 @@ def accept(body: Invite, user=Depends(require_user)):
 def members(family: str, user=Depends(require_user)):
     with db() as c:
         owner(c, family, user)
-        return [dict(r) for r in c.execute("SELECT users.id,users.email,members.role FROM members JOIN users ON users.id=user_id WHERE family=?", (family,))]
+        return [dict(r) for r in c.execute("SELECT users.id,users.email,members.role,members.relation FROM members JOIN users ON users.id=user_id WHERE family=?", (family,))]
 
 
 @app.delete("/families/{family}/members/{member_id}")

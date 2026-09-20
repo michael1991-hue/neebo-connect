@@ -150,3 +150,30 @@ def test_sensor_recovery_is_not_a_heart_rate_recovery(client):
     assert client.put(path, headers=owner, json=snapshot("none")).status_code == 200
     with relay.db() as c:
         assert c.execute("SELECT kind FROM pushes").fetchone()[0] == "recovery"
+
+
+def test_invite_stores_family_relation(client):
+    owner, _ = account(client, "owner@example.com")
+    nan, _ = account(client, "nan@example.com")
+    family = group(client, owner)
+    code = client.post(
+        f"/families/{family}/invites",
+        headers=owner,
+        json={"email": "nan@example.com", "relation": "nan"},
+    ).json()["code"]
+    assert client.post("/invites/accept", headers=nan, json={"code": code}).status_code == 200
+    people = client.get(f"/families/{family}/members", headers=owner).json()
+    assert people[0]["relation"] == "nan"
+    assert people[0]["role"] == "watcher"
+    carer_code = client.post(
+        f"/families/{family}/invites",
+        headers=owner,
+        json={"email": "carer@example.com", "relation": "carer"},
+    ).json()["code"]
+    carer, _ = account(client, "carer@example.com")
+    assert client.post("/invites/accept", headers=carer, json={"code": carer_code}).status_code == 200
+    people = client.get(f"/families/{family}/members", headers=owner).json()
+    roles = {row["email"]: row for row in people}
+    assert roles["carer@example.com"]["role"] == "carer"
+    assert roles["carer@example.com"]["relation"] == "carer"
+

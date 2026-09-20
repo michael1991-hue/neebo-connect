@@ -7,7 +7,28 @@ import UIKit
 
 struct FamilyAccount: Codable { let token: String; let user_id: String; let email: String }
 struct SharedFamily: Codable, Identifiable { let id: String; let label: String; let owner: String; var role: String? }
-struct FamilyMember: Codable, Identifiable { let id: String; let email: String; var role: String? }
+struct FamilyMember: Codable, Identifiable { let id: String; let email: String; var role: String?; var relation: String? }
+
+enum FamilyRelation: String, CaseIterable, Identifiable {
+    case mum, dad, nan, auntie, uncle, carer
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .mum: return "Mum"
+        case .dad: return "Dad"
+        case .nan: return "Nan"
+        case .auntie: return "Auntie"
+        case .uncle: return "Uncle"
+        case .carer: return "Carer"
+        }
+    }
+    var role: String { self == .carer ? "carer" : "watcher" }
+    var hint: String {
+        self == .carer
+            ? "Their phone can be the one with the baby."
+            : "They watch live readings on their iPhone."
+    }
+}
 struct FamilySample: Codable, Equatable {
     var t: Double
     var hr: Double?
@@ -148,6 +169,7 @@ final class FamilyRelay: ObservableObject {
         ownFamily?.id ?? families.first(where: { $0.id == selected && $0.role == "carer" })?.id
     }
     var isCarer: Bool { families.contains { $0.role == "carer" } }
+    var isOwner: Bool { ownFamily != nil }
     var signedIn: Bool { account != nil }
     var userID: String? { account?.user_id }
     var followingFamily: Bool { signedIn && selected != nil && selected != ownFamily?.id }
@@ -279,17 +301,21 @@ final class FamilyRelay: ObservableObject {
             message = "This phone is no longer with the baby. Parents keep the family."
         }
     }
-    func invite(email: String, role: String = "watcher") async throws {
-        guard let family = ownFamily else { throw FamilyError.message("Enable sharing first.") }
-        let reply: FamilyReply = try await request("families/\(family.id)/invites", method: "POST", body: body(["email": email, "role": role]))
+    func invite(email: String, role: String = "watcher", relation: String = "") async throws {
+        guard let family = ownFamily else { throw FamilyError.message("Turn on sharing first — one tap above.") }
+        let reply: FamilyReply = try await request("families/\(family.id)/invites", method: "POST", body: body(["email": email, "role": role, "relation": relation]))
         invitation = reply.code
-        message = role == "carer"
-            ? "Give this code to Nan. Her iPhone can be the one with the baby."
-            : "Give this private code to that person. It expires in 24 hours and only their verified email can accept it."
+        let who = FamilyRelation(rawValue: relation)?.title ?? "family"
+        message = relation == "carer"
+            ? "Send this to \(who). Their phone can stay with the baby."
+            : "Send this to \(who). They open Nivvi, sign up with that email, and paste the code."
+        try await refreshMembers()
     }
     func join(code: String) async throws {
         let _: FamilyReply = try await request("invites/accept", method: "POST", body: body(["code": code]))
-        try await refreshFamilies(); message = "Invitation accepted. You have read-only access."
+        try await refreshFamilies()
+        message = "You’re in. Live readings will show here when the phone with the baby is sharing."
+        UIApplication.shared.registerForRemoteNotifications()
     }
     func refreshMembers() async throws {
         guard let family = ownFamily else { members = []; return }
@@ -636,7 +662,9 @@ struct FamilySharingView: View {
     @State private var code = ""
     @State private var label = "Family"
     @State private var inviteEmail = ""
+    @State private var inviteRelation: FamilyRelation = .mum
     @State private var joinCode = ""
+    @AppStorage("nivvi.profile.name") private var childName = ""
     @State private var consent = false
     @State private var confirmDelete = false
     @State private var confirmStop = false
@@ -697,7 +725,10 @@ struct FamilySharingView: View {
         } message: { Text("Deletes the latest online snapshot and invitations. New invitations will be needed to share again.") }
         .task(id: "\(phase)-\(relay.signedIn)") {
             guard phase == .active, relay.configured, relay.signedIn else { return }
-            do { try await relay.refreshFamilies() } catch { relay.message = error.localizedDescription }
+            do {
+                try await relay.refreshFamilies()
+                try await relay.refreshMembers()
+            } catch { relay.message = error.localizedDescription }
             await relay.fetchRemote()
         }
         .onChange(of: relay.selected) { _ in Task { await relay.fetchRemote() } }
@@ -869,37 +900,58 @@ struct FamilySharingView: View {
     }
 
     private var signedIn: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 18) {
             Text(relay.account?.email ?? "")
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(muted)
                 .textSelection(.enabled)
-            ownerControls
-            Divider()
-            Text("Join a family").font(.headline)
-            labeled("Invitation code") {
-                TextField("Private invitation code", text: $joinCode)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .textContentType(.oneTimeCode)
+            if relay.isOwner || relay.isCarer || relay.publishing || relay.families.isEmpty {
+                ownerControls
             }
-            Button("Accept invitation") { relay.perform { try await relay.join(code: joinCode); joinCode = "" } }
+            if relay.followingFamily || relay.families.isEmpty {
+                watchControls
+            }
+            Button("Turn on family alerts") { relay.perform { try await relay.notifications() } }
                 .buttonStyle(.bordered)
-            if !relay.families.isEmpty { remoteControls }
-            Button("Enable family notifications") { relay.perform { try await relay.notifications() } }
-                .buttonStyle(.bordered)
-            Text("Remote updates are supplementary. Internet, phone background limits, Silent mode and Focus can delay or prevent alerts. No Critical Alerts permission is included.")
+            Text("Alerts can miss if a phone is locked, on Silent, or off the internet. This is not a medical monitor.")
                 .font(.caption)
                 .foregroundStyle(muted)
             HStack {
                 Button("Sign out") { relay.perform { try await relay.signOut() } }
-                Button("Delete online account", role: .destructive) { confirmDelete = true }
+                Button("Delete account", role: .destructive) { confirmDelete = true }
             }
             .buttonStyle(.bordered)
             if !relay.message.isEmpty {
                 Text(relay.message).font(.callout).foregroundStyle(messageIsError ? .orange : ink)
             }
             if relay.busy { ProgressView() }
+        }
+    }
+
+    private var watchControls: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Watch live readings").font(.headline)
+            if relay.families.isEmpty {
+                Text("Someone sends you a code. Sign up with the same email they invited, then paste it here.")
+                    .font(.subheadline)
+                    .foregroundStyle(muted)
+                labeled("Invite code") {
+                    TextField("Paste the full code", text: $joinCode)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.asciiCapable)
+                }
+                Button {
+                    relay.perform { try await relay.join(code: joinCode); joinCode = "" }
+                } label: {
+                    Text("Join family").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 12)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(accent)
+                .disabled(joinCode.trimmingCharacters(in: .whitespaces).count < 20 || relay.busy)
+            } else {
+                remoteControls
+            }
         }
     }
 
@@ -1032,25 +1084,102 @@ struct FamilySharingView: View {
     }
 
     private var ownerControls: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Phone with the baby").font(.headline)
-            Text("This phone stays on Bluetooth and sends live numbers plus today’s history to invited emails.").font(.caption)
-            Toggle("I have authority to share these readings", isOn: $consent)
-            Button(relay.publishing ? "This phone is with the baby" : (relay.isCarer ? "I’m looking after the baby" : "Start sharing")) { relay.perform { try await relay.enable(label: label) } }.disabled(!consent || relay.publishing)
-            if relay.families.contains(where: { $0.owner == relay.userID }) {
-                TextField("Family member’s email", text: $inviteEmail).keyboardType(.emailAddress).textInputAutocapitalization(.never).autocorrectionDisabled()
-                Button("Invite to watch") { relay.perform { try await relay.invite(email: inviteEmail, role: "watcher") } }
-                Button("Invite as carer") { relay.perform { try await relay.invite(email: inviteEmail, role: "carer") } }
-                if let invitation = relay.invitation {
-                    Text("Invite code").font(.caption)
-                    Text(invitation).font(.title3.monospacedDigit().weight(.bold))
-                    ShareLink("Send the code", item: invitation)
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Share with family").font(.headline)
+            Text("This phone stays with the baby. Family open Nivvi on theirs.")
+                .font(.subheadline)
+                .foregroundStyle(muted)
+            Toggle("I can share these readings", isOn: $consent)
+            if relay.isCarer && !relay.isOwner {
+                Button {
+                    relay.perform { try await relay.enable(label: label) }
+                } label: {
+                    Text("I’m with the baby")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
                 }
+                .buttonStyle(.borderedProminent)
+                .tint(accent)
+                .disabled(!consent || relay.busy)
+            } else {
+            labeled("Who are they?") {
+                Picker("Relationship", selection: $inviteRelation) {
+                    ForEach(FamilyRelation.allCases) { relation in
+                        Text(relation.title).tag(relation)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Text(inviteRelation.hint).font(.caption).foregroundStyle(muted)
+            labeled("Their email") {
+                TextField("name@example.com", text: $inviteEmail)
+                    .keyboardType(.emailAddress)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .textContentType(.emailAddress)
+            }
+            Button {
+                relay.perform {
+                    if !relay.isOwner && !relay.isCarer { try await relay.enable(label: label) }
+                    try await relay.invite(email: inviteEmail, role: inviteRelation.role, relation: inviteRelation.rawValue)
+                }
+            } label: {
+                Text("Invite \(inviteRelation.title)")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(accent)
+            .disabled(!consent || !inviteEmail.contains("@") || relay.busy)
+            if let invitation = relay.invitation {
+                Text("Send this in Messages. They must use \(inviteEmail.isEmpty ? "that email" : inviteEmail).")
+                    .font(.caption)
+                    .foregroundStyle(muted)
+                ShareLink(item: inviteMessage(code: invitation)) {
+                    Label("Send to \(inviteRelation.title)", systemImage: "square.and.arrow.up")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(accent)
+            }
+            }
+            if !relay.members.isEmpty {
+                Text("Family").font(.subheadline.weight(.semibold))
+                ForEach(relay.members) { member in
+                    HStack {
+                        Text(FamilyRelation(rawValue: member.relation ?? "")?.title ?? "Family")
+                            .font(.subheadline.weight(.semibold))
+                        Text(member.email).font(.caption).foregroundStyle(muted)
+                        Spacer()
+                        Button("Remove", role: .destructive) { relay.perform { try await relay.revoke(member) } }
+                            .font(.caption)
+                    }
+                }
+            }
+            if relay.isOwner {
                 Button("Stop sharing", role: .destructive) { confirmStop = true }
             }
         }
-        .buttonStyle(.bordered)
-        .textFieldStyle(.roundedBorder)
+    }
+
+    private func inviteMessage(code: String) -> String {
+        let child = childName.isEmpty ? "the baby" : childName
+        return """
+        You’re invited to Nivvi as \(inviteRelation.title), to see \(child)’s live heart rate.
+
+        1. Install Nivvi
+        2. Create an account with this email: \(inviteEmail)
+        3. Settings → Family sharing → paste this code:
+
+        \(code)
+
+        The code lasts 24 hours.
+        """
     }
 
     private var remoteControls: some View {
