@@ -820,7 +820,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         refreshBackgroundHold()
     }
     func refreshBackgroundHold() {
-        let need = session.enabled || WiFiRelay.shared.hosting || WiFiRelay.shared.following
+        let need = session.enabled || WiFiRelay.shared.hosting || WiFiRelay.shared.following || FamilyRelay.shared.publishing || FamilyRelay.shared.viewingRemote
         if !need || testingSiren || (criticalAlertActive && !alarmAcknowledged) {
             holdPlayer?.stop(); holdPlayer = nil
             return
@@ -1264,6 +1264,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     }
     func peripheral(_ p: CBPeripheral, didUpdateValueFor c: CBCharacteristic, error: Error?) {
         guard owns(p) else { return }
+        if !foreground { beginBackgroundWork() }
         defer { publishFamilySnapshot() }
         // Check before accepting this packet: iOS may have suspended the timer.
         expireMeasurements()

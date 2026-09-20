@@ -425,9 +425,11 @@ final class FamilyRelay: ObservableObject {
         if uploadBusy { pendingSnapshot = next; return }
         let token = generation
         uploadBusy = true
+        let uploadTask = UIApplication.shared.beginBackgroundTask(withName: "nivvi.family.upload") { }
         Task {
             defer {
                 uploadBusy = false
+                if uploadTask != .invalid { UIApplication.shared.endBackgroundTask(uploadTask) }
                 if let pending = pendingSnapshot { pendingSnapshot = nil; capture(pending) }
             }
             guard publishing && token == generation else { return }
