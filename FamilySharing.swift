@@ -1209,7 +1209,7 @@ struct FamilySharingView: View {
     private var ownerControls: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Share with family").font(.headline)
-            Text("Whoever is with \(childName.isEmpty ? "the baby" : childName) starts monitoring. Everyone else watches.")
+            Text("Whoever is with \(childName.isEmpty ? "the baby" : childName) taps Take over. People already watching keep the same link — you do not send it again.")
                 .font(.subheadline)
                 .foregroundStyle(muted)
             labeled("This phone is") {
@@ -1244,12 +1244,12 @@ struct FamilySharingView: View {
                 }
                 if let url = URL(string: relay.shareLink), !relay.shareLink.isEmpty {
                     ShareLink(item: url) {
-                        Label("Send live link", systemImage: "link")
+                        Label("Copy the live link", systemImage: "link")
                             .font(.headline)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 12)
                     }
-                    Text("Send this once. If someone else takes over on their iPhone, this same link still works — don’t make a new one.")
+                    Text("Send this the first time only. After that, Take over is enough. Same link.")
                         .font(.caption)
                         .foregroundStyle(muted)
                 }
@@ -1385,9 +1385,9 @@ struct FamilySharingView: View {
             Button("Refresh") { Task { await relay.fetchRemote() } }
             if let url = URL(string: relay.shareLink), !relay.shareLink.isEmpty {
                 ShareLink(item: url) {
-                    Label("Send the same live link", systemImage: "link")
+                    Label("Copy the live link", systemImage: "link")
                 }
-                Text("Same link if you take over. Don’t ask for a new one.")
+                Text("You already have this. Take over on this phone — don’t send a new link.")
                     .font(.caption)
                     .foregroundStyle(muted)
             }
