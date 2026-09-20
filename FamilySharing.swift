@@ -798,7 +798,7 @@ struct FamilySharingView: View {
     private var verifyStep: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Verify email").font(.headline).foregroundStyle(ink)
-            Text("Enter the code sent to \(trimmedEmail.isEmpty ? "your email" : trimmedEmail).")
+            Text("Paste the full code emailed to \(trimmedEmail.isEmpty ? "your email" : trimmedEmail). It is a long mix of letters and numbers, not a 6-digit PIN.")
                 .font(.subheadline)
                 .foregroundStyle(muted)
                 .fixedSize(horizontal: false, vertical: true)
@@ -828,7 +828,7 @@ struct FamilySharingView: View {
     private var resetRequestStep: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Forgot password").font(.headline).foregroundStyle(ink)
-            Text("We’ll email a reset code if this address has a Nivvi account.")
+            Text("We’ll email a reset code if this address has a Nivvi account. It will be a long code to paste, not 6 digits.")
                 .font(.subheadline)
                 .foregroundStyle(muted)
             emailField(contentType: .username)
@@ -841,7 +841,7 @@ struct FamilySharingView: View {
     private var resetStep: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Set a new password").font(.headline).foregroundStyle(ink)
-            Text("Enter the code sent to \(trimmedEmail.isEmpty ? "your email" : trimmedEmail).")
+            Text("Paste the full code emailed to \(trimmedEmail.isEmpty ? "your email" : trimmedEmail). It is a long mix of letters and numbers, not a 6-digit PIN.")
                 .font(.subheadline)
                 .foregroundStyle(muted)
             codeField
@@ -946,12 +946,11 @@ struct FamilySharingView: View {
     }
 
     private var codeField: some View {
-        labeled("Verification code") {
-            TextField("6-digit code", text: $code)
-                .textContentType(.oneTimeCode)
-                .keyboardType(.numberPad)
+        labeled("Code from email") {
+            TextField("Paste the full code", text: $code)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
+                .keyboardType(.asciiCapable)
                 .focused($focus, equals: .code)
         }
     }
