@@ -6,7 +6,23 @@ import Network
 import UIKit
 
 struct FamilyAccount: Codable { let token: String; let user_id: String; let email: String }
-struct SharedFamily: Codable, Identifiable { let id: String; let label: String; let owner: String; var role: String?; var host_relation: String?; var share_token: String? }
+struct SharedFamily: Codable, Identifiable {
+    let id: String
+    let label: String
+    let owner: String
+    var role: String?
+    var host_relation: String?
+    var share_token: String?
+    var child_name: String?
+    var child_gender: String?
+    var child_birth: Double?
+    var place: String?
+    var high_enabled: Bool?
+    var low_enabled: Bool?
+    var high_threshold: Int?
+    var low_threshold: Int?
+    var duration_seconds: Int?
+}
 struct FamilyMember: Codable, Identifiable { let id: String; let email: String; var role: String?; var relation: String? }
 
 enum FamilyRelation: String, CaseIterable, Identifiable {
@@ -319,6 +335,7 @@ final class FamilyRelay: ObservableObject {
         if let token = ownFamily?.share_token, let server {
             shareLink = server.appendingPathComponent("join").appendingPathComponent(token).absoluteString
         }
+        applyCloudProfileIfWatching()
     }
     func enable(label: String) async throws {
         if ownFamily == nil && !isCarer {
@@ -338,11 +355,48 @@ final class FamilyRelay: ObservableObject {
         uploadSeq = 0
         message = "This phone is with the baby. Family see live numbers on theirs."
         try await refreshShareLink()
+        try await pushProfile()
     }
     func refreshShareLink() async {
         guard let familyID = ownFamily?.id else { return }
         let reply: FamilyReply = try await request("families/\(familyID)/share-link", method: "POST")
         if let url = reply.url { shareLink = url }
+    }
+    func pushProfile() async {
+        guard let familyID = ownFamily?.id else { return }
+        var payload: [String: Any] = [
+            "child_name": UserDefaults.standard.string(forKey: "nivvi.profile.name") ?? "",
+            "child_gender": UserDefaults.standard.string(forKey: "nivvi.profile.gender") ?? "",
+            "place": UserDefaults.standard.string(forKey: "nivvi.place") ?? "home",
+            "high_enabled": false,
+            "low_enabled": false,
+            "duration_seconds": 15,
+        ]
+        let birth = UserDefaults.standard.double(forKey: "nivvi.profile.birthDate")
+        if birth > 0 { payload["child_birth"] = birth }
+        if let data = UserDefaults.standard.data(forKey: "nivvi.alarms"), let saved = try? JSONDecoder().decode(AlarmSettings.self, from: data) {
+            payload["high_enabled"] = saved.highEnabled
+            payload["low_enabled"] = saved.lowEnabled
+            payload["duration_seconds"] = saved.durationSeconds
+            if let high = saved.highThreshold { payload["high_threshold"] = high }
+            if let low = saved.lowThreshold { payload["low_threshold"] = low }
+        }
+        let _: FamilyReply = try await request("families/\(familyID)/profile", method: "PUT", body: try JSONSerialization.data(withJSONObject: payload))
+    }
+    private func applyCloudProfileIfWatching() {
+        guard followingFamily, let row = families.first(where: { $0.id == selected }) else { return }
+        if let name = row.child_name, !name.isEmpty {
+            UserDefaults.standard.set(name, forKey: "nivvi.profile.name")
+        }
+        if let gender = row.child_gender, !gender.isEmpty {
+            UserDefaults.standard.set(gender, forKey: "nivvi.profile.gender")
+        }
+        if let birth = row.child_birth, birth > 0 {
+            UserDefaults.standard.set(birth, forKey: "nivvi.profile.birthDate")
+        }
+        if let place = row.place, !place.isEmpty {
+            UserDefaults.standard.set(place, forKey: "nivvi.place")
+        }
     }
     func releaseHost() async throws {
         publishing = false

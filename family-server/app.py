@@ -130,6 +130,15 @@ def initialize():
             "ALTER TABLE families ADD COLUMN host_stream TEXT",
             "ALTER TABLE families ADD COLUMN host_relation TEXT",
             "ALTER TABLE families ADD COLUMN share_token TEXT",
+            "ALTER TABLE families ADD COLUMN child_name TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE families ADD COLUMN child_gender TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE families ADD COLUMN child_birth REAL",
+            "ALTER TABLE families ADD COLUMN place TEXT",
+            "ALTER TABLE families ADD COLUMN high_enabled INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE families ADD COLUMN low_enabled INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE families ADD COLUMN high_threshold INTEGER",
+            "ALTER TABLE families ADD COLUMN low_threshold INTEGER",
+            "ALTER TABLE families ADD COLUMN duration_seconds INTEGER NOT NULL DEFAULT 15",
         ):
             try:
                 c.execute(stmt)
@@ -207,13 +216,13 @@ def family_for_share(token):
     if not token or len(token) > 80:
         return None
     with db() as c:
-        row = c.execute("SELECT id,label,host_relation FROM families WHERE share_token=?", (token,)).fetchone()
+        row = c.execute("SELECT id,label,host_relation,child_name FROM families WHERE share_token=?", (token,)).fetchone()
         if not row:
             return None
         latest = c.execute("SELECT payload,received FROM latest WHERE family=?", (row["id"],)).fetchone()
     snap = json.loads(latest["payload"]) if latest else None
     received = latest["received"] if latest else None
-    return {"id": row["id"], "label": row["label"], "host_relation": row["host_relation"], "snapshot": snap, "received": received}
+    return {"id": row["id"], "label": row["child_name"] or row["label"], "host_relation": row["host_relation"], "snapshot": snap, "received": received}
 
 
 def publisher(c, family, user):
@@ -283,6 +292,18 @@ class Address(BaseModel):
 
 class HostClaim(BaseModel):
     relation: str = Field(default="", max_length=20)
+
+
+class ChildProfile(BaseModel):
+    child_name: str = Field(default="", max_length=40)
+    child_gender: str = Field(default="", max_length=40)
+    child_birth: float | None = None
+    place: str | None = Field(default=None, max_length=20)
+    high_enabled: bool = False
+    low_enabled: bool = False
+    high_threshold: int | None = Field(default=None, ge=1, le=299)
+    low_threshold: int | None = Field(default=None, ge=1, le=299)
+    duration_seconds: int = Field(default=15, ge=5, le=120)
 
 
 class Family(BaseModel):
@@ -467,13 +488,19 @@ def delete_account(user=Depends(require_user)):
 @app.get("/families")
 def families(user=Depends(require_user)):
     with db() as c:
-        return [dict(r) for r in c.execute(
+        rows = [dict(r) for r in c.execute(
             """SELECT id,label,owner,
                       CASE WHEN owner=? THEN 'owner' ELSE COALESCE((SELECT role FROM members WHERE family=families.id AND user_id=?),'watcher') END AS role,
                       host_relation,
-                      CASE WHEN owner=? THEN share_token ELSE NULL END AS share_token
+                      CASE WHEN owner=? THEN share_token ELSE NULL END AS share_token,
+                      child_name, child_gender, child_birth, place,
+                      high_enabled, low_enabled, high_threshold, low_threshold, duration_seconds
                FROM families WHERE owner=? OR id IN(SELECT family FROM members WHERE user_id=?)""",
             (user["id"], user["id"], user["id"], user["id"], user["id"]))]
+    for row in rows:
+        row["high_enabled"] = bool(row.get("high_enabled"))
+        row["low_enabled"] = bool(row.get("low_enabled"))
+    return rows
 
 
 @app.post("/families")
@@ -500,6 +527,33 @@ def share_link(family: str, user=Depends(require_user)):
         owner(c, family, user)
         token = ensure_share_token(c, family)
     return {"ok": True, "token": token, "url": public_root() + "/join/" + token}
+
+
+@app.put("/families/{family}/profile")
+def save_profile(family: str, body: ChildProfile, user=Depends(require_user)):
+    place = (body.place or "").strip().lower()
+    if place and place not in {"home", "carer", "exploring"}:
+        raise HTTPException(400, "Place must be home or with carer")
+    with db() as c:
+        owner(c, family, user)
+        c.execute(
+            """UPDATE families SET child_name=?, child_gender=?, child_birth=?, place=?,
+                      high_enabled=?, low_enabled=?, high_threshold=?, low_threshold=?, duration_seconds=?
+               WHERE id=?""",
+            (
+                body.child_name.strip()[:40],
+                body.child_gender.strip()[:40],
+                body.child_birth,
+                place or None,
+                1 if body.high_enabled else 0,
+                1 if body.low_enabled else 0,
+                body.high_threshold,
+                body.low_threshold,
+                body.duration_seconds,
+                family,
+            ),
+        )
+    return {"ok": True}
 
 
 JOIN_PAGE = """<!doctype html>

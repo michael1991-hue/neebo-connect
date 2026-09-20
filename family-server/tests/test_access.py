@@ -235,6 +235,13 @@ def test_share_link_live_view(client):
     assert live["heart_rate"] == 100
     assert live["waiting"] is False
     assert client.get("/join/not-a-real-token/live").status_code == 404
+    assert client.put(f"/families/{family}/profile", headers=owner, json={"child_name": "Delilah Faith", "place": "home", "low_enabled": True, "low_threshold": 80}).status_code == 200
+    listed = client.get("/families", headers=owner).json()[0]
+    assert listed["child_name"] == "Delilah Faith"
+    assert listed["low_enabled"] is True
+    assert listed["low_threshold"] == 80
+    assert "Delilah Faith" in client.get("/join/" + token).text
+
 
 
 

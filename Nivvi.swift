@@ -2001,7 +2001,12 @@ struct ContentView: View {
     private var displayedHistory: [SavedMeasurement] {
         SavedMeasurement.uniquelyIdentified(monitor.history.sorted { $0.time < $1.time })
     }
-    private var displayName: String { childName.isEmpty ? "Your child" : childName }
+    private var displayName: String {
+        if watchingFamily, let name = family.families.first(where: { $0.id == family.selected })?.child_name, !name.isEmpty {
+            return name
+        }
+        return childName.isEmpty ? "Your child" : childName
+    }
     private var mirroringNursery: Bool { (watchingWifi && wifi.remoteFresh) || watchingFamily }
     private var remoteStamp: Date? {
         if watchingWifi, let captured = wifi.latest?.captured { return Date(timeIntervalSince1970: captured) }
@@ -2230,6 +2235,9 @@ struct ContentView: View {
                 childGender = gender
                 avatarSymbol = symbol
                 avatarColor = color
+                if family.isOwner {
+                    family.perform { try await family.pushProfile() }
+                }
                 if !nurseryAcknowledged { showNursery = true }
                 return true
             }
