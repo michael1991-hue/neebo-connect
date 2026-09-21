@@ -221,7 +221,7 @@ final class FamilyRelay: ObservableObject {
     private var watching = false
     private var ownFamily: SharedFamily? { families.first { $0.owner == account?.user_id } }
     private var publishFamilyID: String? {
-        ownFamily?.id ?? families.first(where: { $0.id == selected && $0.role == "carer" })?.id
+        selected ?? ownFamily?.id
     }
     var isCarer: Bool { families.contains { $0.role == "carer" } }
     var isOwner: Bool { ownFamily != nil }
@@ -364,7 +364,7 @@ final class FamilyRelay: ObservableObject {
         try await claimHost()
     }
     func claimHost() async throws {
-        guard let familyID = publishFamilyID ?? selected else { throw FamilyError.message("Join or create the family first.") }
+        guard let familyID = publishFamilyID else { throw FamilyError.message("Join or create the family first.") }
         let relation = UserDefaults.standard.string(forKey: "nivvi.host.relation") ?? ""
         let reply: FamilyReply = try await request("families/\(familyID)/host", method: "POST", body: body(["relation": relation]))
         publishing = true
@@ -372,9 +372,14 @@ final class FamilyRelay: ObservableObject {
         lastHistoryUpload = nil
         publishStream = reply.stream_id ?? UUID().uuidString
         uploadSeq = 0
+        if let index = families.firstIndex(where: { $0.id == familyID }) {
+            families[index].role = "carer"
+            if !relation.isEmpty { families[index].host_relation = relation }
+        }
         message = "This phone is next to the band. Family see live numbers on theirs."
         try await refreshShareLink()
         try await pushProfile()
+        try await refreshFamilies()
     }
     func refreshShareLink() async throws {
         guard let familyID = ownFamily?.id else { return }
@@ -620,7 +625,7 @@ final class FamilyRelay: ObservableObject {
         return parts?.url
     }
     private func connectSocket() {
-        let familyID = followingFamily ? selected : ownFamily?.id
+        let familyID = selected ?? ownFamily?.id
         guard signedIn, let familyID, let url = socketURL(family: familyID), let token = account?.token else { return }
         if socket != nil, socketFamily == familyID { return }
         dropSocket(resetBackoff: false)
@@ -799,7 +804,7 @@ final class FamilyRelay: ObservableObject {
         return true
     }
     func acknowledgeAlarm() async {
-        let familyID = followingFamily ? selected : ownFamily?.id
+        let familyID = selected ?? ownFamily?.id
         guard signedIn, let familyID else { return }
         do {
             let _: FamilyReply = try await request("families/\(familyID)/ack", method: "POST")

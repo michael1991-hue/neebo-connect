@@ -216,6 +216,32 @@ def test_monitoring_handover_is_exclusive(client):
     assert client.post(f"/families/{family}/host", headers=watcher, json={"relation": "auntie"}).status_code == 200
 
 
+def test_any_family_member_can_host_and_publish(client):
+    mum, _ = account(client, "mum@example.com")
+    dad, _ = account(client, "dad@example.com")
+    family = group(client, mum)
+    code = client.get("/families", headers=mum).json()[0]["join_code"]
+    assert client.post("/invites/accept", headers=dad, json={"code": code, "relation": "dad"}).status_code == 200
+    assert client.get("/families", headers=dad).json()[0]["role"] == "watcher"
+    host = client.post(f"/families/{family}/host", headers=dad, json={"relation": "dad"})
+    assert host.status_code == 200
+    packed = snapshot()
+    packed["stream_id"] = host.json()["stream_id"]
+    packed["seq"] = 1
+    assert client.put(f"/families/{family}/latest", headers=dad, json=packed).status_code == 200
+    people = {row["email"]: row for row in client.get(f"/families/{family}/members", headers=mum).json()}
+    assert people["dad@example.com"]["role"] == "carer"
+    assert people["dad@example.com"]["relation"] == "dad"
+    nan, _ = account(client, "nan@example.com")
+    assert client.post("/invites/accept", headers=nan, json={"code": code, "relation": "nan"}).status_code == 200
+    assert client.post("/invites/accept", headers=nan, json={"code": code, "relation": "me"}).status_code == 200
+    people = {row["email"]: row for row in client.get(f"/families/{family}/members", headers=mum).json()}
+    assert people["nan@example.com"]["role"] == "carer"
+    assert people["nan@example.com"]["relation"] == "me"
+    health = client.get("/health").json()
+    assert health["anyone_can_host"] is True
+
+
 def test_share_link_live_view(client):
     owner, _ = account(client, "mum@example.com")
     family = group(client, owner)

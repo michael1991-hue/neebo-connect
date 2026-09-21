@@ -435,7 +435,7 @@ async def privacy_headers(request, call_next):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "push_configured": bool(os.environ.get("NIVVI_APNS_KEY")), "join_codes": True}
+    return {"status": "ok", "push_configured": bool(os.environ.get("NIVVI_APNS_KEY")), "join_codes": True, "anyone_can_host": True}
 
 
 @app.post("/auth/register")
@@ -723,6 +723,10 @@ def claim_host(family: str, body: HostClaim, user=Depends(require_user)):
         publisher(c, family, user)
         ensure_join_code(c, family)
         c.execute("UPDATE families SET host_user=?, host_stream=?, host_relation=? WHERE id=?", (user["id"], stream, relation, family))
+        if relation:
+            c.execute("UPDATE members SET role='carer', relation=? WHERE family=? AND user_id=?", (relation, family, user["id"]))
+        else:
+            c.execute("UPDATE members SET role='carer' WHERE family=? AND user_id=?", (family, user["id"]))
     HUB.emit(family, {"type": "host", "stream_id": stream, "host_relation": relation, "host_user": user["id"]})
     return {"ok": True, "stream_id": stream, "host_relation": relation}
 
@@ -792,6 +796,11 @@ def accept(body: Invite, user=Depends(require_user)):
             "INSERT OR IGNORE INTO members(family,user_id,role,relation) VALUES(?,?,?,?)",
             (family["id"], user["id"], role, relation),
         )
+        if relation:
+            c.execute(
+                "UPDATE members SET role=?, relation=? WHERE family=? AND user_id=?",
+                (role, relation, family["id"], user["id"]),
+            )
     return {"ok": True}
 
 
