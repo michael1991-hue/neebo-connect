@@ -605,7 +605,7 @@ final class FamilyRelay: ObservableObject {
     }
     func saveDeviceToken(_ token: String) { deviceToken = token }
     func notifications() async throws {
-        let granted = try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge])
+        let granted = try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge, .criticalAlert])
         guard granted else { throw FamilyError.message("Enable notifications in iPhone Settings.") }
         UIApplication.shared.registerForRemoteNotifications()
         message = "Registering this phone for family updates. Notifications can be delayed or silenced by iOS."

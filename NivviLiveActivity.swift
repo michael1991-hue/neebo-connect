@@ -52,7 +52,7 @@ enum NivviLiveActivityBridge {
         }
         if let activity = Activity<NivviActivityAttributes>.activities.first {
             LiveActivityPush.watch(activity)
-            if Date().timeIntervalSince(lastPush) < 0.4 { return }
+            if Date().timeIntervalSince(lastPush) < 5 { return }
             lastPush = Date()
             Task {
                 if #available(iOS 16.2, *) {

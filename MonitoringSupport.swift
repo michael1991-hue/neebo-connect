@@ -357,14 +357,26 @@ enum HistoryChartPolicy {
         let boundedEnd = min(finish, max(start.addingTimeInterval(duration), end))
         return boundedEnd.addingTimeInterval(-duration)...boundedEnd
     }
-    static let zoomSpans: [TimeInterval] = [0, 6 * 3600, 3600, 900, 300]
+    static let zoomSpans: [TimeInterval] = [0, 12 * 3600, 6 * 3600, 3600]
     static func closerZoom(than span: TimeInterval) -> TimeInterval {
-        zoomSpans.filter { $0 > 0 && (span <= 0 || $0 < span) }.max() ?? 300
+        zoomSpans.filter { $0 > 0 && (span <= 0 || $0 < span) }.max() ?? 3600
     }
     static func widerZoom(than span: TimeInterval) -> TimeInterval {
         if span <= 0 { return 0 }
         let wider = zoomSpans.filter { $0 > span }
         return wider.min() ?? 0
+    }
+    struct Summary {
+        var min: Double
+        var max: Double
+        var median: Double
+    }
+    static func summary(_ values: [Double]) -> Summary? {
+        let finite = values.filter(\.isFinite).sorted()
+        guard let low = finite.first, let high = finite.last else { return nil }
+        let middle = finite.count / 2
+        let median = finite.count % 2 == 1 ? finite[middle] : (finite[middle - 1] + finite[middle]) / 2
+        return Summary(min: low, max: high, median: median)
     }
     static func yScale(values: [Double], floor: Double, ceiling: Double, pad: Double, fallback: Double) -> ClosedRange<Double> {
         let finite = values.filter(\.isFinite)

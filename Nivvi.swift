@@ -404,6 +404,8 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     private var freshnessTimer: Timer?
     private lazy var archive = DailyHistoryStore(folder: folder)
     private var historyURL: URL { folder.appendingPathComponent("measurements.json") }
+    private var lastFamilyUploadAt: Date?
+    private var lastFamilyUploadKey: String?
     private func publishFamilySnapshot() {
         let now = Date()
         let hrFresh = lastHeartRateUpdate.map { now.timeIntervalSince($0) <= 30 } == true
@@ -412,12 +414,19 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         let hr = hrFresh ? (pulseOximeterRate ?? verifiedHeartRate.map(Double.init) ?? customHeartRateCandidate.map(Double.init)) : nil
         let ox = oxFresh ? OxygenReading.clamp(pulseOximeterOxygen ?? verifiedOxygen.map(Double.init) ?? customOxygenCandidate.map(Double.init) ?? -1) : nil
         let points = history.suffix(120).map { FamilySample(t: $0.time.timeIntervalSince1970, hr: $0.heartRateValue, o2: $0.oxygenValue) }
+        let alarm = alarmKind.map { $0 == .high ? "high" : "low" } ?? (staleHeartRateDetected ? "sensor" : "none")
+        let key = "\(alarm)|\(connection.rawValue)"
+        if key == lastFamilyUploadKey, let last = lastFamilyUploadAt, now.timeIntervalSince(last) < 5 {
+            return
+        }
+        lastFamilyUploadAt = now
+        lastFamilyUploadKey = key
         let snapshot = FamilySnapshot(
             captured: now.timeIntervalSince1970,
             heart_rate: hr,
             oxygen: ox,
             source: profile.rawValue,
-            alarm: alarmKind.map { $0 == .high ? "high" : "low" } ?? (staleHeartRateDetected ? "sensor" : "none"),
+            alarm: alarm,
             connection: connection.rawValue,
             history: Array(points),
             heart_rate_at: hr == nil ? nil : (lastHeartRateUpdate ?? lastCustomMeasurement)?.timeIntervalSince1970,
@@ -726,13 +735,19 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         freshnessTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.expireMeasurements() }
     }
     func requestNotificationPermission() {
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { [weak self] _, _ in self?.refreshNotificationStatus() }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge, .criticalAlert]) { [weak self] _, _ in self?.refreshNotificationStatus() }
     }
     func refreshNotificationStatus() {
         UNUserNotificationCenter.current().getNotificationSettings { [weak self] settings in
             DispatchQueue.main.async {
                 self?.notificationSoundAllowed = settings.authorizationStatus == .authorized && settings.soundSetting == .enabled
-                self?.notificationStatus = settings.authorizationStatus == .authorized && settings.soundSetting == .enabled ? "Notifications allowed. The in-app siren uses media playback so the Silent switch does not mute it while Nivvi can play audio. Lock-screen banners can still be quiet in Silent/Focus. Enable Time Sensitive for Nivvi in iPhone Settings." : "Notification sound is not fully enabled. Check iPhone Settings → Notifications → Nivvi."
+                if settings.authorizationStatus != .authorized || settings.soundSetting != .enabled {
+                    self?.notificationStatus = "Notification sound is not fully enabled. Check iPhone Settings → Notifications → Nivvi."
+                } else if settings.criticalAlertSetting == .enabled {
+                    self?.notificationStatus = "Critical Alerts allowed. A heart-rate alarm can sound when the phone is on Silent or in Focus. Check-sensor notices stay ordinary."
+                } else {
+                    self?.notificationStatus = "Notifications allowed. Turn on Critical Alerts in iPhone Settings → Notifications → Nivvi so a heart-rate alarm can sound on Silent."
+                }
             }
         }
     }
@@ -741,15 +756,23 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         let alarmNotification = ["nivvi-rate-alarm", "nivvi-rate-alarm-reminder"].contains(notification.request.identifier)
         completionHandler(alarmNotification && foreground ? [.banner] : [.banner, .sound])
     }
-    private func notify(title: String, body: String, identifier: String, delay: TimeInterval? = nil, sirenSound: Bool = true, soundName: String? = nil, repeatInterval: TimeInterval? = nil) {
+    private func notify(title: String, body: String, identifier: String, delay: TimeInterval? = nil, sirenSound: Bool = true, soundName: String? = nil, repeatInterval: TimeInterval? = nil, critical: Bool = false) {
         let content = UNMutableNotificationContent()
         content.title = title; content.body = body
-        if let soundName {
+        if critical {
+            content.interruptionLevel = .critical
+            if let soundName {
+                content.sound = UNNotificationSound.criticalSoundNamed(UNNotificationSoundName(soundName), withAudioVolume: 1)
+            } else {
+                content.sound = UNNotificationSound.defaultCritical
+            }
+        } else if let soundName {
             content.sound = UNNotificationSound(named: UNNotificationSoundName(rawValue: soundName))
+            content.interruptionLevel = soundName == "NivviSensor.wav" ? .active : .timeSensitive
         } else {
             content.sound = sirenSound ? UNNotificationSound(named: UNNotificationSoundName(rawValue: selectedSiren.notificationFile)) : .default
+            content.interruptionLevel = .timeSensitive
         }
-        content.interruptionLevel = soundName == "NivviSensor.wav" ? .active : .timeSensitive
         let trigger: UNNotificationTrigger?
         if let repeatInterval {
             trigger = UNTimeIntervalNotificationTrigger(timeInterval: max(60, repeatInterval), repeats: true)
@@ -774,11 +797,11 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         let selectedSound = sensorOnly ? "NivviSensor.wav" : selectedSiren.notificationFile
         let selectedTitle = sensorOnly ? "Check sensor data" : (title ?? attentionTitle)
         let alertBody = body ?? "\(alarmDetail) Check \(displayNameForAlert) and follow the care plan."
-        notify(title: selectedTitle, body: alertBody, identifier: "nivvi-rate-alarm", soundName: selectedSound)
+        notify(title: selectedTitle, body: alertBody, identifier: "nivvi-rate-alarm", soundName: selectedSound, critical: !sensorOnly)
         // iOS does not permit an app to hold an audio session open indefinitely
         // after backgrounding. Repeating time-sensitive reminders keep notifying
         // the caregiver until acknowledgement or a fresh in-range reading.
-        if !sensorOnly { notify(title: selectedTitle, body: "This heart-rate alert is still active. Open Nivvi to acknowledge it.", identifier: "nivvi-rate-alarm-reminder", soundName: selectedSound, repeatInterval: 60) }
+        if !sensorOnly { notify(title: selectedTitle, body: "This heart-rate alert is still active. Open Nivvi to acknowledge it.", identifier: "nivvi-rate-alarm-reminder", soundName: selectedSound, repeatInterval: 60, critical: true) }
     }
     private func clearAlarmNotifications() {
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["nivvi-rate-alarm", "nivvi-rate-alarm-reminder"])
@@ -859,7 +882,8 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             title: sensor ? "Check sensor data" : attentionTitle,
             body: sensor ? "The monitoring phone reports no fresh heart-rate data. Check the wearer and the wearable." : "The monitoring phone has a heart-rate alert. Check \(displayNameForAlert) and follow the care plan.",
             identifier: "nivvi-wifi-share-alarm",
-            soundName: sensor ? "NivviSensor.wav" : selectedSiren.notificationFile
+            soundName: sensor ? "NivviSensor.wav" : selectedSiren.notificationFile,
+            critical: !sensor
         )
         if !sensor {
             notify(
@@ -867,7 +891,8 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
                 body: "This heart-rate alert is still active. Open Nivvi and tap Heard it.",
                 identifier: "nivvi-wifi-share-alarm-reminder",
                 soundName: selectedSiren.notificationFile,
-                repeatInterval: 60
+                repeatInterval: 60,
+                critical: true
             )
         }
         startSiren(loop: !sensor)
@@ -892,7 +917,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         soundTestTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: false) { [weak self] _ in self?.stopSiren() }
     }
     func testNotification() {
-            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { [weak self] allowed, _ in
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge, .criticalAlert]) { [weak self] allowed, _ in
             guard allowed else { self?.refreshNotificationStatus(); return }
             DispatchQueue.main.async {
                 self?.notify(title: "Nivvi sound test", body: "TEST ONLY — no device reading triggered this sound.", identifier: "nivvi-sound-test", delay: 10)
@@ -965,7 +990,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
                 scheduleBackgroundWatchdog()
             }
             if criticalAlertActive, !alarmAcknowledged, alarmActive {
-                notify(title: attentionTitle, body: "A heart-rate alarm is still active. Open Nivvi to acknowledge it.", identifier: "nivvi-rate-alarm")
+                notify(title: attentionTitle, body: "A heart-rate alarm is still active. Open Nivvi to acknowledge it.", identifier: "nivvi-rate-alarm", critical: true)
                 startSiren(loop: true)
             } else {
                 refreshBackgroundHold()
@@ -1762,11 +1787,10 @@ struct HistoryChartsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Picker("Chart range", selection: $span) {
-                Text("Day").tag(0.0)
+                Text("24h").tag(0.0)
+                Text("12h").tag(12 * 3600.0)
                 Text("6h").tag(6 * 3600.0)
                 Text("1h").tag(3600.0)
-                Text("15m").tag(900.0)
-                Text("5m").tag(300.0)
             }.pickerStyle(.segmented)
             HStack {
                 Button("Earlier") { moveWindow(-1) }
@@ -1779,12 +1803,12 @@ struct HistoryChartsView: View {
                 Button("Zoom +") {
                     span = HistoryChartPolicy.closerZoom(than: span)
                     selected = nil
-                }.disabled(span > 0 && span <= 300)
+                }.disabled(span > 0 && span <= 3600)
                 Spacer()
                 Button("Later") { moveWindow(1) }
                     .disabled(span <= 0 || domain.upperBound >= dayEnd)
             }.buttonStyle(.bordered)
-            Text("\(domain.lowerBound.formatted(date: .omitted, time: .shortened)) – \(domain.upperBound.formatted(date: .omitted, time: .shortened))\(span <= 0 ? " · full calendar day" : "")")
+            Text("\(domain.lowerBound.formatted(date: .omitted, time: .shortened)) – \(domain.upperBound.formatted(date: .omitted, time: .shortened))\(span <= 0 ? " · selected date" : "")")
                 .font(.caption.weight(.semibold)).foregroundStyle(ink).monospacedDigit()
             Text("Pinch or Zoom + to read the line. Blank gaps are missing data. Drag to a time.")
                 .font(.caption).foregroundStyle(caption)
@@ -1828,7 +1852,30 @@ struct HistoryChartsView: View {
             pad: metric == .heartRate ? 8 : 3,
             fallback: metric == .oxygen ? 90 : 80
         )
-        return Group {
+        return VStack(alignment: .leading, spacing: 8) {
+            if let stats = HistoryChartPolicy.summary(points.map(\.value)) {
+                HStack(spacing: 8) {
+                    summaryValue("Min", stats.min)
+                    summaryValue("Max", stats.max)
+                    summaryValue("Median", stats.median)
+                }
+            }
+            chartBody(points: points, metric: metric, tint: tint, yDomain: yDomain, visible: visible)
+        }
+    }
+    private func summaryValue(_ title: String, _ value: Double) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.caption).foregroundStyle(caption)
+            Text(MetricText.number(value)).font(.title3.weight(.semibold)).foregroundStyle(ink).monospacedDigit()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 8)
+        .padding(.horizontal, 10)
+        .background(ink.opacity(0.06))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+    private func chartBody(points: [HistoryChartPoint], metric: HistoryMetric, tint: Color, yDomain: ClosedRange<Double>, visible: [SavedMeasurement]) -> some View {
+        Group {
             if points.count < 2 {
                 Text("Not enough readings in this window.")
                     .font(.caption).foregroundStyle(caption)
@@ -1847,7 +1894,7 @@ struct HistoryChartsView: View {
                 .chartXScale(domain: domain)
                 .chartYScale(domain: yDomain)
                 .chartXAxis {
-                    AxisMarks(values: .automatic(desiredCount: span > 0 && span <= 900 ? 5 : 4)) { _ in
+                    AxisMarks(values: .automatic(desiredCount: span > 0 && span <= 3600 ? 5 : 4)) { _ in
                         AxisGridLine().foregroundStyle(caption.opacity(0.35))
                         AxisValueLabel().foregroundStyle(caption).font(.caption2)
                     }

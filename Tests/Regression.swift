@@ -359,7 +359,13 @@ let lateWindow = HistoryChartPolicy.window(day: now, hours: 6, endingAt: entireD
 check(lateWindow.upperBound == entireDay.upperBound && lateWindow.upperBound.timeIntervalSince(lateWindow.lowerBound) == 21600, "zoom clamps to end of selected day")
 let tight = HistoryChartPolicy.window(day: now, span: 900, endingAt: now, calendar: calendar)
 check(tight.upperBound.timeIntervalSince(tight.lowerBound) == 900, "15-minute zoom keeps a 15-minute axis")
-check(HistoryChartPolicy.closerZoom(than: 3600) == 900 && HistoryChartPolicy.widerZoom(than: 900) == 3600, "zoom buttons step 1 hour to 15 minutes")
+check(HistoryChartPolicy.closerZoom(than: 6 * 3600) == 3600 && HistoryChartPolicy.widerZoom(than: 3600) == 6 * 3600, "zoom buttons step 6 hours to 1 hour")
+check(HistoryChartPolicy.widerZoom(than: 6 * 3600) == 12 * 3600, "wider than 6 hours is 12 hours")
+check(HistoryChartPolicy.widerZoom(than: 12 * 3600) == 0, "wider than 12 hours is the selected date")
+check(HistoryChartPolicy.closerZoom(than: 3600) == 3600, "1 hour is the closest range")
+let noonStats = HistoryChartPolicy.summary([90, 70, 181, 95])
+check(noonStats?.min == 70 && noonStats?.max == 181 && noonStats?.median == 92.5, "history shows min, max and median")
+check(HistoryChartPolicy.summary([80])?.median == 80, "a single reading is its own median")
 var daylightCalendar = Calendar(identifier: .gregorian)
 daylightCalendar.timeZone = TimeZone(identifier: "Europe/London")!
 let springDay = daylightCalendar.date(from: DateComponents(year: 2026, month: 3, day: 29))!
