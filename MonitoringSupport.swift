@@ -186,23 +186,11 @@ struct StaleHeartRateDetector {
 
 struct WearableChargePolicy {
     private(set) var isCharging = false
-    private var lastLevel: Int?
     mutating func observePowerState(charging: Bool) {
         isCharging = charging
     }
     mutating func observeLevel(_ percent: Int) {
         guard (0...100).contains(percent) else { return }
-        if let last = lastLevel {
-            if percent >= last + 2 {
-                isCharging = true
-                lastLevel = percent
-            } else if percent <= last - 2 {
-                isCharging = false
-                lastLevel = percent
-            }
-        } else {
-            lastLevel = percent
-        }
     }
     mutating func reset() { self = Self() }
 }

@@ -1823,15 +1823,9 @@ struct HistoryChartsView: View {
                 }.buttonStyle(.bordered)
             }
             Text(span <= 0 ? "Selected date" : "\(domain.lowerBound.formatted(date: .omitted, time: .shortened)) – \(domain.upperBound.formatted(date: .omitted, time: .shortened))")
-                .font(.caption.weight(.semibold)).foregroundStyle(ink).monospacedDigit()
-            Text("Pinch to read the line. Blank gaps are missing data. Drag to a time.")
-                .font(.caption).foregroundStyle(caption)
-            if let entry = selected {
-                Text("\(entry.time.formatted(date: .omitted, time: .standard)) · \(metric == .heartRate ? "\(entry.heartRateValue.map(MetricText.number) ?? "—") bpm" : "\(entry.oxygenValue.map(MetricText.number) ?? "—")%")")
-                    .font(.subheadline.bold()).foregroundStyle(lavender).monospacedDigit()
-            }
-            metricChart(metric == .oxygen && showsOxygen ? .oxygen : .heartRate, tint: metric == .oxygen && showsOxygen ? teal : coral)
-                .frame(minHeight: 340)
+                .font(.caption.weight(.semibold)).foregroundStyle(caption).monospacedDigit()
+            metricChart(activeMetric, tint: activeTint)
+                .frame(minHeight: 360)
         }
         .gesture(
             MagnificationGesture()
@@ -1853,25 +1847,68 @@ struct HistoryChartsView: View {
         windowEnd = domain.upperBound.addingTimeInterval(Double(direction) * (span <= 0 ? 3600 : span))
         selected = nil
     }
+    private var activeMetric: HistoryMetric { metric == .oxygen && showsOxygen ? .oxygen : .heartRate }
+    private var activeTint: Color { activeMetric == .oxygen ? teal : coral }
     private func metricChart(_ metric: HistoryMetric, tint: Color) -> some View {
         let visible = entries.filter { domain.contains($0.time) }
-        let points = HistoryChartPolicy.points(visible, metric: metric)
-        let yDomain = HistoryChartPolicy.yScale(
+        let points = HistoryChartPolicy.points(visible, metric: metric, maximum: span <= 0 ? 180 : 420)
+        let yDomain = heartScale(HistoryChartPolicy.yScale(
             values: points.map(\.value),
             floor: metric == .oxygen ? 70 : 40,
             ceiling: metric == .oxygen ? 100 : 220,
-            pad: metric == .heartRate ? 8 : 3,
+            pad: metric == .heartRate ? 18 : 2,
             fallback: metric == .oxygen ? 90 : 80
-        )
-        return VStack(alignment: .leading, spacing: 8) {
-            if let stats = HistoryChartPolicy.summary(points.map(\.value)) {
-                Text("Min \(MetricText.number(stats.min))    Max \(MetricText.number(stats.max))    Median \(MetricText.number(stats.median))")
-                    .font(.title3.weight(.semibold)).foregroundStyle(ink).monospacedDigit()
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
+        ), metric: metric)
+        let latest = points.last
+        let shown = selected.flatMap { entry -> (Date, Double)? in
+            guard let value = metric.value(entry), domain.contains(entry.time) else { return nil }
+            return (entry.time, value)
+        } ?? latest.map { ($0.entry.time, $0.value) }
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Label(metric == .heartRate ? "Heart rate" : "Oxygen", systemImage: metric == .heartRate ? "heart.fill" : "lungs.fill")
+                    .font(.headline).foregroundStyle(tint)
+                Spacer()
+                if let shown {
+                    VStack(alignment: .trailing, spacing: 0) {
+                        Text(MetricText.number(shown.1) + (metric == .heartRate ? " bpm" : "%"))
+                            .font(.title2.weight(.semibold)).foregroundStyle(tint).monospacedDigit()
+                        Text(caption(for: shown.0))
+                            .font(.caption.weight(.semibold)).foregroundStyle(caption)
+                    }
+                }
             }
             chartBody(points: points, metric: metric, tint: tint, yDomain: yDomain, visible: visible)
+                .frame(minHeight: 250)
+            if let stats = HistoryChartPolicy.summary(points.map(\.value)) {
+                HStack(alignment: .top) {
+                    summaryColumn("Min", stats.min, teal)
+                    summaryColumn("Max", stats.max, coral)
+                    summaryColumn("Median", stats.median, ink)
+                }
+            }
         }
+    }
+    private func caption(for time: Date) -> String {
+        if selected != nil { return time.formatted(date: .omitted, time: .standard) }
+        if span <= 0 && Calendar.current.isDateInToday(day) { return "Now" }
+        return time.formatted(date: .omitted, time: .shortened)
+    }
+    private func summaryColumn(_ title: String, _ value: Double, _ color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.caption).foregroundStyle(caption)
+            Text(MetricText.number(value)).font(.title2.weight(.semibold)).foregroundStyle(color).monospacedDigit()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    private func heartScale(_ domain: ClosedRange<Double>, metric: HistoryMetric) -> ClosedRange<Double> {
+        guard metric == .heartRate else { return domain }
+        let middle = (domain.lowerBound + domain.upperBound) / 2
+        let half = max(50, (domain.upperBound - domain.lowerBound) / 2)
+        let low = max(40, middle - half)
+        var high = min(220, middle + half)
+        if high <= low { high = low + 1 }
+        return low...high
     }
     private func chartBody(points: [HistoryChartPoint], metric: HistoryMetric, tint: Color, yDomain: ClosedRange<Double>, visible: [SavedMeasurement]) -> some View {
         Group {
@@ -1884,6 +1921,10 @@ struct HistoryChartsView: View {
                     ForEach(points) { point in
                         LineMark(x: .value("Time", point.entry.time), y: .value("Value", point.value), series: .value("Continuous segment", point.series))
                             .foregroundStyle(tint)
+                    }
+                    if let latest = points.last, selected == nil {
+                        RuleMark(x: .value("Latest", latest.entry.time)).foregroundStyle(caption.opacity(0.45))
+                        PointMark(x: .value("Latest", latest.entry.time), y: .value("Latest", latest.value)).foregroundStyle(tint).symbolSize(36)
                     }
                     if let entry = selected, let value = metric.value(entry), domain.contains(entry.time) {
                         RuleMark(x: .value("Selected time", entry.time)).foregroundStyle(lavender.opacity(0.6))
