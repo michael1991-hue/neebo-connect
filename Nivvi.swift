@@ -113,16 +113,18 @@ enum BluetoothPolicy {
         default: return false
         }
     }
-    static func customFrame(_ data: Data) -> (heartRate: Int?, oxygen: Int?, battery: Int?) {
+    static func customFrame(_ data: Data) -> (heartRate: Int?, oxygen: Int?, battery: Int?, skinCelsius: Double?) {
         // Only the complete nine-byte frame observed in captures is understood.
-        // Non-zero high bytes and unknown frame layouts must not be truncated.
+        // The last two bytes are a little-endian skin temperature in tenths of a degree.
+        // A lone percentage in byte 7 is battery only when the last byte is zero.
         let bytes = Array(data)
-        guard bytes.count == 9, bytes[0...2].allSatisfy({ $0 == 0 }) else { return (nil, nil, nil) }
+        guard bytes.count == 9, bytes[0...2].allSatisfy({ $0 == 0 }) else { return (nil, nil, nil, nil) }
         let hr = bytes[4] == 0 && (30...240).contains(Int(bytes[3])) ? Int(bytes[3]) : nil
         let oxygen = bytes[6] == 0 && (70...100).contains(Int(bytes[5])) ? OxygenReading.clamp(Int(bytes[5])) : nil
-        // Captured NB0 frames put a 1...100 percentage at offset 7.
-        let battery = (1...100).contains(Int(bytes[7])) ? Int(bytes[7]) : nil
-        return (hr, oxygen, battery)
+        let rawTail = Int(bytes[7]) | (Int(bytes[8]) << 8)
+        let skin = (280...420).contains(rawTail) ? Double(rawTail) / 10 : nil
+        let battery = skin == nil && bytes[8] == 0 && (1...100).contains(Int(bytes[7])) ? Int(bytes[7]) : nil
+        return (hr, oxygen, battery, skin)
     }
     static func batteryCharging(_ data: Data) -> Bool? {
         guard let byte = data.first else { return nil }
@@ -291,6 +293,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     private var plxContinuityID = UUID()
     @Published var customHeartRateCandidate: Int?
     @Published var customOxygenCandidate: Int?
+    @Published private(set) var skinCelsius: Double?
     @Published var alarmSettings = AlarmSettings() {
         didSet {
             if let data = try? JSONEncoder().encode(alarmSettings) { UserDefaults.standard.set(data, forKey: "nivvi.alarms") }
@@ -625,7 +628,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         verifiedHeartRate = nil; verifiedOxygen = nil
         pulseOximeterRate = nil; pulseOximeterOxygen = nil; oxygenTime = nil
         if resetFreshness { spotCheckText = nil; spotCheckReceived = nil; pulseOximeterStatus = "Waiting for pulse-oximeter data." }
-        customHeartRateCandidate = nil; customOxygenCandidate = nil
+        customHeartRateCandidate = nil; customOxygenCandidate = nil; skinCelsius = nil
         measurementTime = nil; lastCustomMeasurement = nil
         if resetFreshness { lastHeartRateUpdate = nil; lastOxygenUpdate = nil }
         if resetFreshness { heartRateFreshness.reset(); staleHeartRate.reset(); staleHeartRateDetected = false; continuityID = UUID(); plxContinuityID = UUID() }
@@ -1332,6 +1335,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             let candidate = BluetoothPolicy.customFrame(data)
             customHeartRateCandidate = candidate.heartRate
             customOxygenCandidate = candidate.oxygen
+            if let skin = candidate.skinCelsius { skinCelsius = skin }
             if candidate.oxygen != nil { lastOxygenUpdate = Date() }
             if candidate.heartRate != nil { receiveHeartRate(at: Date()) }
             else { pauseHeartRate("No usable heart rate in the mapped Bluetooth packet. Oxygen or other values do not confirm a fresh heart rate.") }
@@ -1854,10 +1858,7 @@ struct HistoryChartsView: View {
     private func metricChart(_ metric: HistoryMetric, tint: Color) -> some View {
         let visible = entries.filter { domain.contains($0.time) }
         let limitsApply = metric == .heartRate
-        let calmed = span <= 0
-            ? HistoryChartPolicy.overviewSamples(visible, metric: metric, low: limitsApply ? lowLimit : nil, high: limitsApply ? highLimit : nil)
-            : visible
-        let points = HistoryChartPolicy.points(calmed, metric: metric, maximum: span <= 0 ? 10_000 : 600, gap: span <= 0 ? 20 * 60 : 60)
+        let points = HistoryChartPolicy.points(visible, metric: metric)
         var scaleValues = points.map(\.value)
         if limitsApply {
             if let lowLimit { scaleValues.append(lowLimit) }
@@ -1893,7 +1894,7 @@ struct HistoryChartsView: View {
             chartBody(points: points, metric: metric, tint: tint, yDomain: yDomain, visible: visible)
                 .frame(minHeight: 250)
             if let stats {
-                HStack(alignment: .top) {
+                HStack(spacing: 8) {
                     summaryColumn("Min", stats.min, zoneColor(stats.min, plain: teal))
                     summaryColumn("Max", stats.max, zoneColor(stats.max, plain: coral))
                     summaryColumn("Median", stats.median, zoneColor(stats.median, plain: ink))
@@ -1918,6 +1919,10 @@ struct HistoryChartsView: View {
             Text(MetricText.number(value)).font(.title2.weight(.semibold)).foregroundStyle(color).monospacedDigit()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 8)
+        .padding(.horizontal, 10)
+        .background(ink.opacity(0.06))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
     private func heartScale(_ domain: ClosedRange<Double>, metric: HistoryMetric) -> ClosedRange<Double> {
         guard metric == .heartRate else { return domain }
@@ -2880,6 +2885,13 @@ struct ContentView: View {
                         Label("Band battery", systemImage: "battery.100").foregroundStyle(muted)
                         Spacer()
                         Text(batteryLabel).font(.headline).foregroundStyle(ink)
+                    }
+                }
+                if let skin = monitor.skinCelsius {
+                    HStack {
+                        Label("Skin", systemImage: "thermometer.medium").foregroundStyle(muted)
+                        Spacer()
+                        Text(String(format: "%.1f°C", skin)).font(.headline).foregroundStyle(ink).monospacedDigit()
                     }
                 }
             }
