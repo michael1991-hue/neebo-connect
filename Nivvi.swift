@@ -68,6 +68,18 @@ struct SavedMeasurement: Codable, Identifiable {
         exactOxygen = try values.decodeIfPresent(Double.self, forKey: .exactOxygen)
         skinCelsius = try values.decodeIfPresent(Double.self, forKey: .skinCelsius)
     }
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(id, forKey: .id)
+        try values.encode(time, forKey: .time)
+        try values.encodeIfPresent(heartRate, forKey: .heartRate)
+        try values.encodeIfPresent(oxygen, forKey: .oxygen)
+        try values.encode(source, forKey: .source)
+        try values.encodeIfPresent(continuityID, forKey: .continuityID)
+        try values.encodeIfPresent(exactHeartRate, forKey: .exactHeartRate)
+        try values.encodeIfPresent(exactOxygen, forKey: .exactOxygen)
+        try values.encodeIfPresent(skinCelsius, forKey: .skinCelsius)
+    }
 }
 
 struct TrendSample: Identifiable {
@@ -1816,6 +1828,7 @@ struct HistoryChartsView: View {
     let entries: [SavedMeasurement]
     let day: Date
     @Binding var selected: SavedMeasurement?
+    @Binding var metric: HistoryMetric
     let coral: Color
     let teal: Color
     let lavender: Color
@@ -1823,7 +1836,6 @@ struct HistoryChartsView: View {
     let ink: Color
     var lowLimit: Double?
     var highLimit: Double?
-    @Binding var metric: HistoryMetric
     @State private var span: TimeInterval = 0
     @State private var windowEnd: Date?
     @State private var pinchStart: TimeInterval?
