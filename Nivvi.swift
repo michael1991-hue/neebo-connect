@@ -1790,6 +1790,8 @@ struct HistoryChartsView: View {
     let lavender: Color
     let caption: Color
     let ink: Color
+    var lowLimit: Double?
+    var highLimit: Double?
     @State private var metric: HistoryMetric = .heartRate
     @State private var span: TimeInterval = 0
     @State private var windowEnd: Date?
@@ -1851,9 +1853,18 @@ struct HistoryChartsView: View {
     private var activeTint: Color { activeMetric == .oxygen ? teal : coral }
     private func metricChart(_ metric: HistoryMetric, tint: Color) -> some View {
         let visible = entries.filter { domain.contains($0.time) }
-        let points = HistoryChartPolicy.points(visible, metric: metric, maximum: span <= 0 ? 180 : 420)
+        let limitsApply = metric == .heartRate
+        let calmed = span <= 0
+            ? HistoryChartPolicy.overviewSamples(visible, metric: metric, low: limitsApply ? lowLimit : nil, high: limitsApply ? highLimit : nil)
+            : visible
+        let points = HistoryChartPolicy.points(calmed, metric: metric, maximum: span <= 0 ? 10_000 : 600, gap: span <= 0 ? 20 * 60 : 60)
+        var scaleValues = points.map(\.value)
+        if limitsApply {
+            if let lowLimit { scaleValues.append(lowLimit) }
+            if let highLimit { scaleValues.append(highLimit) }
+        }
         let yDomain = heartScale(HistoryChartPolicy.yScale(
-            values: points.map(\.value),
+            values: scaleValues,
             floor: metric == .oxygen ? 70 : 40,
             ceiling: metric == .oxygen ? 100 : 220,
             pad: metric == .heartRate ? 18 : 2,
@@ -1864,15 +1875,16 @@ struct HistoryChartsView: View {
             guard let value = metric.value(entry), domain.contains(entry.time) else { return nil }
             return (entry.time, value)
         } ?? latest.map { ($0.entry.time, $0.value) }
+        let stats = HistoryChartPolicy.summary(visible.compactMap { metric.value($0) })
         return VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
                 Label(metric == .heartRate ? "Heart rate" : "Oxygen", systemImage: metric == .heartRate ? "heart.fill" : "lungs.fill")
-                    .font(.headline).foregroundStyle(tint)
+                    .font(.headline).foregroundStyle(shown.map { zoneColor($0.1, plain: tint) } ?? tint)
                 Spacer()
                 if let shown {
                     VStack(alignment: .trailing, spacing: 0) {
                         Text(MetricText.number(shown.1) + (metric == .heartRate ? " bpm" : "%"))
-                            .font(.title2.weight(.semibold)).foregroundStyle(tint).monospacedDigit()
+                            .font(.title2.weight(.semibold)).foregroundStyle(zoneColor(shown.1, plain: tint)).monospacedDigit()
                         Text(caption(for: shown.0))
                             .font(.caption.weight(.semibold)).foregroundStyle(caption)
                     }
@@ -1880,14 +1892,20 @@ struct HistoryChartsView: View {
             }
             chartBody(points: points, metric: metric, tint: tint, yDomain: yDomain, visible: visible)
                 .frame(minHeight: 250)
-            if let stats = HistoryChartPolicy.summary(points.map(\.value)) {
+            if let stats {
                 HStack(alignment: .top) {
-                    summaryColumn("Min", stats.min, teal)
-                    summaryColumn("Max", stats.max, coral)
-                    summaryColumn("Median", stats.median, ink)
+                    summaryColumn("Min", stats.min, zoneColor(stats.min, plain: teal))
+                    summaryColumn("Max", stats.max, zoneColor(stats.max, plain: coral))
+                    summaryColumn("Median", stats.median, zoneColor(stats.median, plain: ink))
                 }
             }
         }
+    }
+    private func zoneColor(_ value: Double, plain: Color) -> Color {
+        guard activeMetric == .heartRate, lowLimit != nil || highLimit != nil else { return plain }
+        if let highLimit, value > highLimit { return coral }
+        if let lowLimit, value < lowLimit { return coral }
+        return teal
     }
     private func caption(for time: Date) -> String {
         if selected != nil { return time.formatted(date: .omitted, time: .standard) }
@@ -1918,13 +1936,21 @@ struct HistoryChartsView: View {
                     .frame(maxWidth: .infinity, minHeight: 150, alignment: .leading)
             } else {
                 Chart {
-                    ForEach(points) { point in
-                        LineMark(x: .value("Time", point.entry.time), y: .value("Value", point.value), series: .value("Continuous segment", point.series))
-                            .foregroundStyle(tint)
+                    if metric == .heartRate, let lowLimit, let highLimit, lowLimit < highLimit {
+                        AreaMark(x: .value("Time", domain.lowerBound), yStart: .value("Low", lowLimit), yEnd: .value("High", highLimit))
+                            .foregroundStyle(Color.white.opacity(0.10))
+                        AreaMark(x: .value("Time", domain.upperBound), yStart: .value("Low", lowLimit), yEnd: .value("High", highLimit))
+                            .foregroundStyle(Color.white.opacity(0.10))
+                    }
+                    ForEach(Array(lineRuns(points).enumerated()), id: \.offset) { _, run in
+                        ForEach(run.points) { point in
+                            LineMark(x: .value("Time", point.entry.time), y: .value("Value", point.value), series: .value("Run", run.series))
+                                .foregroundStyle(run.color)
+                        }
                     }
                     if let latest = points.last, selected == nil {
                         RuleMark(x: .value("Latest", latest.entry.time)).foregroundStyle(caption.opacity(0.45))
-                        PointMark(x: .value("Latest", latest.entry.time), y: .value("Latest", latest.value)).foregroundStyle(tint).symbolSize(36)
+                        PointMark(x: .value("Latest", latest.entry.time), y: .value("Latest", latest.value)).foregroundStyle(zoneColor(latest.value, plain: tint)).symbolSize(36)
                     }
                     if let entry = selected, let value = metric.value(entry), domain.contains(entry.time) {
                         RuleMark(x: .value("Selected time", entry.time)).foregroundStyle(lavender.opacity(0.6))
@@ -1960,6 +1986,36 @@ struct HistoryChartsView: View {
                 }
             }
         }
+    }
+    private struct LineRun {
+        var series: String
+        var color: Color
+        var points: [HistoryChartPoint]
+    }
+    private func zoneName(_ value: Double) -> String {
+        guard activeMetric == .heartRate, lowLimit != nil || highLimit != nil else { return "plain" }
+        if let highLimit, value > highLimit { return "high" }
+        if let lowLimit, value < lowLimit { return "low" }
+        return "inside"
+    }
+    private func lineRuns(_ points: [HistoryChartPoint]) -> [LineRun] {
+        var runs: [LineRun] = []
+        var zones: [String] = []
+        for point in points {
+            let zone = zoneName(point.value)
+            let color = zone == "plain" ? activeTint : (zone == "inside" ? teal : coral)
+            if let lastZone = zones.last, lastZone == zone, var last = runs.last, last.series.hasPrefix(point.series) {
+                last.points.append(point)
+                runs[runs.count - 1] = last
+            } else if let last = runs.last, last.series.hasPrefix(point.series), let join = last.points.last {
+                runs.append(LineRun(series: "\(point.series)-\(runs.count)", color: color, points: [join, point]))
+                zones.append(zone)
+            } else {
+                runs.append(LineRun(series: "\(point.series)-\(runs.count)", color: color, points: [point]))
+                zones.append(zone)
+            }
+        }
+        return runs
     }
     private func pick(at location: CGPoint, proxy: ChartProxy, geometry: GeometryProxy, visible: [SavedMeasurement], metric: HistoryMetric) {
         let frame = geometry[proxy.plotAreaFrame]
@@ -2900,7 +2956,7 @@ struct ContentView: View {
                 }
             } else {
                 panel {
-                    HistoryChartsView(entries: displayedHistory, day: monitor.selectedHistoryDay, selected: $selectedHistoryReading, coral: coral, teal: accentMint, lavender: stamp, caption: muted, ink: ink)
+                    HistoryChartsView(entries: displayedHistory, day: monitor.selectedHistoryDay, selected: $selectedHistoryReading, coral: coral, teal: accentMint, lavender: stamp, caption: muted, ink: ink, lowLimit: monitor.alarmSettings.lowEnabled ? monitor.alarmSettings.lowThreshold.map(Double.init) : nil, highLimit: monitor.alarmSettings.highEnabled ? monitor.alarmSettings.highThreshold.map(Double.init) : nil)
                         .id(Calendar.current.startOfDay(for: monitor.selectedHistoryDay))
                 }
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {

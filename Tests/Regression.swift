@@ -364,6 +364,14 @@ check(HistoryChartPolicy.widerZoom(than: 12 * 3600) == 0, "wider than 12 hours i
 check(HistoryChartPolicy.closerZoom(than: 3600) == 3600, "1 hour is the closest range")
 let noonStats = HistoryChartPolicy.summary([90, 70, 181, 95])
 check(noonStats?.min == 70 && noonStats?.max == 181 && noonStats?.median == 92.5, "history shows min, max and median")
+let overviewStart = Date(timeIntervalSince1970: 1_700_000_000)
+var overviewSamples: [SavedMeasurement] = []
+for index in 0..<200 {
+    overviewSamples.append(SavedMeasurement(time: overviewStart.addingTimeInterval(Double(index) * 30), heartRate: index == 100 ? 200 : 90, oxygen: nil, source: "overview"))
+}
+let overview = HistoryChartPolicy.overviewSamples(overviewSamples, metric: .heartRate, buckets: 40, low: 70, high: 170)
+check(overview.contains { $0.heartRate == 200 }, "24-hour chart keeps a reading above the high limit")
+check(overview.count < overviewSamples.count, "24-hour chart does not plot every snapshot")
 check(HistoryChartPolicy.summary([80])?.median == 80, "a single reading is its own median")
 var daylightCalendar = Calendar(identifier: .gregorian)
 daylightCalendar.timeZone = TimeZone(identifier: "Europe/London")!

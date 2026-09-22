@@ -308,7 +308,7 @@ struct HistoryChartPoint: Identifiable {
 enum HistoryChartPolicy {
     // Historical snapshots are normally 30 seconds apart. Older records have no
     // continuity ID, so a saved interval over 60 seconds also breaks their line.
-    static func points(_ entries: [SavedMeasurement], metric: HistoryMetric, maximum: Int = 600) -> [HistoryChartPoint] {
+    static func points(_ entries: [SavedMeasurement], metric: HistoryMetric, maximum: Int = 600, gap: TimeInterval = 60) -> [HistoryChartPoint] {
         var result: [HistoryChartPoint] = []
         for (source, values) in Dictionary(grouping: entries, by: { $0.source }) {
             var segment: [SavedMeasurement] = []
@@ -326,7 +326,7 @@ enum HistoryChartPolicy {
             for entry in values.sorted(by: { $0.time < $1.time }) {
                 guard metric.value(entry) != nil else { flush(); continue }
                 if let last = segment.last,
-                   entry.time.timeIntervalSince(last.time) > 60 || last.continuityID != entry.continuityID { flush() }
+                   entry.time.timeIntervalSince(last.time) > gap || last.continuityID != entry.continuityID { flush() }
                 segment.append(entry)
             }
             flush()
@@ -335,6 +335,34 @@ enum HistoryChartPolicy {
         return result
             .sorted { $0.entry.time < $1.entry.time }
             .filter { seen.insert($0.id).inserted }
+    }
+    // One point per slice for a full day, plus a real rise or a reading outside the limits.
+    static func overviewSamples(_ entries: [SavedMeasurement], metric: HistoryMetric, buckets: Int = 96, low: Double? = nil, high: Double? = nil) -> [SavedMeasurement] {
+        let valued = entries.filter { metric.value($0) != nil }.sorted { $0.time < $1.time }
+        guard valued.count > buckets, let first = valued.first?.time, let last = valued.last?.time, last > first else { return valued }
+        let width = last.timeIntervalSince(first) / Double(buckets)
+        var result: [SavedMeasurement] = []
+        var seen = Set<UUID>()
+        func keep(_ entry: SavedMeasurement) {
+            if seen.insert(entry.id).inserted { result.append(entry) }
+        }
+        var index = 0
+        for bucketIndex in 0..<buckets {
+            let end = bucketIndex == buckets - 1 ? last.addingTimeInterval(1) : first.addingTimeInterval(Double(bucketIndex + 1) * width)
+            var bucket: [SavedMeasurement] = []
+            while index < valued.count && valued[index].time < end {
+                bucket.append(valued[index])
+                index += 1
+            }
+            guard !bucket.isEmpty else { continue }
+            let ordered = bucket.sorted { (metric.value($0) ?? 0) < (metric.value($1) ?? 0) }
+            let middle = ordered[ordered.count / 2]
+            keep(middle)
+            guard let median = metric.value(middle) else { continue }
+            if let trough = ordered.first, let value = metric.value(trough), value < median - 12 || (low != nil && value < low!) { keep(trough) }
+            if let peak = ordered.last, let value = metric.value(peak), value > median + 12 || (high != nil && value > high!) { keep(peak) }
+        }
+        return result.sorted { $0.time < $1.time }
     }
     static func nearest(_ entries: [SavedMeasurement], at date: Date, metric: HistoryMetric) -> SavedMeasurement? {
         entries.filter { metric.value($0) != nil && abs($0.time.timeIntervalSince(date)) <= 30 }
