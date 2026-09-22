@@ -1818,6 +1818,7 @@ struct HistoryChartsView: View {
                 Text("12h").tag(12 * 3600.0)
                 Text("6h").tag(6 * 3600.0)
                 Text("1h").tag(3600.0)
+                Text("1m").tag(60.0)
             }.pickerStyle(.segmented)
             if span > 0 {
                 HStack {
@@ -1838,7 +1839,7 @@ struct HistoryChartsView: View {
                 .onChanged { value in
                     if pinchStart == nil { pinchStart = span <= 0 ? 24 * 3600 : span }
                     let next = (pinchStart ?? 3600) / max(0.25, value)
-                    span = min(24 * 3600, max(3600, next))
+                    span = min(24 * 3600, max(60, next))
                     if span >= 20 * 3600 { span = 0 }
                     selected = nil
                 }
@@ -1858,7 +1859,10 @@ struct HistoryChartsView: View {
     private func metricChart(_ metric: HistoryMetric, tint: Color) -> some View {
         let visible = entries.filter { domain.contains($0.time) }
         let limitsApply = metric == .heartRate
-        let points = HistoryChartPolicy.points(visible, metric: metric)
+        let plotted = span > 60
+            ? HistoryChartPolicy.perMinute(visible, metric: metric, low: limitsApply ? lowLimit : nil, high: limitsApply ? highLimit : nil)
+            : visible
+        let points = HistoryChartPolicy.points(plotted, metric: metric, maximum: 5_000, gap: span > 60 ? 90 : 60)
         var scaleValues = points.map(\.value)
         if limitsApply {
             if let lowLimit { scaleValues.append(lowLimit) }
@@ -1965,7 +1969,7 @@ struct HistoryChartsView: View {
                 .chartXScale(domain: domain)
                 .chartYScale(domain: yDomain)
                 .chartXAxis {
-                    AxisMarks(values: .automatic(desiredCount: span > 0 && span <= 3600 ? 5 : 4)) { _ in
+                    AxisMarks(values: .automatic(desiredCount: span <= 60 ? 4 : (span <= 3600 ? 5 : 4))) { _ in
                         AxisGridLine().foregroundStyle(caption.opacity(0.35))
                         AxisValueLabel().foregroundStyle(caption).font(.caption2)
                     }

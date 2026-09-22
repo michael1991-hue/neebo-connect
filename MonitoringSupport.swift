@@ -364,6 +364,20 @@ enum HistoryChartPolicy {
         }
         return result.sorted { $0.time < $1.time }
     }
+    // One saved reading per clock minute. A value outside the limits is kept as well.
+    static func perMinute(_ entries: [SavedMeasurement], metric: HistoryMetric, low: Double? = nil, high: Double? = nil) -> [SavedMeasurement] {
+        var latest: [Int: SavedMeasurement] = [:]
+        var outside: [Int: SavedMeasurement] = [:]
+        for entry in entries {
+            guard let value = metric.value(entry) else { continue }
+            let minute = Int(entry.time.timeIntervalSince1970 / 60)
+            if latest[minute].map({ entry.time >= $0.time }) ?? true { latest[minute] = entry }
+            if let high, value > high, outside[minute].flatMap(metric.value).map({ value > $0 }) ?? true { outside[minute] = entry }
+            if let low, value < low, outside[minute].flatMap(metric.value).map({ value < $0 }) ?? true { outside[minute] = entry }
+        }
+        var seen = Set<UUID>()
+        return (Array(latest.values) + Array(outside.values)).sorted { $0.time < $1.time }.filter { seen.insert($0.id).inserted }
+    }
     static func nearest(_ entries: [SavedMeasurement], at date: Date, metric: HistoryMetric) -> SavedMeasurement? {
         entries.filter { metric.value($0) != nil && abs($0.time.timeIntervalSince(date)) <= 30 }
             .min { abs($0.time.timeIntervalSince(date)) < abs($1.time.timeIntervalSince(date)) }
@@ -379,9 +393,9 @@ enum HistoryChartPolicy {
         let boundedEnd = min(finish, max(start.addingTimeInterval(duration), end))
         return boundedEnd.addingTimeInterval(-duration)...boundedEnd
     }
-    static let zoomSpans: [TimeInterval] = [0, 12 * 3600, 6 * 3600, 3600]
+    static let zoomSpans: [TimeInterval] = [0, 12 * 3600, 6 * 3600, 3600, 60]
     static func closerZoom(than span: TimeInterval) -> TimeInterval {
-        zoomSpans.filter { $0 > 0 && (span <= 0 || $0 < span) }.max() ?? 3600
+        zoomSpans.filter { $0 > 0 && (span <= 0 || $0 < span) }.max() ?? 60
     }
     static func widerZoom(than span: TimeInterval) -> TimeInterval {
         if span <= 0 { return 0 }
