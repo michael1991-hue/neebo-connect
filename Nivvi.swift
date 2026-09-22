@@ -1852,10 +1852,8 @@ struct HistoryChartsView: View {
             }.pickerStyle(.segmented)
             Picker("Chart range", selection: $span) {
                 Text("24h").tag(0.0)
-                Text("12h").tag(12 * 3600.0)
                 Text("6h").tag(6 * 3600.0)
                 Text("1h").tag(3600.0)
-                Text("1m").tag(60.0)
             }.pickerStyle(.segmented)
             if span > 0 {
                 HStack {
@@ -1876,7 +1874,7 @@ struct HistoryChartsView: View {
                 .onChanged { value in
                     if pinchStart == nil { pinchStart = span <= 0 ? 24 * 3600 : span }
                     let next = (pinchStart ?? 3600) / max(0.25, value)
-                    span = min(24 * 3600, max(60, next))
+                    span = min(24 * 3600, max(3600, next))
                     if span >= 20 * 3600 { span = 0 }
                     selected = nil
                 }

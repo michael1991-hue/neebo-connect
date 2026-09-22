@@ -407,9 +407,9 @@ enum HistoryChartPolicy {
         let boundedEnd = min(finish, max(start.addingTimeInterval(duration), end))
         return boundedEnd.addingTimeInterval(-duration)...boundedEnd
     }
-    static let zoomSpans: [TimeInterval] = [0, 12 * 3600, 6 * 3600, 3600, 60]
+    static let zoomSpans: [TimeInterval] = [0, 6 * 3600, 3600]
     static func closerZoom(than span: TimeInterval) -> TimeInterval {
-        zoomSpans.filter { $0 > 0 && (span <= 0 || $0 < span) }.max() ?? 60
+        zoomSpans.filter { $0 > 0 && (span <= 0 || $0 < span) }.max() ?? 3600
     }
     static func widerZoom(than span: TimeInterval) -> TimeInterval {
         if span <= 0 { return 0 }
