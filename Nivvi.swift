@@ -2122,6 +2122,8 @@ struct ContentView: View {
     @State private var showParentNote = false
     @State private var selectedHistoryReading: SavedMeasurement?
     @State private var historyMetric: HistoryMetric = .heartRate
+    @State private var editingHost = false
+    @State private var hostDraft = ""
     @State private var confirmDeleteHistory = false
     @State private var confirmClearAlerts = false
     @State private var lastSharedAlarm = "none"
@@ -2705,7 +2707,7 @@ struct ContentView: View {
     }
     private var shareAlarmDetail: String {
         if monitor.shareAlertActive && !monitor.alarmActive {
-            return "Shared from \(FamilyRelation(rawValue: wifi.latest?.hostRelation ?? "")?.title ?? "family") on this Wi‑Fi. Limits are set on that phone."
+            return "Shared from \(FamilyRelation.display(wifi.latest?.hostRelation) ?? "family") on this Wi‑Fi. Limits are set on that phone."
         }
         return monitor.staleHeartRateDetected ? (monitor.alarmAcknowledged ? "Acknowledged · repeated reading still needs checking." : "Repeated heart-rate value detected. Check sensor contact.") : (monitor.alarmAcknowledged ? "Acknowledged · waiting for a fresh in-range reading." : "Stay with them and follow their care plan.")
     }
@@ -2789,16 +2791,15 @@ struct ContentView: View {
         HStack {
             Text("This phone is").font(.subheadline.weight(.semibold)).foregroundStyle(ink)
             Spacer()
-            Menu {
-                ForEach(FamilyRelation.allCases) { relation in
-                    Button(relation.title) { hostRelation = relation.rawValue }
-                }
+            Button {
+                hostDraft = FamilyRelation.display(hostRelation) ?? ""
+                editingHost = true
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "person.fill")
-                    Text(FamilyRelation(rawValue: hostRelation)?.title ?? "Choose")
+                    Text(FamilyRelation.display(hostRelation) ?? "Type")
                         .font(.title3.weight(.bold))
-                    Image(systemName: "chevron.up.chevron.down").font(.caption.weight(.bold))
+                    Image(systemName: "pencil").font(.caption.weight(.bold))
                 }
                 .foregroundStyle(accentMint)
                 .padding(.horizontal, 14)
@@ -2806,7 +2807,17 @@ struct ContentView: View {
                 .background(accentMint.opacity(0.16))
                 .clipShape(Capsule())
             }
+            .buttonStyle(.plain)
             .accessibilityLabel("Who is using this phone")
+            .alert("This phone is", isPresented: $editingHost) {
+                TextField("Name", text: $hostDraft)
+                Button("Save") {
+                    hostRelation = String(hostDraft.trimmingCharacters(in: .whitespacesAndNewlines).prefix(24))
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Type who is using this phone. Family will see this name.")
+            }
         }
     }
     private func applyPlace() {

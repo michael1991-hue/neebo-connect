@@ -50,15 +50,17 @@ enum FamilyRelation: String, CaseIterable, Identifiable {
         default: return "They watch live readings on their iPhone."
         }
     }
+    static func display(_ raw: String?) -> String? {
+        let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else { return nil }
+        return FamilyRelation(rawValue: trimmed)?.title ?? trimmed
+    }
     static func sharedFrom(_ raw: String?, wifi: Bool) -> String {
-        let who = FamilyRelation(rawValue: raw ?? "")?.title
-        if let who {
-            return wifi ? "Shared from \(who) on this Wi‑Fi" : "Shared from \(who)"
-        }
-        return wifi ? "Shared from family on this Wi‑Fi" : "Shared from family"
+        let who = display(raw) ?? "family"
+        return wifi ? "Shared from \(who) on this Wi‑Fi" : "Shared from \(who)"
     }
     static func monitoring(_ raw: String?, age: TimeInterval?, live: Bool) -> String {
-        let who = FamilyRelation(rawValue: raw ?? "")?.title ?? "family"
+        let who = display(raw) ?? "family"
         if live, let age {
             return "Monitoring with \(who) · Updated \(max(0, Int(age.rounded())))s ago"
         }
@@ -445,7 +447,7 @@ final class FamilyRelay: ObservableObject {
         guard let family = ownFamily else { throw FamilyError.message("Turn on sharing first — one tap above.") }
         let reply: FamilyReply = try await request("families/\(family.id)/invites", method: "POST", body: body(["email": email, "role": role, "relation": relation]))
         invitation = reply.code
-        let who = FamilyRelation(rawValue: relation)?.title ?? "family"
+        let who = FamilyRelation.display(relation) ?? "family"
         message = relation == "carer"
             ? "Send this to \(who). Their phone can stay next to the band."
             : "Send this to \(who). They open Nivvi, sign up with that email, and paste the code."
@@ -465,7 +467,7 @@ final class FamilyRelay: ObservableObject {
         let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
         let _: FamilyReply = try await request("invites/accept", method: "POST", body: body(["code": trimmed, "relation": relation]))
         try await refreshFamilies()
-        let who = FamilyRelation(rawValue: relation)?.title ?? "family"
+        let who = FamilyRelation.display(relation) ?? "family"
         let name = UserDefaults.standard.string(forKey: "nivvi.profile.name")?.trimmingCharacters(in: .whitespacesAndNewlines)
         let whoName = (name?.isEmpty == false) ? name! : "them"
         message = "You’re in as \(who). If you’re next to the band, tap I’m with \(whoName)."
@@ -709,7 +711,7 @@ final class FamilyRelay: ObservableObject {
                 publishing = true
                 return
             }
-            let who = FamilyRelation(rawValue: raw["host_relation"] as? String ?? "")?.title ?? "Family"
+            let who = FamilyRelation.display(raw["host_relation"] as? String) ?? "Family"
             if publishing, !stream.isEmpty, stream != publishStream {
                 publishing = false
                 message = "\(who) took over monitoring on another phone."
@@ -1172,14 +1174,11 @@ struct FamilySharingView: View {
                 }
                 if !relay.families.isEmpty {
                     labeled("This phone is") {
-                        Picker("This phone is", selection: $hostRelation) {
-                            Text("Choose…").tag("")
-                            ForEach(FamilyRelation.allCases) { relation in
-                                Text(relation.title).tag(relation.rawValue)
+                        TextField("Type a name", text: $hostRelation)
+                            .textInputAutocapitalization(.words)
+                            .onChange(of: hostRelation) { value in
+                                if value.count > 24 { hostRelation = String(value.prefix(24)) }
                             }
-                        }
-                        .pickerStyle(.menu)
-                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     DisclosureGroup("Join another family") { joinCard.padding(.top, 8) }
                     Button("Turn on family alerts") { relay.perform { try await relay.notifications() } }
