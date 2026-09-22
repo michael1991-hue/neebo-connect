@@ -2604,10 +2604,8 @@ struct ContentView: View {
             if !ageText.isEmpty { Text(childGender == "Prefer not to say" ? ageText : "\(ageText) · \(childGender)").font(.caption).foregroundStyle(muted) }
             if watchingWifi || watchingFamily {
                 Text(remotePlace.banner(displayName)).font(.subheadline.weight(.semibold)).foregroundStyle(ink)
-                Text(remotePlace.hint(displayName)).font(.caption).foregroundStyle(muted)
             } else {
                 placePicker
-                Text(currentPlace.hint(displayName)).font(.caption).foregroundStyle(muted)
             }
             if family.signedIn { familySendBanner }
             if monitor.lowPowerMode {
@@ -2789,19 +2787,27 @@ struct ContentView: View {
     }
     private var hostPicker: some View {
         HStack {
-            Text("This phone is").font(.caption.weight(.semibold)).foregroundStyle(muted)
+            Text("This phone is").font(.subheadline.weight(.semibold)).foregroundStyle(ink)
             Spacer()
-            Picker("This phone is", selection: $hostRelation) {
-                Text("Choose…").tag("")
+            Menu {
                 ForEach(FamilyRelation.allCases) { relation in
-                    Text(relation.title).tag(relation.rawValue)
+                    Button(relation.title) { hostRelation = relation.rawValue }
                 }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "person.fill")
+                    Text(FamilyRelation(rawValue: hostRelation)?.title ?? "Choose")
+                        .font(.title3.weight(.bold))
+                    Image(systemName: "chevron.up.chevron.down").font(.caption.weight(.bold))
+                }
+                .foregroundStyle(accentMint)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(accentMint.opacity(0.16))
+                .clipShape(Capsule())
             }
-            .pickerStyle(.menu)
-            .tint(accentMint)
+            .accessibilityLabel("Who is using this phone")
         }
-        .padding(.horizontal, 4)
-        .accessibilityLabel("Who is using this phone")
     }
     private func applyPlace() {
         switch currentPlace {
@@ -2908,6 +2914,8 @@ struct ContentView: View {
                     }
                     Spacer(minLength: 0)
                 }
+                .contentShape(Rectangle())
+                .onTapGesture { openHistory(.heartRate) }
                 .accessibilityElement(children: .combine)
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     Text(readingAge(mirroringNursery ? remoteStamp : monitor.lastHeartRateUpdate, now: context.date))
@@ -2920,6 +2928,8 @@ struct ContentView: View {
                     Text(family.statusLine).font(.caption).foregroundStyle(family.linkState == .live ? accentMint : coral)
                 }
                 fiveMinuteChart
+                    .contentShape(Rectangle())
+                    .onTapGesture { openHistory(.heartRate) }
                 if let note = latestNote {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Latest note").font(.caption.weight(.bold)).foregroundStyle(muted)
@@ -2934,6 +2944,8 @@ struct ContentView: View {
                         Spacer()
                         Text(oxygenDisplay).font(.title3.bold()).foregroundStyle(accentMint)
                     }
+                    .contentShape(Rectangle())
+                    .onTapGesture { openHistory(.oxygen) }
                     TimelineView(.periodic(from: .now, by: 1)) { context in
                         Text(readingAge(mirroringNursery ? remoteStamp : monitor.lastOxygenUpdate, now: context.date)).font(.caption).foregroundStyle(muted)
                     }
@@ -2947,8 +2959,7 @@ struct ContentView: View {
                 }
                 if let skin = monitor.skinCelsius {
                     Button {
-                        historyMetric = .skin
-                        tab = 1
+                        openHistory(.skin)
                     } label: {
                         HStack {
                             Label("Skin", systemImage: "thermometer.medium").foregroundStyle(skinColor(skin))
@@ -2961,6 +2972,10 @@ struct ContentView: View {
                 }
             }
         }
+    }
+    private func openHistory(_ metric: HistoryMetric) {
+        historyMetric = metric
+        tab = 1
     }
     private func skinColor(_ celsius: Double) -> Color {
         switch SkinTemperature.zone(celsius) {
