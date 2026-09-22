@@ -193,10 +193,16 @@ struct WearableChargePolicy {
     mutating func observeLevel(_ percent: Int) {
         guard (0...100).contains(percent) else { return }
         if let last = lastLevel {
-            if percent >= last + 8 { isCharging = true }
-            if percent + 1 < last { isCharging = false }
+            if percent >= last + 2 {
+                isCharging = true
+                lastLevel = percent
+            } else if percent <= last - 2 {
+                isCharging = false
+                lastLevel = percent
+            }
+        } else {
+            lastLevel = percent
         }
-        lastLevel = percent
     }
     mutating func reset() { self = Self() }
 }
@@ -299,7 +305,7 @@ enum BluetoothSignal {
     }
 }
 
-enum HistoryMetric { case heartRate, oxygen
+enum HistoryMetric: Hashable { case heartRate, oxygen
     func value(_ entry: SavedMeasurement) -> Double? {
         guard let value = self == .heartRate ? entry.heartRateValue : entry.oxygenValue, value.isFinite else { return nil }
         return value

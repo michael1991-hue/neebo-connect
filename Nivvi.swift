@@ -660,7 +660,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         }
         cancelConnectionLossNotice()
         connection = .receiving
-        status = "Receiving fresh heart-rate readings."
+        status = wearableCharging ? "Charging" : "Receiving fresh heart-rate readings."
         pushLocalShare()
         pushLockScreen()
     }
@@ -1409,25 +1409,36 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         guard wearableCharging != on else { return }
         wearableCharging = on
         if on {
+            quietAlarmsForCharging()
+            status = "Charging"
             if record {
-                recordEvent(kind: "connection", title: "Wearable charging", detail: "The band reported charging. Live readings continue while packets still arrive.")
+                recordEvent(kind: "connection", title: "Wearable charging", detail: "The battery rose or the band reported charging. Heart-rate alerts stay quiet until charging ends. Readings are still saved.")
             }
-            status = "Connected · charging"
         } else if record {
-            recordEvent(kind: "connection", title: "Charging ended", detail: "The band is no longer reporting charge. Live readings continue.")
+            recordEvent(kind: "connection", title: "Charging ended", detail: "The band is no longer charging. Heart-rate alerts use the next fresh readings.")
         }
+    }
+    private func quietAlarmsForCharging() {
+        alarmEngine.reset()
+        alarmKind = nil
+        staleHeartRate.reset()
+        staleHeartRateDetected = false
+        shareAlertActive = false
+        shareAlertSensor = false
+        alarmAcknowledged = false
+        clearAlarmNotifications()
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["nivvi-wifi-share-alarm", "nivvi-wifi-share-alarm-reminder"])
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["nivvi-wifi-share-alarm", "nivvi-wifi-share-alarm-reminder"])
+        if !testingSiren { stopSiren() }
+        publishFamilySnapshot()
     }
     private func applyBatteryPercent(_ percent: Int, fromStandard: Bool) {
         guard (0...100).contains(percent) else { return }
         if fromStandard { batteryFromStandard = true }
         else if batteryFromStandard { return }
         battery = "\(percent)%"
-        if fromStandard {
-            chargePolicy.observeLevel(percent)
-            applyCharging(chargePolicy.isCharging)
-        } else {
-            applyCharging(false, record: false)
-        }
+        chargePolicy.observeLevel(percent)
+        applyCharging(chargePolicy.isCharging)
         applyBatteryWarning(percent)
     }
     private func applyBatteryWarning(_ percent: Int) {
@@ -1477,6 +1488,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         }
     }
     private func evaluatePulseOximeterAlarm(_ pulse: Double) {
+        if wearableCharging { return }
         observeStaleHeartRate(pulse, source: "pulse-oximeter")
         let previous = alarmKind
         let event = alarmEngine.ingestExact(bpm: pulse, source: "standard-PLX-continuous", at: Date(), settings: alarmSettings)
@@ -1495,6 +1507,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         }
     }
     private func evaluateExperimentalRateAlarm(_ bpm: Int) {
+        if wearableCharging { return }
         observeStaleHeartRate(Double(bpm), source: "mapped Bluetooth")
         let previousAlarm = alarmKind
         let event = alarmEngine.ingest(bpm: bpm, source: "experimental-custom", at: Date(), settings: alarmSettings, allowExperimentalCustom: experimentalCustomAlarms)
@@ -1515,6 +1528,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     }
 
     private func evaluateRateAlarm(_ bpm: Int) {
+        if wearableCharging { return }
         observeStaleHeartRate(Double(bpm), source: "standard Bluetooth")
         let previousAlarm = alarmKind
         let event = alarmEngine.ingest(bpm: bpm, source: "standard-2A37", at: Date(), settings: alarmSettings, allowExperimentalCustom: experimentalCustomAlarms)
@@ -1776,66 +1790,63 @@ struct HistoryChartsView: View {
     let lavender: Color
     let caption: Color
     let ink: Color
-    @State private var hours = 1
+    @State private var metric: HistoryMetric = .heartRate
     @State private var span: TimeInterval = 0
     @State private var windowEnd: Date?
     @State private var pinchStart: TimeInterval?
+    private var showsOxygen: Bool { entries.contains { $0.oxygenValue != nil } }
     private var domain: ClosedRange<Date> {
         let window = HistoryChartPolicy.window(day: day, span: span, endingAt: windowEnd ?? entries.last?.time ?? day)
         return HistoryChartPolicy.xScale(from: window.lowerBound, to: window.upperBound)
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            if showsOxygen {
+                Picker("Reading", selection: $metric) {
+                    Text("Heart rate").tag(HistoryMetric.heartRate)
+                    Text("Oxygen").tag(HistoryMetric.oxygen)
+                }.pickerStyle(.segmented)
+            }
             Picker("Chart range", selection: $span) {
                 Text("24h").tag(0.0)
                 Text("12h").tag(12 * 3600.0)
                 Text("6h").tag(6 * 3600.0)
                 Text("1h").tag(3600.0)
             }.pickerStyle(.segmented)
-            HStack {
-                Button("Earlier") { moveWindow(-1) }
-                    .disabled(span <= 0 || domain.lowerBound <= Calendar.current.startOfDay(for: day))
-                Spacer()
-                Button("Zoom −") {
-                    span = HistoryChartPolicy.widerZoom(than: span)
-                    selected = nil
-                }.disabled(span <= 0)
-                Button("Zoom +") {
-                    span = HistoryChartPolicy.closerZoom(than: span)
-                    selected = nil
-                }.disabled(span > 0 && span <= 3600)
-                Spacer()
-                Button("Later") { moveWindow(1) }
-                    .disabled(span <= 0 || domain.upperBound >= dayEnd)
-            }.buttonStyle(.bordered)
-            Text("\(domain.lowerBound.formatted(date: .omitted, time: .shortened)) – \(domain.upperBound.formatted(date: .omitted, time: .shortened))\(span <= 0 ? " · selected date" : "")")
+            if span > 0 {
+                HStack {
+                    Button("Earlier") { moveWindow(-1) }
+                        .disabled(domain.lowerBound <= Calendar.current.startOfDay(for: day))
+                    Spacer()
+                    Button("Later") { moveWindow(1) }
+                        .disabled(domain.upperBound >= dayEnd)
+                }.buttonStyle(.bordered)
+            }
+            Text(span <= 0 ? "Selected date" : "\(domain.lowerBound.formatted(date: .omitted, time: .shortened)) – \(domain.upperBound.formatted(date: .omitted, time: .shortened))")
                 .font(.caption.weight(.semibold)).foregroundStyle(ink).monospacedDigit()
-            Text("Pinch or Zoom + to read the line. Blank gaps are missing data. Drag to a time.")
+            Text("Pinch to read the line. Blank gaps are missing data. Drag to a time.")
                 .font(.caption).foregroundStyle(caption)
             if let entry = selected {
-                Text("Selected: \(entry.time.formatted(date: .abbreviated, time: .standard)) · HR \(entry.heartRateValue.map(MetricText.number) ?? "—") bpm · O₂ \(entry.oxygenValue.map(MetricText.number) ?? "—")%")
-                    .font(.caption.bold()).foregroundStyle(lavender).monospacedDigit()
+                Text("\(entry.time.formatted(date: .omitted, time: .standard)) · \(metric == .heartRate ? "\(entry.heartRateValue.map(MetricText.number) ?? "—") bpm" : "\(entry.oxygenValue.map(MetricText.number) ?? "—")%")")
+                    .font(.subheadline.bold()).foregroundStyle(lavender).monospacedDigit()
             }
-            Label("Heart rate", systemImage: "heart.fill").foregroundStyle(coral).font(.headline)
-            metricChart(.heartRate, tint: coral).frame(minHeight: 150)
-            if entries.contains(where: { $0.oxygenValue != nil }) {
-                Label("Oxygen", systemImage: "lungs.fill").foregroundStyle(teal).font(.headline)
-                metricChart(.oxygen, tint: teal).frame(minHeight: 120)
-            }
+            metricChart(metric == .oxygen && showsOxygen ? .oxygen : .heartRate, tint: metric == .oxygen && showsOxygen ? teal : coral)
+                .frame(minHeight: 340)
         }
         .gesture(
             MagnificationGesture()
                 .onChanged { value in
                     if pinchStart == nil { pinchStart = span <= 0 ? 24 * 3600 : span }
                     let next = (pinchStart ?? 3600) / max(0.25, value)
-                    span = min(24 * 3600, max(180, next))
+                    span = min(24 * 3600, max(3600, next))
                     if span >= 20 * 3600 { span = 0 }
                     selected = nil
                 }
                 .onEnded { _ in pinchStart = nil }
         )
         .onChange(of: span) { _ in selected = nil }
-        .onChange(of: day) { _ in selected = nil; windowEnd = nil; span = 0 }
+        .onChange(of: metric) { _ in selected = nil }
+        .onChange(of: day) { _ in selected = nil; windowEnd = nil; span = 0; metric = .heartRate }
     }
     private var dayEnd: Date { Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: day))! }
     private func moveWindow(_ direction: Int) {
@@ -1854,25 +1865,13 @@ struct HistoryChartsView: View {
         )
         return VStack(alignment: .leading, spacing: 8) {
             if let stats = HistoryChartPolicy.summary(points.map(\.value)) {
-                HStack(spacing: 8) {
-                    summaryValue("Min", stats.min)
-                    summaryValue("Max", stats.max)
-                    summaryValue("Median", stats.median)
-                }
+                Text("Min \(MetricText.number(stats.min))    Max \(MetricText.number(stats.max))    Median \(MetricText.number(stats.median))")
+                    .font(.title3.weight(.semibold)).foregroundStyle(ink).monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
             }
             chartBody(points: points, metric: metric, tint: tint, yDomain: yDomain, visible: visible)
         }
-    }
-    private func summaryValue(_ title: String, _ value: Double) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title).font(.caption).foregroundStyle(caption)
-            Text(MetricText.number(value)).font(.title3.weight(.semibold)).foregroundStyle(ink).monospacedDigit()
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 8)
-        .padding(.horizontal, 10)
-        .background(ink.opacity(0.06))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
     private func chartBody(points: [HistoryChartPoint], metric: HistoryMetric, tint: Color, yDomain: ClosedRange<Double>, visible: [SavedMeasurement]) -> some View {
         Group {
@@ -2089,7 +2088,7 @@ struct ContentView: View {
         family.remote?.snapshot?.heart_rate ?? wifi.latest.flatMap { Double($0.heartRate.filter { $0.isNumber || $0 == "." }) }
     }
     private var statusCaption: String {
-        if monitor.wearableCharging && monitor.connection != .receiving { return "Charging" }
+        if monitor.wearableCharging { return "Charging" }
         if localHeartLive && family.signedIn && !family.publishing {
             return "\(monitor.connection.label) · not sharing with family yet"
         }
