@@ -39,8 +39,35 @@ struct SavedMeasurement: Codable, Identifiable {
     var continuityID: UUID? = nil
     var exactHeartRate: Double? = nil
     var exactOxygen: Double? = nil
+    var skinCelsius: Double? = nil
     var heartRateValue: Double? { exactHeartRate ?? heartRate.map(Double.init) }
     var oxygenValue: Double? { exactOxygen ?? oxygen.map(Double.init) }
+
+    init(id: UUID = UUID(), time: Date, heartRate: Int?, oxygen: Int?, source: String, continuityID: UUID? = nil, exactHeartRate: Double? = nil, exactOxygen: Double? = nil, skinCelsius: Double? = nil) {
+        self.id = id
+        self.time = time
+        self.heartRate = heartRate
+        self.oxygen = oxygen
+        self.source = source
+        self.continuityID = continuityID
+        self.exactHeartRate = exactHeartRate
+        self.exactOxygen = exactOxygen
+        self.skinCelsius = skinCelsius
+    }
+
+    enum CodingKeys: String, CodingKey { case id, time, heartRate, oxygen, source, continuityID, exactHeartRate, exactOxygen, skinCelsius }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        time = try values.decode(Date.self, forKey: .time)
+        heartRate = try values.decodeIfPresent(Int.self, forKey: .heartRate)
+        oxygen = try values.decodeIfPresent(Int.self, forKey: .oxygen)
+        source = try values.decode(String.self, forKey: .source)
+        continuityID = try values.decodeIfPresent(UUID.self, forKey: .continuityID)
+        exactHeartRate = try values.decodeIfPresent(Double.self, forKey: .exactHeartRate)
+        exactOxygen = try values.decodeIfPresent(Double.self, forKey: .exactOxygen)
+        skinCelsius = try values.decodeIfPresent(Double.self, forKey: .skinCelsius)
+    }
 }
 
 struct TrendSample: Identifiable {
@@ -472,7 +499,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         )
     }
     private func saveMeasurement(heartRate: Int?, oxygen: Int?, source: String, exactHeartRate: Double? = nil, exactOxygen: Double? = nil, segment: UUID? = nil) {
-        let entry = SavedMeasurement(time: Date(), heartRate: heartRate, oxygen: oxygen.flatMap(OxygenReading.clamp), source: source, continuityID: segment ?? continuityID, exactHeartRate: exactHeartRate, exactOxygen: exactOxygen.flatMap(OxygenReading.clamp))
+        let entry = SavedMeasurement(time: Date(), heartRate: heartRate, oxygen: oxygen.flatMap(OxygenReading.clamp), source: source, continuityID: segment ?? continuityID, exactHeartRate: exactHeartRate, exactOxygen: exactOxygen.flatMap(OxygenReading.clamp), skinCelsius: skinCelsius)
         appendLiveTrace(entry)
         // Oxygen-only packets must not refresh the live-heart-rate freshness timer.
         // A pulse-oximeter can legally report oxygen without a usable pulse.
@@ -1796,23 +1823,21 @@ struct HistoryChartsView: View {
     let ink: Color
     var lowLimit: Double?
     var highLimit: Double?
-    @State private var metric: HistoryMetric = .heartRate
+    @Binding var metric: HistoryMetric
     @State private var span: TimeInterval = 0
     @State private var windowEnd: Date?
     @State private var pinchStart: TimeInterval?
-    private var showsOxygen: Bool { entries.contains { $0.oxygenValue != nil } }
     private var domain: ClosedRange<Date> {
         let window = HistoryChartPolicy.window(day: day, span: span, endingAt: windowEnd ?? entries.last?.time ?? day)
         return HistoryChartPolicy.xScale(from: window.lowerBound, to: window.upperBound)
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if showsOxygen {
-                Picker("Reading", selection: $metric) {
-                    Text("Heart rate").tag(HistoryMetric.heartRate)
-                    Text("Oxygen").tag(HistoryMetric.oxygen)
-                }.pickerStyle(.segmented)
-            }
+            Picker("Reading", selection: $metric) {
+                Text("Heart rate").tag(HistoryMetric.heartRate)
+                Text("Oxygen").tag(HistoryMetric.oxygen)
+                Text("Skin").tag(HistoryMetric.skin)
+            }.pickerStyle(.segmented)
             Picker("Chart range", selection: $span) {
                 Text("24h").tag(0.0)
                 Text("12h").tag(12 * 3600.0)
@@ -1847,15 +1872,21 @@ struct HistoryChartsView: View {
         )
         .onChange(of: span) { _ in selected = nil }
         .onChange(of: metric) { _ in selected = nil }
-        .onChange(of: day) { _ in selected = nil; windowEnd = nil; span = 0; metric = .heartRate }
+        .onChange(of: day) { _ in selected = nil; windowEnd = nil; span = 0 }
     }
     private var dayEnd: Date { Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: day))! }
     private func moveWindow(_ direction: Int) {
         windowEnd = domain.upperBound.addingTimeInterval(Double(direction) * (span <= 0 ? 3600 : span))
         selected = nil
     }
-    private var activeMetric: HistoryMetric { metric == .oxygen && showsOxygen ? .oxygen : .heartRate }
-    private var activeTint: Color { activeMetric == .oxygen ? teal : coral }
+    private var activeMetric: HistoryMetric { metric }
+    private var activeTint: Color {
+        switch activeMetric {
+        case .oxygen: return teal
+        case .skin: return teal
+        case .heartRate: return coral
+        }
+    }
     private func metricChart(_ metric: HistoryMetric, tint: Color) -> some View {
         let visible = entries.filter { domain.contains($0.time) }
         let limitsApply = metric == .heartRate
@@ -1868,12 +1899,16 @@ struct HistoryChartsView: View {
             if let lowLimit { scaleValues.append(lowLimit) }
             if let highLimit { scaleValues.append(highLimit) }
         }
+        if metric == .skin {
+            scaleValues.append(36.4)
+            scaleValues.append(36.7)
+        }
         let yDomain = heartScale(HistoryChartPolicy.yScale(
             values: scaleValues,
-            floor: metric == .oxygen ? 70 : 40,
-            ceiling: metric == .oxygen ? 100 : 220,
-            pad: metric == .heartRate ? 18 : 2,
-            fallback: metric == .oxygen ? 90 : 80
+            floor: metric == .oxygen ? 70 : (metric == .skin ? 28 : 40),
+            ceiling: metric == .oxygen ? 100 : (metric == .skin ? 42 : 220),
+            pad: metric == .heartRate ? 18 : (metric == .skin ? 0.3 : 2),
+            fallback: metric == .oxygen ? 90 : (metric == .skin ? 36 : 80)
         ), metric: metric)
         let latest = points.last
         let shown = selected.flatMap { entry -> (Date, Double)? in
@@ -1883,12 +1918,12 @@ struct HistoryChartsView: View {
         let stats = HistoryChartPolicy.summary(visible.compactMap { metric.value($0) })
         return VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
-                Label(metric == .heartRate ? "Heart rate" : "Oxygen", systemImage: metric == .heartRate ? "heart.fill" : "lungs.fill")
+                Label(metric == .heartRate ? "Heart rate" : (metric == .skin ? "Skin" : "Oxygen"), systemImage: metric == .heartRate ? "heart.fill" : (metric == .skin ? "thermometer.medium" : "lungs.fill"))
                     .font(.headline).foregroundStyle(shown.map { zoneColor($0.1, plain: tint) } ?? tint)
                 Spacer()
                 if let shown {
                     VStack(alignment: .trailing, spacing: 0) {
-                        Text(MetricText.number(shown.1) + (metric == .heartRate ? " bpm" : "%"))
+                        Text(metric == .skin ? String(format: "%.1f°C", shown.1) : MetricText.number(shown.1) + (metric == .heartRate ? " bpm" : "%"))
                             .font(.title2.weight(.semibold)).foregroundStyle(zoneColor(shown.1, plain: tint)).monospacedDigit()
                         Text(caption(for: shown.0))
                             .font(.caption.weight(.semibold)).foregroundStyle(caption)
@@ -1899,28 +1934,37 @@ struct HistoryChartsView: View {
                 .frame(minHeight: 250)
             if let stats {
                 HStack(spacing: 8) {
-                    summaryColumn("Min", stats.min, zoneColor(stats.min, plain: teal))
-                    summaryColumn("Max", stats.max, zoneColor(stats.max, plain: coral))
-                    summaryColumn("Median", stats.median, zoneColor(stats.median, plain: ink))
+                    summaryColumn("Min", stats.min, zoneColor(stats.min, plain: teal), decimals: metric == .skin)
+                    summaryColumn("Max", stats.max, zoneColor(stats.max, plain: coral), decimals: metric == .skin)
+                    summaryColumn("Median", stats.median, zoneColor(stats.median, plain: ink), decimals: metric == .skin)
                 }
             }
         }
     }
+    private func zoneName(_ value: Double) -> String {
+        if activeMetric == .skin { return SkinTemperature.zone(value) }
+        guard activeMetric == .heartRate, lowLimit != nil || highLimit != nil else { return "plain" }
+        if let highLimit, value > highLimit { return "high" }
+        if let lowLimit, value < lowLimit { return "low" }
+        return "inside"
+    }
     private func zoneColor(_ value: Double, plain: Color) -> Color {
-        guard activeMetric == .heartRate, lowLimit != nil || highLimit != nil else { return plain }
-        if let highLimit, value > highLimit { return coral }
-        if let lowLimit, value < lowLimit { return coral }
-        return teal
+        switch zoneName(value) {
+        case "green", "inside": return teal
+        case "amber": return .orange
+        case "high", "low", "red": return coral
+        default: return plain
+        }
     }
     private func caption(for time: Date) -> String {
         if selected != nil { return time.formatted(date: .omitted, time: .standard) }
         if span <= 0 && Calendar.current.isDateInToday(day) { return "Now" }
         return time.formatted(date: .omitted, time: .shortened)
     }
-    private func summaryColumn(_ title: String, _ value: Double, _ color: Color) -> some View {
+    private func summaryColumn(_ title: String, _ value: Double, _ color: Color, decimals: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title).font(.caption).foregroundStyle(caption)
-            Text(MetricText.number(value)).font(.title2.weight(.semibold)).foregroundStyle(color).monospacedDigit()
+            Text(decimals ? String(format: "%.1f", value) : MetricText.number(value)).font(.title2.weight(.semibold)).foregroundStyle(color).monospacedDigit()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 8)
@@ -2001,18 +2045,17 @@ struct HistoryChartsView: View {
         var color: Color
         var points: [HistoryChartPoint]
     }
-    private func zoneName(_ value: Double) -> String {
-        guard activeMetric == .heartRate, lowLimit != nil || highLimit != nil else { return "plain" }
-        if let highLimit, value > highLimit { return "high" }
-        if let lowLimit, value < lowLimit { return "low" }
-        return "inside"
-    }
     private func lineRuns(_ points: [HistoryChartPoint]) -> [LineRun] {
         var runs: [LineRun] = []
         var zones: [String] = []
         for point in points {
             let zone = zoneName(point.value)
-            let color = zone == "plain" ? activeTint : (zone == "inside" ? teal : coral)
+            let color: Color
+            switch zone {
+            case "inside", "green": color = teal
+            case "amber": color = .orange
+            default: color = zone == "plain" ? activeTint : coral
+            }
             if let lastZone = zones.last, lastZone == zone, var last = runs.last, last.series.hasPrefix(point.series) {
                 last.points.append(point)
                 runs[runs.count - 1] = last
@@ -2068,6 +2111,7 @@ struct ContentView: View {
     @State private var parentNote = ""
     @State private var showParentNote = false
     @State private var selectedHistoryReading: SavedMeasurement?
+    @State private var historyMetric: HistoryMetric = .heartRate
     @State private var confirmDeleteHistory = false
     @State private var confirmClearAlerts = false
     @State private var lastSharedAlarm = "none"
@@ -2892,13 +2936,27 @@ struct ContentView: View {
                     }
                 }
                 if let skin = monitor.skinCelsius {
-                    HStack {
-                        Label("Skin", systemImage: "thermometer.medium").foregroundStyle(muted)
-                        Spacer()
-                        Text(String(format: "%.1f°C", skin)).font(.headline).foregroundStyle(ink).monospacedDigit()
+                    Button {
+                        historyMetric = .skin
+                        tab = 1
+                    } label: {
+                        HStack {
+                            Label("Skin", systemImage: "thermometer.medium").foregroundStyle(skinColor(skin))
+                            Spacer()
+                            Text(String(format: "%.1f°C", skin)).font(.headline).foregroundStyle(skinColor(skin)).monospacedDigit()
+                        }
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Opens skin temperature history")
                 }
             }
+        }
+    }
+    private func skinColor(_ celsius: Double) -> Color {
+        switch SkinTemperature.zone(celsius) {
+        case "amber": return .orange
+        case "red": return coral
+        default: return accentMint
         }
     }
     private var heroHeartRate: String {
@@ -2972,7 +3030,7 @@ struct ContentView: View {
                 }
             } else {
                 panel {
-                    HistoryChartsView(entries: displayedHistory, day: monitor.selectedHistoryDay, selected: $selectedHistoryReading, coral: coral, teal: accentMint, lavender: stamp, caption: muted, ink: ink, lowLimit: monitor.alarmSettings.lowEnabled ? monitor.alarmSettings.lowThreshold.map(Double.init) : nil, highLimit: monitor.alarmSettings.highEnabled ? monitor.alarmSettings.highThreshold.map(Double.init) : nil)
+                    HistoryChartsView(entries: displayedHistory, day: monitor.selectedHistoryDay, selected: $selectedHistoryReading, metric: $historyMetric, coral: coral, teal: accentMint, lavender: stamp, caption: muted, ink: ink, lowLimit: monitor.alarmSettings.lowEnabled ? monitor.alarmSettings.lowThreshold.map(Double.init) : nil, highLimit: monitor.alarmSettings.highEnabled ? monitor.alarmSettings.highThreshold.map(Double.init) : nil)
                         .id(Calendar.current.startOfDay(for: monitor.selectedHistoryDay))
                 }
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {

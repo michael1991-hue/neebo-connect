@@ -82,6 +82,7 @@ check(skinFrame.skinCelsius.map { abs($0 - 31.9) < 0.05 } == true, "last two byt
 let capturedSkin = BluetoothPolicy.customFrame(Data([0,0,0,0x59,0,0x61,0,0x34,1]))
 check(capturedSkin.skinCelsius.map { abs($0 - 30.8) < 0.05 } == true, "captured skin reading is 30.8°C")
 check(skinFrame.battery == nil, "skin frame is not a battery percentage")
+check(SkinTemperature.zone(36.4) == "green" && SkinTemperature.zone(36.6) == "amber" && SkinTemperature.zone(36.8) == "red", "skin is green to 36.4, amber to 36.7, then red")
 check(BluetoothPolicy.customFrame(Data([0,0,0,0x5F,0,0x63,0,0,1])).battery == nil, "zero reserved byte is not a battery reading")
 check(BluetoothPolicy.customFrame(Data([0,0,0,0x5F,0,0x63,0,40,0])).battery == 40, "battery only when the last byte is zero")
 check(BluetoothPolicy.customFrame(Data()).heartRate == nil, "empty frame")
@@ -96,6 +97,10 @@ check(partial.heartRate == nil && partial.oxygen == 99, "validate each field ind
 let record = SavedMeasurement(time: Date(timeIntervalSince1970: 12345), heartRate: 104, oxygen: 99, source: "experimental-custom")
 let reloaded = try JSONDecoder().decode([SavedMeasurement].self, from: JSONEncoder().encode([record]))
 check(reloaded[0].id == record.id && reloaded[0].time == record.time && reloaded[0].source == "experimental-custom", "persist experimental label, time and identity")
+var strippedObject = try JSONSerialization.jsonObject(with: JSONEncoder().encode([record])) as! [[String: Any]]
+strippedObject[0].removeValue(forKey: "skinCelsius")
+let stripped = try JSONDecoder().decode([SavedMeasurement].self, from: JSONSerialization.data(withJSONObject: strippedObject))
+check(stripped[0].skinCelsius == nil && stripped[0].heartRate == 104, "older history without skin still opens")
 
 
 // Alarm dwell is evaluated only on fresh, valid standard measurements.

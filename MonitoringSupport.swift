@@ -26,7 +26,7 @@ enum NurseryPlace: String, Identifiable {
     func hint(_ child: String) -> String {
         let name = child.isEmpty ? "them" : child
         switch self {
-        case .home: return "Leave a phone near \(name). Downstairs can follow on this Wi‑Fi."
+        case .home: return "Family can follow this."
         case .carer, .exploring: return "The carer’s iPhone stays with \(name). Family watch on theirs over the internet."
         }
     }
@@ -293,10 +293,24 @@ enum BluetoothSignal {
     }
 }
 
-enum HistoryMetric: Hashable { case heartRate, oxygen
+enum HistoryMetric: Hashable { case heartRate, oxygen, skin
     func value(_ entry: SavedMeasurement) -> Double? {
-        guard let value = self == .heartRate ? entry.heartRateValue : entry.oxygenValue, value.isFinite else { return nil }
+        let value: Double?
+        switch self {
+        case .heartRate: value = entry.heartRateValue
+        case .oxygen: value = entry.oxygenValue
+        case .skin: value = entry.skinCelsius
+        }
+        guard let value, value.isFinite else { return nil }
         return value
+    }
+}
+
+enum SkinTemperature {
+    static func zone(_ celsius: Double) -> String {
+        if celsius <= 36.4 { return "green" }
+        if celsius <= 36.7 { return "amber" }
+        return "red"
     }
 }
 struct HistoryChartPoint: Identifiable {
