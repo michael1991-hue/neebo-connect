@@ -20,6 +20,7 @@ struct WiFiSnapshot: Codable, Equatable {
     var place: String? = nil
     var hostRelation: String? = nil
     var skinCelsius: Double? = nil
+    var alerts: [FamilyAlert]? = nil
 }
 
 final class WiFiRelay: ObservableObject {
@@ -53,6 +54,7 @@ final class WiFiRelay: ObservableObject {
     private var lastHistory: [FamilySample] = []
     private var lastAcknowledged = false
     private var lastSkin: Double?
+    private var lastAlerts: [FamilyAlert] = []
     private var lastHistorySent: Date?
     private var shareSeq = 0
     private var lastShareSeq = 0
@@ -98,7 +100,7 @@ final class WiFiRelay: ObservableObject {
         return Date().timeIntervalSince1970 - latest.captured < 45
     }
 
-    func publish(heartRate: String, oxygen: String, connection: String, alarm: String = "none", charging: Bool = false, battery: String = "—", history: [FamilySample] = [], acknowledged: Bool = false, skin: Double? = nil) {
+    func publish(heartRate: String, oxygen: String, connection: String, alarm: String = "none", charging: Bool = false, battery: String = "—", history: [FamilySample] = [], acknowledged: Bool = false, skin: Double? = nil, alerts: [FamilyAlert] = []) {
         lastHR = heartRate
         lastO2 = oxygen
         lastConnection = connection
@@ -108,6 +110,7 @@ final class WiFiRelay: ObservableObject {
         lastHistory = history
         lastAcknowledged = acknowledged
         lastSkin = skin
+        lastAlerts = alerts
         emit()
     }
 
@@ -222,7 +225,8 @@ final class WiFiRelay: ObservableObject {
             childName: UserDefaults.standard.string(forKey: "nivvi.profile.name"),
             place: UserDefaults.standard.string(forKey: "nivvi.place"),
             hostRelation: UserDefaults.standard.string(forKey: "nivvi.host.relation"),
-            skinCelsius: lastSkin
+            skinCelsius: lastSkin,
+            alerts: lastAlerts.isEmpty ? nil : lastAlerts
         )
         if sendHistory { lastHistorySent = Date() }
         payload = (try? JSONEncoder().encode(snap)) ?? Data()

@@ -480,7 +480,8 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             host_relation: FamilyRelation.wire(UserDefaults.standard.string(forKey: "nivvi.host.relation")),
             battery: battery,
             charging: wearableCharging,
-            skin: skinCelsius
+            skin: skinCelsius,
+            alerts: heartAlertsToShare()
         )
         Task { @MainActor in FamilyRelay.shared.capture(snapshot) }
         pushLocalShare()
@@ -498,7 +499,8 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             battery: battery,
             history: Array(history.suffix(120).map { FamilySample(t: $0.time.timeIntervalSince1970, hr: $0.heartRateValue, o2: $0.oxygenValue, sk: $0.skinCelsius) }),
             acknowledged: alarmAcknowledged,
-            skin: skinCelsius
+            skin: skinCelsius,
+            alerts: heartAlertsToShare()
         )
         let title = UserDefaults.standard.string(forKey: "nivvi.profile.name").flatMap { $0.isEmpty ? nil : $0 } ?? "Nivvi"
         LiveActivityPush.publish(
@@ -536,6 +538,30 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         liveTrace.append(entry)
         let cut = Date().addingTimeInterval(-120)
         if liveTrace.first?.time ?? cut < cut { liveTrace.removeAll { $0.time < cut } }
+    }
+    func heartAlertsToShare() -> [FamilyAlert] {
+        recentAlerts().filter(SharedAlertLog.shares).prefix(40).map {
+            FamilyAlert(id: $0.id.uuidString, t: $0.time.timeIntervalSince1970, title: String($0.title.prefix(80)), detail: String($0.detail.prefix(240)), hr: $0.heartRate)
+        }
+    }
+    func ingestSharedAlerts(_ alerts: [FamilyAlert]) {
+        guard !alerts.isEmpty else { return }
+        for alert in alerts {
+            guard let id = UUID(uuidString: alert.id) else { continue }
+            let time = Date(timeIntervalSince1970: alert.t)
+            let existing = (try? eventArchive.load(day: time)) ?? []
+            if existing.contains(where: { $0.id == id }) { continue }
+            if existing.contains(where: { $0.title == alert.title && abs($0.time.timeIntervalSince(time)) < 30 }) { continue }
+            let event = SavedEvent(id: id, time: time, kind: "critical", title: alert.title, detail: alert.detail, heartRate: alert.hr)
+            do {
+                try eventArchive.append(event)
+                if Calendar.current.isDate(time, inSameDayAs: selectedHistoryDay) { events.append(event) }
+                eventDays = try eventArchive.days()
+                eventError = nil
+            } catch {
+                eventError = "Event could not be saved: \(error.localizedDescription)"
+            }
+        }
     }
     func selectHistoryDay(_ day: Date) {
         let day = Calendar.current.startOfDay(for: day)
@@ -2355,7 +2381,8 @@ struct ContentView: View {
             battery: monitor.battery,
             history: Array(monitor.history.suffix(120).map { FamilySample(t: $0.time.timeIntervalSince1970, hr: $0.heartRateValue, o2: $0.oxygenValue, sk: $0.skinCelsius) }),
             acknowledged: monitor.alarmAcknowledged,
-            skin: monitor.skinCelsius
+            skin: monitor.skinCelsius,
+            alerts: monitor.heartAlertsToShare()
         )
     }
     private var shareAlarmKind: String {
@@ -2372,6 +2399,7 @@ struct ContentView: View {
                 })
             }
             monitor.ingestShared(rows)
+            if let alerts = family.remote?.snapshot?.alerts { monitor.ingestSharedAlerts(alerts) }
         }
         if wifi.following {
             var rows = wifi.trail
@@ -2381,6 +2409,7 @@ struct ContentView: View {
                 })
             }
             monitor.ingestShared(rows)
+            if let alerts = wifi.latest?.alerts { monitor.ingestSharedAlerts(alerts) }
         }
     }
     private func applyShareAlert() {

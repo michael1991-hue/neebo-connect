@@ -131,16 +131,19 @@ struct SharedAlertLog {
         if previous == "none", next == "low" {
             return ("critical", "Low heart-rate alert", "From the monitoring phone. Limits are set on that phone. Saved on this iPhone.")
         }
-        if previous == "none", next == "sensor" {
-            return ("measurement", "Check sensor data", "The monitoring phone reported no fresh heart-rate data. Saved on this iPhone.")
-        }
         if (previous == "high" || previous == "low"), next == "none" {
             return ("critical", "Heart rate back to normal", "Reading on the monitoring phone returned within the configured limits. Saved on this iPhone.")
         }
-        if !wasAcknowledged, acknowledged, next != "none" {
+        if !wasAcknowledged, acknowledged, next == "high" || next == "low" {
             return ("critical", "Alarm acknowledged", "Heard it was tapped. The alert on the monitoring phone stays active until a fresh in-range reading. Saved on this iPhone.")
         }
         return nil
+    }
+    static func shares(_ event: SavedEvent) -> Bool {
+        let title = event.title
+        if title.localizedCaseInsensitiveContains("sensor") { return false }
+        if title == "Heart rate back to normal" || title == "High heart-rate alert" || title == "Low heart-rate alert" || title == "Alarm acknowledged" { return true }
+        return event.kind == "critical" && title.localizedCaseInsensitiveContains("needs your attention")
     }
 }
 

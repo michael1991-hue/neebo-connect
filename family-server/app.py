@@ -335,6 +335,14 @@ class Invite(BaseModel):
     relation: str = Field(default="", max_length=20)
 
 
+class FamilyAlertPoint(BaseModel):
+    id: str = Field(max_length=80)
+    t: float
+    title: str = Field(max_length=80)
+    detail: str = Field(default="", max_length=240)
+    hr: int | None = None
+
+
 class HistoryPoint(BaseModel):
     t: float
     hr: float | None = Field(default=None, ge=1, le=65535)
@@ -364,6 +372,7 @@ class Snapshot(BaseModel):
     battery: str | None = Field(default=None, max_length=20)
     charging: bool | None = None
     skin: float | None = None
+    alerts: list[FamilyAlertPoint] = Field(default_factory=list, max_length=40)
 
 
 class Device(BaseModel):
@@ -852,6 +861,8 @@ def merge_snapshot(old, body: Snapshot, received):
         payload["charging"] = payload.get("charging") if payload.get("charging") is not None else old.get("charging")
     if payload.get("skin") is None:
         payload["skin"] = old.get("skin")
+    if not payload.get("alerts") and old.get("alerts"):
+        payload["alerts"] = old["alerts"]
     for point in payload.get("history") or []:
         o2 = point.get("o2") if isinstance(point, dict) else None
         if isinstance(o2, (int, float)) and o2 > 99:

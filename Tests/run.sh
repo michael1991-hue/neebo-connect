@@ -9,7 +9,7 @@ policy = s.split('// BEGIN TESTABLE BLUETOOTH POLICY', 1)[1].split('// END TESTA
 model = s.split('struct SavedMeasurement:', 1)[1].split('struct TrendSample:', 1)[0]
 family = Path('FamilySharing.swift').read_text()
 relation = ('enum FamilyRelation:' + family.split('enum FamilyRelation:', 1)[1].split('struct FamilySample:', 1)[0]).replace(', Identifiable', '')
-share_types = 'struct FamilySample:' + family.split('struct FamilySample:', 1)[1].split('struct RemoteReading:', 1)[0]
+share_types = 'struct FamilyAlert:' + family.split('struct FamilyAlert:', 1)[1].split('struct RemoteReading:', 1)[0]
 wifi = Path('WiFiShare.swift').read_text()
 wifi_type = 'struct WiFiSnapshot:' + wifi.split('struct WiFiSnapshot:', 1)[1].split('final class WiFiRelay', 1)[0]
 Path('build/tests/main.swift').write_text('import Foundation\n' + relation + '\n' + share_types + '\n' + wifi_type + '\nstruct SavedMeasurement:' + model + '\n' + policy + '\n' + Path('Tests/Regression.swift').read_text())

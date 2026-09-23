@@ -61,6 +61,7 @@ def test_access_isolation_invites_and_revocation(client):
     assert client.put(path + "/latest", headers=owner, json=snapshot()).status_code == 200
     packed = snapshot()
     packed["skin"] = 30.1
+    packed["alerts"] = [{"id": "11111111-1111-1111-1111-111111111111", "t": packed["captured"] - 30, "title": "High heart-rate alert", "detail": "Limit crossed", "hr": 180}]
     packed["history"] = [{"t": packed["captured"] - 60, "hr": 94, "o2": 97, "sk": 30.4}]
     assert client.put(path + "/latest", headers=owner, json=packed).status_code == 200
     remote = client.get(path + "/latest", headers=reader).json()["snapshot"]
@@ -68,6 +69,8 @@ def test_access_isolation_invites_and_revocation(client):
     assert remote["skin"] == 30.1
     assert remote["history"][0]["hr"] == 94
     assert remote["history"][0]["sk"] == 30.4
+    assert remote["alerts"][0]["title"] == "High heart-rate alert"
+    assert remote["alerts"][0]["hr"] == 180
     assert client.delete(path + "/members/" + reader_id, headers=owner).status_code == 200
     assert client.get(path + "/latest", headers=reader).status_code == 404
 

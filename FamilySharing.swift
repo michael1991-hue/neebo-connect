@@ -81,6 +81,13 @@ enum FamilyRelation: String, CaseIterable, Identifiable {
         return "Waiting for \(who) to start monitoring"
     }
 }
+struct FamilyAlert: Codable, Equatable {
+    var id: String
+    var t: Double
+    var title: String
+    var detail: String
+    var hr: Int? = nil
+}
 struct FamilySample: Codable, Equatable {
     var t: Double
     var hr: Double?
@@ -109,12 +116,13 @@ struct FamilySnapshot: Codable {
     var battery: String?
     var charging: Bool?
     var skin: Double?
+    var alerts: [FamilyAlert] = []
 
     enum CodingKeys: String, CodingKey {
-        case captured, heart_rate, oxygen, heart_rate_at, oxygen_at, source, alarm, connection, history, stream_id, seq, kind, server_received, acknowledged, activity_secret, place, host_relation, acknowledged_by, battery, charging, skin
+        case captured, heart_rate, oxygen, heart_rate_at, oxygen_at, source, alarm, connection, history, stream_id, seq, kind, server_received, acknowledged, activity_secret, place, host_relation, acknowledged_by, battery, charging, skin, alerts
     }
 
-    init(captured: Double, heart_rate: Double?, oxygen: Double?, source: String, alarm: String, connection: String, history: [FamilySample] = [], heart_rate_at: Double? = nil, oxygen_at: Double? = nil, stream_id: String? = nil, seq: Int? = nil, kind: String? = "live", acknowledged: Bool = false, activity_secret: String? = nil, place: String? = nil, host_relation: String? = nil, battery: String? = nil, charging: Bool? = nil, skin: Double? = nil) {
+    init(captured: Double, heart_rate: Double?, oxygen: Double?, source: String, alarm: String, connection: String, history: [FamilySample] = [], heart_rate_at: Double? = nil, oxygen_at: Double? = nil, stream_id: String? = nil, seq: Int? = nil, kind: String? = "live", acknowledged: Bool = false, activity_secret: String? = nil, place: String? = nil, host_relation: String? = nil, battery: String? = nil, charging: Bool? = nil, skin: Double? = nil, alerts: [FamilyAlert] = []) {
         self.captured = captured
         self.heart_rate = heart_rate
         self.oxygen = oxygen
@@ -135,6 +143,7 @@ struct FamilySnapshot: Codable {
         self.battery = battery
         self.charging = charging
         self.skin = skin
+        self.alerts = alerts
     }
 
     init(from decoder: Decoder) throws {
@@ -160,6 +169,7 @@ struct FamilySnapshot: Codable {
         battery = try box.decodeIfPresent(String.self, forKey: .battery)
         charging = try box.decodeIfPresent(Bool.self, forKey: .charging)
         skin = try box.decodeIfPresent(Double.self, forKey: .skin)
+        alerts = try box.decodeIfPresent([FamilyAlert].self, forKey: .alerts) ?? []
     }
 
     func encode(to encoder: Encoder) throws {
@@ -185,6 +195,7 @@ struct FamilySnapshot: Codable {
         try box.encodeIfPresent(battery, forKey: .battery)
         try box.encodeIfPresent(charging, forKey: .charging)
         try box.encodeIfPresent(skin, forKey: .skin)
+        try box.encode(alerts, forKey: .alerts)
     }
 }
 struct RemoteReading: Codable {
