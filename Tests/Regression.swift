@@ -250,9 +250,11 @@ check(savedEvents.count == 2 && savedEvents[1].id == event2.id, "events within 3
 var edited = event2
 edited.detail = "Updated parent observation"
 try eventStore.replace(edited)
-check(try eventStore.load(day: now).first { $0.id == event2.id }?.detail == "Updated parent observation", "parent notes can be edited")
+let editedEvents = try eventStore.load(day: now)
+check(editedEvents.first { $0.id == event2.id }?.detail == "Updated parent observation", "parent notes can be edited")
 try eventStore.delete(edited)
-check(try eventStore.load(day: now).contains { $0.id == event2.id } == false, "parent notes can be deleted")
+let remainingEvents = try eventStore.load(day: now)
+check(remainingEvents.contains { $0.id == event2.id } == false, "parent notes can be deleted")
 try eventStore.append(event2)
 check(savedEvents[0].heartRate == 75 && savedEvents[0].time == now, "alarm event retains triggering value and exact timestamp")
 let eventExport = temp.appendingPathComponent("events.csv")
@@ -398,6 +400,7 @@ let skinned = SavedMeasurement.mapped(time: now, heartRate: 90, oxygen: 97, sour
 check(skinned.skinCelsius.map { abs($0 - 30.1) < 0.05 } == true, "shared history keeps skin temperature")
 let skinSample = try JSONDecoder().decode(FamilySample.self, from: JSONEncoder().encode(FamilySample(t: 1, hr: 90, o2: 97, sk: 30.4)))
 check(skinSample.sk.map { abs($0 - 30.4) < 0.05 } == true, "family history carries skin")
+let firstMapped = SavedMeasurement.mapped(time: now, heartRate: 101, oxygen: 98, source: "family-share")
 let secondMapped = SavedMeasurement.mapped(time: now, heartRate: 101, oxygen: 98, source: "family-share")
 check(firstMapped.id == secondMapped.id, "shared readings keep a stable chart identity")
 check(HistoryMetric.heartRate.value(SavedMeasurement(time: now, heartRate: nil, oxygen: nil, source: "x", exactHeartRate: .nan)) == nil, "NaN heart rate is not plotted")
