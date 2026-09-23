@@ -1050,6 +1050,7 @@ def publish_activity(body: ActivityPublish, request: Request):
         "seq": body.seq,
         "session": body.session,
         "stale": False,
+        "alarm": "",
         "title": body.title,
     }
     queue_activity(body.secret, state)
@@ -1060,6 +1061,8 @@ def activity_state(payload, secret):
     measured = payload.get("heart_rate_at") or payload.get("captured") or time.time()
     hr = payload.get("heart_rate")
     ox = payload.get("oxygen")
+    alarm = payload.get("alarm") or ""
+    age = time.time() - float(measured)
     return {
         "heartRate": f"{int(round(hr))} bpm" if isinstance(hr, (int, float)) else "No reading",
         "oxygen": f"{int(round(ox))}%" if isinstance(ox, (int, float)) else "No reading",
@@ -1070,7 +1073,8 @@ def activity_state(payload, secret):
         "measuredAt": measured,
         "seq": int(payload.get("seq") or 0),
         "session": payload.get("source") or "Nivvi",
-        "stale": False,
+        "stale": age > 45,
+        "alarm": alarm if alarm in ("high", "low") else "",
         "title": "Nivvi",
     }
 
@@ -1093,15 +1097,15 @@ async def deliver_activity(tokens, state):
     bearer = jwt.encode({"iss": os.environ["NIVVI_APNS_TEAM"], "iat": int(time.time())}, Path(key).read_text(), algorithm="ES256", headers={"kid": os.environ["NIVVI_APNS_KEY_ID"]})
     host = "api.sandbox.push.apple.com" if os.environ.get("NIVVI_APNS_SANDBOX") == "1" else "api.push.apple.com"
     topic = os.environ.get("NIVVI_APNS_TOPIC", "com.michael1991.nivvi") + ".push-type.liveactivity"
-    measured = float(state.get("measuredAt") or time.time())
-    payload = {
-        "aps": {
-            "timestamp": int(time.time()),
-            "event": "update",
-            "stale-date": int(measured + 45),
-            "content-state": {key: value for key, value in state.items() if key != "title"},
-        }
+    content = {key: value for key, value in state.items() if key != "title"}
+    aps = {
+        "timestamp": int(time.time()),
+        "event": "update",
+        "content-state": content,
     }
+    if state.get("stale"):
+        aps["stale-date"] = int(time.time())
+    payload = {"aps": aps}
     async with httpx.AsyncClient(http2=True, timeout=10) as client:
         for token in tokens:
             result = await client.post(
@@ -1111,7 +1115,7 @@ async def deliver_activity(tokens, state):
                     "apns-topic": topic,
                     "apns-push-type": "liveactivity",
                     "apns-priority": "10",
-                    "apns-expiration": str(int(time.time() + 60)),
+                    "apns-expiration": str(int(time.time() + 300)),
                 },
                 json=payload,
             )
