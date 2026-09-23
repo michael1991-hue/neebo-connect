@@ -157,6 +157,30 @@ struct FamilySnapshot: Codable {
         battery = try box.decodeIfPresent(String.self, forKey: .battery)
         charging = try box.decodeIfPresent(Bool.self, forKey: .charging)
     }
+
+    func encode(to encoder: Encoder) throws {
+        var box = encoder.container(keyedBy: CodingKeys.self)
+        try box.encode(captured, forKey: .captured)
+        try box.encodeIfPresent(heart_rate, forKey: .heart_rate)
+        try box.encodeIfPresent(oxygen, forKey: .oxygen)
+        try box.encodeIfPresent(heart_rate_at, forKey: .heart_rate_at)
+        try box.encodeIfPresent(oxygen_at, forKey: .oxygen_at)
+        try box.encode(source, forKey: .source)
+        try box.encode(alarm, forKey: .alarm)
+        try box.encode(connection, forKey: .connection)
+        try box.encode(history, forKey: .history)
+        try box.encodeIfPresent(stream_id, forKey: .stream_id)
+        try box.encodeIfPresent(seq, forKey: .seq)
+        try box.encodeIfPresent(kind, forKey: .kind)
+        try box.encodeIfPresent(server_received, forKey: .server_received)
+        try box.encodeIfPresent(acknowledged, forKey: .acknowledged)
+        try box.encodeIfPresent(activity_secret, forKey: .activity_secret)
+        try box.encodeIfPresent(place, forKey: .place)
+        try box.encodeIfPresent(host_relation, forKey: .host_relation)
+        try box.encodeIfPresent(acknowledged_by, forKey: .acknowledged_by)
+        try box.encodeIfPresent(battery, forKey: .battery)
+        try box.encodeIfPresent(charging, forKey: .charging)
+    }
 }
 struct RemoteReading: Codable {
     let fresh: Bool
