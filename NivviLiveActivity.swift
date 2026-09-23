@@ -1,8 +1,10 @@
 import Foundation
 import ActivityKit
+import UIKit
 
 enum NivviLiveActivityBridge {
     private static var lastPush = Date.distantPast
+    private static var lastStale = false
     static var lastTitle = "Nivvi"
     static var preferLocalBluetooth = false
 
@@ -22,7 +24,7 @@ enum NivviLiveActivityBridge {
         )
     }
 
-    static func sync(title: String, heartRate: String, oxygen: String, connection: String, signal: String, nurseryHint: String, monitoring: Bool, measuredAt: Date = Date(), seq: Int = 0, session: String = "") {
+    static func sync(title: String, heartRate: String, oxygen: String, connection: String, signal: String, nurseryHint: String, monitoring: Bool, measuredAt: Date = Date(), seq: Int = 0, session: String = "", stale: Bool = false) {
         lastTitle = title
         guard #available(iOS 16.1, *) else { return }
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
@@ -36,7 +38,7 @@ enum NivviLiveActivityBridge {
             measuredAt: measuredAt.timeIntervalSince1970,
             seq: seq,
             session: session.isEmpty ? title : session,
-            stale: false
+            stale: stale
         )
         if !monitoring {
             Task { @MainActor in
@@ -50,13 +52,17 @@ enum NivviLiveActivityBridge {
             }
             return
         }
+        let urgent = stale != lastStale
         if let activity = Activity<NivviActivityAttributes>.activities.first {
             LiveActivityPush.watch(activity)
-            if Date().timeIntervalSince(lastPush) < 5 { return }
+            if !urgent, Date().timeIntervalSince(lastPush) < 5 { return }
             lastPush = Date()
+            lastStale = stale
+            let background = UIApplication.shared.beginBackgroundTask(withName: "nivvi.lock-screen") { }
             Task {
+                defer { if background != .invalid { UIApplication.shared.endBackgroundTask(background) } }
                 if #available(iOS 16.2, *) {
-                    await activity.update(ActivityContent(state: state, staleDate: Date(timeIntervalSince1970: state.measuredAt).addingTimeInterval(45)))
+                    await activity.update(ActivityContent(state: state, staleDate: nil))
                 } else {
                     await activity.update(using: state)
                 }
@@ -64,12 +70,13 @@ enum NivviLiveActivityBridge {
             return
         }
         lastPush = Date()
+        lastStale = stale
         let attributes = NivviActivityAttributes(title: title)
         do {
             if #available(iOS 16.2, *) {
                 let activity = try Activity.request(
                     attributes: attributes,
-                    content: ActivityContent(state: state, staleDate: Date().addingTimeInterval(45)),
+                    content: ActivityContent(state: state, staleDate: nil),
                     pushType: .token
                 )
                 LiveActivityPush.watch(activity)
@@ -78,7 +85,7 @@ enum NivviLiveActivityBridge {
             }
         } catch {
             if #available(iOS 16.2, *) {
-                if let activity = try? Activity.request(attributes: attributes, content: ActivityContent(state: state, staleDate: Date().addingTimeInterval(45))) {
+                if let activity = try? Activity.request(attributes: attributes, content: ActivityContent(state: state, staleDate: nil)) {
                     LiveActivityPush.watch(activity)
                 }
             }

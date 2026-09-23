@@ -75,9 +75,6 @@ struct NivviLiveActivityWidget: Widget {
     }
 
     private func readingsDelayed(_ context: ActivityViewContext<NivviActivityAttributes>) -> Bool {
-        if context.state.stale { return true }
-        if #available(iOS 16.2, *), context.isStale { return true }
-        if context.state.measuredAt > 0, Date().timeIntervalSince1970 - context.state.measuredAt > 45 { return true }
-        return false
+        context.state.stale
     }
 }

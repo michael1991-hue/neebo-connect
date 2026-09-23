@@ -686,6 +686,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         if connection.isConnected { connection = .waiting }
         status = "No fresh heart-rate reading. Bluetooth may still be connected."
         measurementStatus = reason
+        pushLockScreen(stale: true)
     }
     private func receiveHeartRate(at time: Date) {
         lastHeartRateUpdate = time
@@ -702,11 +703,11 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         connection = .receiving
         status = wearableCharging ? "Charging" : "Receiving fresh heart-rate readings."
         pushLocalShare()
-        pushLockScreen()
+        pushLockScreen(stale: false)
     }
-    private func pushLockScreen() {
-        let ble = connection.isConnected || connection == .reconnecting
-        guard ble else { return }
+    private func pushLockScreen(stale: Bool = false) {
+        let ble = connection.isConnected || connection == .reconnecting || connection == .waiting
+        guard ble || stale else { return }
         NivviLiveActivityBridge.preferLocalBluetooth = true
         let hr = pulseOximeterRate ?? verifiedHeartRate.map(Double.init) ?? customHeartRateCandidate.map(Double.init)
         let ox = pulseOximeterOxygen ?? verifiedOxygen.map(Double.init) ?? customOxygenCandidate.map(Double.init)
@@ -718,7 +719,8 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             signal: BluetoothSignal.label(signalRSSI),
             nurseryHint: "",
             monitoring: true,
-            measuredAt: lastHeartRateUpdate ?? Date()
+            measuredAt: lastHeartRateUpdate ?? Date(),
+            stale: stale
         )
     }
     private func expireMeasurements() {
@@ -2317,7 +2319,9 @@ struct ContentView: View {
             connection: connection,
             signal: signal,
             nurseryHint: hint,
-            monitoring: ble || wifi.following || watchingFamily
+            monitoring: ble || wifi.following || watchingFamily,
+            measuredAt: monitor.lastHeartRateUpdate ?? Date(),
+            stale: ble && monitor.staleHeartRateDetected
         )
     }
     private func publishWiFiShare() {
