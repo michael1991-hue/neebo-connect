@@ -85,6 +85,7 @@ struct FamilySample: Codable, Equatable {
     var t: Double
     var hr: Double?
     var o2: Double?
+    var sk: Double? = nil
 }
 struct FamilySnapshot: Codable {
     var captured: Double
@@ -107,12 +108,13 @@ struct FamilySnapshot: Codable {
     var acknowledged_by: String?
     var battery: String?
     var charging: Bool?
+    var skin: Double?
 
     enum CodingKeys: String, CodingKey {
-        case captured, heart_rate, oxygen, heart_rate_at, oxygen_at, source, alarm, connection, history, stream_id, seq, kind, server_received, acknowledged, activity_secret, place, host_relation, acknowledged_by, battery, charging
+        case captured, heart_rate, oxygen, heart_rate_at, oxygen_at, source, alarm, connection, history, stream_id, seq, kind, server_received, acknowledged, activity_secret, place, host_relation, acknowledged_by, battery, charging, skin
     }
 
-    init(captured: Double, heart_rate: Double?, oxygen: Double?, source: String, alarm: String, connection: String, history: [FamilySample] = [], heart_rate_at: Double? = nil, oxygen_at: Double? = nil, stream_id: String? = nil, seq: Int? = nil, kind: String? = "live", acknowledged: Bool = false, activity_secret: String? = nil, place: String? = nil, host_relation: String? = nil, battery: String? = nil, charging: Bool? = nil) {
+    init(captured: Double, heart_rate: Double?, oxygen: Double?, source: String, alarm: String, connection: String, history: [FamilySample] = [], heart_rate_at: Double? = nil, oxygen_at: Double? = nil, stream_id: String? = nil, seq: Int? = nil, kind: String? = "live", acknowledged: Bool = false, activity_secret: String? = nil, place: String? = nil, host_relation: String? = nil, battery: String? = nil, charging: Bool? = nil, skin: Double? = nil) {
         self.captured = captured
         self.heart_rate = heart_rate
         self.oxygen = oxygen
@@ -132,6 +134,7 @@ struct FamilySnapshot: Codable {
         self.acknowledged_by = nil
         self.battery = battery
         self.charging = charging
+        self.skin = skin
     }
 
     init(from decoder: Decoder) throws {
@@ -156,6 +159,7 @@ struct FamilySnapshot: Codable {
         acknowledged_by = try box.decodeIfPresent(String.self, forKey: .acknowledged_by)
         battery = try box.decodeIfPresent(String.self, forKey: .battery)
         charging = try box.decodeIfPresent(Bool.self, forKey: .charging)
+        skin = try box.decodeIfPresent(Double.self, forKey: .skin)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -180,6 +184,7 @@ struct FamilySnapshot: Codable {
         try box.encodeIfPresent(acknowledged_by, forKey: .acknowledged_by)
         try box.encodeIfPresent(battery, forKey: .battery)
         try box.encodeIfPresent(charging, forKey: .charging)
+        try box.encodeIfPresent(skin, forKey: .skin)
     }
 }
 struct RemoteReading: Codable {
@@ -794,7 +799,7 @@ final class FamilyRelay: ObservableObject {
         }
         if catchup, trail.isEmpty, !snap.history.isEmpty {
             trail = SavedMeasurement.uniquelyIdentified(snap.history.map {
-                SavedMeasurement.mapped(time: Date(timeIntervalSince1970: $0.t), heartRate: $0.hr, oxygen: $0.o2, source: "family-share")
+                SavedMeasurement.mapped(time: Date(timeIntervalSince1970: $0.t), heartRate: $0.hr, oxygen: $0.o2, source: "family-share", skinCelsius: $0.sk)
             })
         }
         if let seq = snap.seq { lastSeq = seq }
@@ -817,7 +822,7 @@ final class FamilyRelay: ObservableObject {
         )
         if let hr = snap.heart_rate {
             let stamp = Date(timeIntervalSince1970: snap.heart_rate_at ?? snap.captured)
-            let point = SavedMeasurement.mapped(time: stamp, heartRate: hr, oxygen: snap.oxygen, source: "family-share")
+            let point = SavedMeasurement.mapped(time: stamp, heartRate: hr, oxygen: snap.oxygen, source: "family-share", skinCelsius: snap.skin)
             if trail.last?.id != point.id {
                 trail.append(point)
             }

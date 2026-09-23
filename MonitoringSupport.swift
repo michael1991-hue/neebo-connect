@@ -445,7 +445,7 @@ enum HistoryChartPolicy {
 }
 
 extension SavedMeasurement {
-    static func mapped(time: Date, heartRate: Double?, oxygen: Double?, source: String) -> SavedMeasurement {
+    static func mapped(time: Date, heartRate: Double?, oxygen: Double?, source: String, skinCelsius: Double? = nil) -> SavedMeasurement {
         SavedMeasurement(
             id: stableID(time: time, source: source, heartRate: heartRate, oxygen: oxygen),
             time: time,
@@ -453,7 +453,8 @@ extension SavedMeasurement {
             oxygen: oxygen.map { Int($0.rounded()) },
             source: source,
             exactHeartRate: heartRate,
-            exactOxygen: oxygen
+            exactOxygen: oxygen,
+            skinCelsius: skinCelsius
         )
     }
     static func stableID(time: Date, source: String, heartRate: Double?, oxygen: Double?) -> UUID {

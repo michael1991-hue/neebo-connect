@@ -456,7 +456,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         let oxFresh = lastOxygenUpdate.map { now.timeIntervalSince($0) <= 30 } == true
         let hr = hrFresh ? (pulseOximeterRate ?? verifiedHeartRate.map(Double.init) ?? customHeartRateCandidate.map(Double.init)) : nil
         let ox = oxFresh ? OxygenReading.clamp(pulseOximeterOxygen ?? verifiedOxygen.map(Double.init) ?? customOxygenCandidate.map(Double.init) ?? -1) : nil
-        let points = history.suffix(120).map { FamilySample(t: $0.time.timeIntervalSince1970, hr: $0.heartRateValue, o2: $0.oxygenValue) }
+        let points = history.suffix(120).map { FamilySample(t: $0.time.timeIntervalSince1970, hr: $0.heartRateValue, o2: $0.oxygenValue, sk: $0.skinCelsius) }
         let alarm = alarmKind.map { $0 == .high ? "high" : "low" } ?? (staleHeartRateDetected ? "sensor" : "none")
         let key = "\(alarm)|\(connection.rawValue)"
         if key == lastFamilyUploadKey, let last = lastFamilyUploadAt, now.timeIntervalSince(last) < 5 {
@@ -479,7 +479,8 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             place: UserDefaults.standard.string(forKey: "nivvi.place"),
             host_relation: FamilyRelation.wire(UserDefaults.standard.string(forKey: "nivvi.host.relation")),
             battery: battery,
-            charging: wearableCharging
+            charging: wearableCharging,
+            skin: skinCelsius
         )
         Task { @MainActor in FamilyRelay.shared.capture(snapshot) }
         pushLocalShare()
@@ -495,8 +496,9 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             alarm: alarmKind.map { $0 == .high ? "high" : "low" } ?? (staleHeartRateDetected ? "sensor" : "none"),
             charging: wearableCharging,
             battery: battery,
-            history: Array(history.suffix(120).map { FamilySample(t: $0.time.timeIntervalSince1970, hr: $0.heartRateValue, o2: $0.oxygenValue) }),
-            acknowledged: alarmAcknowledged
+            history: Array(history.suffix(120).map { FamilySample(t: $0.time.timeIntervalSince1970, hr: $0.heartRateValue, o2: $0.oxygenValue, sk: $0.skinCelsius) }),
+            acknowledged: alarmAcknowledged,
+            skin: skinCelsius
         )
         let title = UserDefaults.standard.string(forKey: "nivvi.profile.name").flatMap { $0.isEmpty ? nil : $0 } ?? "Nivvi"
         LiveActivityPush.publish(
@@ -1992,7 +1994,7 @@ struct HistoryChartsView: View {
     }
     private func caption(for time: Date) -> String {
         if selected != nil { return time.formatted(date: .omitted, time: .standard) }
-        if span <= 0 && Calendar.current.isDateInToday(day) { return "Now" }
+        if span <= 0 && Calendar.current.isDateInToday(day) && Date().timeIntervalSince(time) < 90 { return "Now" }
         return time.formatted(date: .omitted, time: .shortened)
     }
     private func summaryColumn(_ title: String, _ value: Double, _ color: Color, decimals: Bool = false) -> some View {
@@ -2351,8 +2353,9 @@ struct ContentView: View {
             alarm: shareAlarmKind,
             charging: monitor.wearableCharging,
             battery: monitor.battery,
-            history: Array(monitor.history.suffix(120).map { FamilySample(t: $0.time.timeIntervalSince1970, hr: $0.heartRateValue, o2: $0.oxygenValue) }),
-            acknowledged: monitor.alarmAcknowledged
+            history: Array(monitor.history.suffix(120).map { FamilySample(t: $0.time.timeIntervalSince1970, hr: $0.heartRateValue, o2: $0.oxygenValue, sk: $0.skinCelsius) }),
+            acknowledged: monitor.alarmAcknowledged,
+            skin: monitor.skinCelsius
         )
     }
     private var shareAlarmKind: String {
@@ -2365,7 +2368,7 @@ struct ContentView: View {
             var rows = family.trail
             if let samples = family.remote?.snapshot?.history {
                 rows.append(contentsOf: samples.map {
-                    SavedMeasurement.mapped(time: Date(timeIntervalSince1970: $0.t), heartRate: $0.hr, oxygen: $0.o2, source: "family-share")
+                    SavedMeasurement.mapped(time: Date(timeIntervalSince1970: $0.t), heartRate: $0.hr, oxygen: $0.o2, source: "family-share", skinCelsius: $0.sk)
                 })
             }
             monitor.ingestShared(rows)
@@ -2374,7 +2377,7 @@ struct ContentView: View {
             var rows = wifi.trail
             if let samples = wifi.latest?.history {
                 rows.append(contentsOf: samples.map {
-                    SavedMeasurement.mapped(time: Date(timeIntervalSince1970: $0.t), heartRate: $0.hr, oxygen: $0.o2, source: "wifi-share")
+                    SavedMeasurement.mapped(time: Date(timeIntervalSince1970: $0.t), heartRate: $0.hr, oxygen: $0.o2, source: "wifi-share", skinCelsius: $0.sk)
                 })
             }
             monitor.ingestShared(rows)
@@ -3010,7 +3013,7 @@ struct ContentView: View {
                         Text(batteryLabel).font(.headline).foregroundStyle(ink)
                     }
                 }
-                if let skin = monitor.skinCelsius {
+                if let skin = displayedSkin {
                     Button {
                         openHistory(.skin)
                     } label: {
@@ -3025,6 +3028,11 @@ struct ContentView: View {
                 }
             }
         }
+    }
+    private var displayedSkin: Double? {
+        if watchingFamily { return family.remote?.snapshot?.skin }
+        if watchingWifi { return wifi.latest?.skinCelsius }
+        return monitor.skinCelsius
     }
     private func skinReading(_ celsius: Double) -> String {
         skinFahrenheit ? String(format: "%.1f°F", celsius * 9 / 5 + 32) : String(format: "%.1f°C", celsius)

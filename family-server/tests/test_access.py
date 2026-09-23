@@ -60,11 +60,14 @@ def test_access_isolation_invites_and_revocation(client):
     assert client.post(path + "/invites", headers=reader, json={"email": "other@example.com"}).status_code == 404
     assert client.put(path + "/latest", headers=owner, json=snapshot()).status_code == 200
     packed = snapshot()
-    packed["history"] = [{"t": packed["captured"] - 60, "hr": 94, "o2": 97}]
+    packed["skin"] = 30.1
+    packed["history"] = [{"t": packed["captured"] - 60, "hr": 94, "o2": 97, "sk": 30.4}]
     assert client.put(path + "/latest", headers=owner, json=packed).status_code == 200
     remote = client.get(path + "/latest", headers=reader).json()["snapshot"]
     assert remote["heart_rate"] == 100
+    assert remote["skin"] == 30.1
     assert remote["history"][0]["hr"] == 94
+    assert remote["history"][0]["sk"] == 30.4
     assert client.delete(path + "/members/" + reader_id, headers=owner).status_code == 200
     assert client.get(path + "/latest", headers=reader).status_code == 404
 

@@ -19,6 +19,7 @@ struct WiFiSnapshot: Codable, Equatable {
     var childName: String? = nil
     var place: String? = nil
     var hostRelation: String? = nil
+    var skinCelsius: Double? = nil
 }
 
 final class WiFiRelay: ObservableObject {
@@ -51,6 +52,7 @@ final class WiFiRelay: ObservableObject {
     private var lastBattery = "—"
     private var lastHistory: [FamilySample] = []
     private var lastAcknowledged = false
+    private var lastSkin: Double?
     private var lastHistorySent: Date?
     private var shareSeq = 0
     private var lastShareSeq = 0
@@ -96,7 +98,7 @@ final class WiFiRelay: ObservableObject {
         return Date().timeIntervalSince1970 - latest.captured < 45
     }
 
-    func publish(heartRate: String, oxygen: String, connection: String, alarm: String = "none", charging: Bool = false, battery: String = "—", history: [FamilySample] = [], acknowledged: Bool = false) {
+    func publish(heartRate: String, oxygen: String, connection: String, alarm: String = "none", charging: Bool = false, battery: String = "—", history: [FamilySample] = [], acknowledged: Bool = false, skin: Double? = nil) {
         lastHR = heartRate
         lastO2 = oxygen
         lastConnection = connection
@@ -105,6 +107,7 @@ final class WiFiRelay: ObservableObject {
         lastBattery = battery
         lastHistory = history
         lastAcknowledged = acknowledged
+        lastSkin = skin
         emit()
     }
 
@@ -159,7 +162,8 @@ final class WiFiRelay: ObservableObject {
                     time: Date(timeIntervalSince1970: $0.t),
                     heartRate: $0.hr,
                     oxygen: $0.o2,
-                    source: "wifi-share"
+                    source: "wifi-share",
+                    skinCelsius: $0.sk
                 )
             }
         }
@@ -170,7 +174,8 @@ final class WiFiRelay: ObservableObject {
             time: Date(timeIntervalSince1970: snap.captured),
             heartRate: hr,
             oxygen: o2,
-            source: "wifi-share"
+            source: "wifi-share",
+            skinCelsius: snap.skinCelsius
         )
         if trail.last?.id == point.id { return }
         if let last = trail.last, abs(last.time.timeIntervalSince1970 - snap.captured) < 0.4 { return }
@@ -216,7 +221,8 @@ final class WiFiRelay: ObservableObject {
             activitySecret: LiveActivityPush.secret,
             childName: UserDefaults.standard.string(forKey: "nivvi.profile.name"),
             place: UserDefaults.standard.string(forKey: "nivvi.place"),
-            hostRelation: UserDefaults.standard.string(forKey: "nivvi.host.relation")
+            hostRelation: UserDefaults.standard.string(forKey: "nivvi.host.relation"),
+            skinCelsius: lastSkin
         )
         if sendHistory { lastHistorySent = Date() }
         payload = (try? JSONEncoder().encode(snap)) ?? Data()

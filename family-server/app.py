@@ -339,6 +339,7 @@ class HistoryPoint(BaseModel):
     t: float
     hr: float | None = Field(default=None, ge=1, le=65535)
     o2: float | None = Field(default=None, ge=0, le=100)
+    sk: float | None = None
 
 
 class Snapshot(BaseModel):
@@ -362,6 +363,7 @@ class Snapshot(BaseModel):
     acknowledged_by: str | None = Field(default=None, max_length=20)
     battery: str | None = Field(default=None, max_length=20)
     charging: bool | None = None
+    skin: float | None = None
 
 
 class Device(BaseModel):
@@ -848,6 +850,8 @@ def merge_snapshot(old, body: Snapshot, received):
     if payload.get("battery") in (None, "", "—"):
         payload["battery"] = old.get("battery")
         payload["charging"] = payload.get("charging") if payload.get("charging") is not None else old.get("charging")
+    if payload.get("skin") is None:
+        payload["skin"] = old.get("skin")
     for point in payload.get("history") or []:
         o2 = point.get("o2") if isinstance(point, dict) else None
         if isinstance(o2, (int, float)) and o2 > 99:
