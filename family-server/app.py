@@ -1105,7 +1105,7 @@ def queue_activity(secret, state, paced=False):
         if gate and not urgent and now - gate["at"] < 12:
             return
         ACTIVITY_GATE[secret] = {"at": now, "alarm": alarm}
-        priority = "10" if urgent else "5"
+        priority = "10"
     with db() as c:
         tokens = [r[0] for r in c.execute("SELECT token FROM activity_tokens WHERE secret=?", (secret,))]
     if TEST:
@@ -1149,6 +1149,8 @@ async def deliver_activity(tokens, state, priority="10"):
             if result.status_code == 410 or (result.status_code == 400 and result.json().get("reason") == "BadDeviceToken"):
                 with db() as c:
                     c.execute("DELETE FROM activity_tokens WHERE token=?", (token,))
+            elif result.status_code != 200:
+                print(f"live activity push {result.status_code} {result.text}", flush=True)
 
 
 async def push_worker():
