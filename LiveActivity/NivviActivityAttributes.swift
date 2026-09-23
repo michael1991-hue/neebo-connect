@@ -13,6 +13,7 @@ struct NivviActivityAttributes: ActivityAttributes {
         var seq: Int = 0
         var session: String = ""
         var stale: Bool = false
+        var alarm: String = ""
     }
     var title: String
 }

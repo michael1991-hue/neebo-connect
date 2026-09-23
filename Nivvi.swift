@@ -719,8 +719,9 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             signal: BluetoothSignal.label(signalRSSI),
             nurseryHint: "",
             monitoring: true,
-            measuredAt: lastHeartRateUpdate ?? Date(),
-            stale: stale
+            measuredAt: lastHeartRateUpdate ?? Date(timeIntervalSince1970: 0),
+            stale: stale,
+            alarm: alarmKind?.rawValue ?? ""
         )
     }
     private func expireMeasurements() {
@@ -2312,6 +2313,20 @@ struct ContentView: View {
             signal = BluetoothSignal.label(monitor.signalRSSI)
             hint = ""
         }
+        let measured = remoteStamp ?? monitor.lastHeartRateUpdate
+        let alarm: String
+        if ble {
+            alarm = monitor.alarmKind?.rawValue ?? ""
+        } else if familyLive {
+            let remoteAlarm = family.remote?.snapshot?.alarm ?? ""
+            alarm = remoteAlarm == "high" || remoteAlarm == "low" ? remoteAlarm : ""
+        } else if wifiLive {
+            let remoteAlarm = wifi.latest?.alarm ?? ""
+            alarm = remoteAlarm == "high" || remoteAlarm == "low" ? remoteAlarm : ""
+        } else {
+            alarm = ""
+        }
+        let stale = measured == nil || (ble && monitor.staleHeartRateDetected) || (familyLive && family.linkState != .live) || (wifiLive && !wifi.remoteFresh)
         NivviLiveActivityBridge.sync(
             title: displayName,
             heartRate: heartRateDisplay,
@@ -2320,8 +2335,9 @@ struct ContentView: View {
             signal: signal,
             nurseryHint: hint,
             monitoring: ble || wifi.following || watchingFamily,
-            measuredAt: monitor.lastHeartRateUpdate ?? Date(),
-            stale: ble && monitor.staleHeartRateDetected
+            measuredAt: measured ?? Date(timeIntervalSince1970: 0),
+            stale: stale,
+            alarm: alarm
         )
     }
     private func publishWiFiShare() {
