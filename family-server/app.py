@@ -749,10 +749,12 @@ def release_host(family: str, user=Depends(require_user)):
 @app.post("/families/{family}/invites")
 def invite(family: str, body: Address, user=Depends(require_user)):
     throttle("invite:" + user["id"], 20, 3600)
-    relation = (body.relation or "").strip().lower()
-    allowed = {"", "me", "partner", "mum", "dad", "nan", "auntie", "uncle", "carer"}
-    if relation not in allowed:
-        raise HTTPException(400, "Choose who you are — Me, Partner, Mum, Dad, Nan, Auntie, Uncle or Carer")
+    relation = (body.relation or "").strip()
+    if len(relation) > 24:
+        raise HTTPException(400, "Use a shorter name.")
+    known = {"me", "partner", "mum", "dad", "nan", "auntie", "uncle", "carer"}
+    if relation.lower() in known:
+        relation = relation.lower()
     role = "carer" if relation in ("carer", "me") or body.role == "carer" else "watcher"
     token = secrets.token_urlsafe(32)
     with db() as c:
