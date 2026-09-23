@@ -618,7 +618,7 @@ final class FamilyRelay: ObservableObject {
             next.kind = "live"
         }
         let includeHistory = lastHistoryUpload == nil || Date().timeIntervalSince(lastHistoryUpload!) >= 15
-        if !includeHistory { next.history = [] }
+        if !includeHistory { next.history = []; next.alerts = [] }
         if uploadBusy { pendingSnapshot = next; return }
         let token = generation
         uploadBusy = true

@@ -27,6 +27,7 @@ DB = os.environ.get("NIVVI_DATABASE", "/data/nivvi.sqlite")
 TEST = os.environ.get("NIVVI_TESTING") == "1"
 OUTBOX = []  # Tests only; production never stores verification messages here.
 ACTIVITY_PUSHES = []  # Tests only.
+ACTIVITY_GATE = {}
 
 
 class LiveHub:
@@ -917,7 +918,7 @@ def publish(family: str, body: Snapshot, user=Depends(require_user)):
     live["kind"] = "live"
     HUB.emit(family, live)
     if payload.get("activity_secret"):
-        queue_activity(payload["activity_secret"], activity_state(payload, payload.get("activity_secret")))
+        queue_activity(payload["activity_secret"], activity_state(payload, payload.get("activity_secret")), paced=True)
     return {"ok": True, "seq": payload["seq"], "server_received": now}
 
 
@@ -1094,18 +1095,28 @@ def activity_state(payload, secret):
     }
 
 
-def queue_activity(secret, state):
+def queue_activity(secret, state, paced=False):
+    priority = "10"
+    if paced:
+        now = time.time()
+        gate = ACTIVITY_GATE.get(secret)
+        alarm = state.get("alarm") or ""
+        urgent = alarm in ("high", "low") and (not gate or gate.get("alarm") != alarm)
+        if gate and not urgent and now - gate["at"] < 12:
+            return
+        ACTIVITY_GATE[secret] = {"at": now, "alarm": alarm}
+        priority = "10" if urgent else "5"
     with db() as c:
         tokens = [r[0] for r in c.execute("SELECT token FROM activity_tokens WHERE secret=?", (secret,))]
     if TEST:
         for token in tokens:
-            ACTIVITY_PUSHES.append({"token": token, "state": state})
+            ACTIVITY_PUSHES.append({"token": token, "state": state, "priority": priority})
         return
     if HUB.loop is not None:
-        HUB.loop.call_soon_threadsafe(lambda: asyncio.create_task(deliver_activity(tokens, state)))
+        HUB.loop.call_soon_threadsafe(lambda: asyncio.create_task(deliver_activity(tokens, state, priority)))
 
 
-async def deliver_activity(tokens, state):
+async def deliver_activity(tokens, state, priority="10"):
     key = os.environ.get("NIVVI_APNS_KEY")
     if not key or not tokens:
         return
@@ -1117,6 +1128,7 @@ async def deliver_activity(tokens, state):
         "timestamp": int(time.time()),
         "event": "update",
         "content-state": content,
+        "stale-date": int(time.time() + 90),
     }
     if state.get("stale"):
         aps["stale-date"] = int(time.time())
@@ -1129,7 +1141,7 @@ async def deliver_activity(tokens, state):
                     "authorization": "bearer " + bearer,
                     "apns-topic": topic,
                     "apns-push-type": "liveactivity",
-                    "apns-priority": "10",
+                    "apns-priority": priority,
                     "apns-expiration": str(int(time.time() + 300)),
                 },
                 json=payload,
