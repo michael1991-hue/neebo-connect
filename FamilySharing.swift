@@ -50,6 +50,16 @@ enum FamilyRelation: String, CaseIterable, Identifiable {
         default: return "They watch live readings on their iPhone."
         }
     }
+    static func wire(_ raw: String?) -> String? {
+        let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else { return nil }
+        let lower = trimmed.lowercased()
+        if let known = FamilyRelation(rawValue: lower) { return known.rawValue }
+        if let known = FamilyRelation.allCases.first(where: { $0.title.compare(trimmed, options: .caseInsensitive) == .orderedSame }) {
+            return known.rawValue
+        }
+        return String(trimmed.prefix(24))
+    }
     static func display(_ raw: String?) -> String? {
         let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !trimmed.isEmpty else { return nil }
@@ -367,7 +377,7 @@ final class FamilyRelay: ObservableObject {
     }
     func claimHost() async throws {
         guard let familyID = publishFamilyID else { throw FamilyError.message("Join or create the family first.") }
-        let relation = UserDefaults.standard.string(forKey: "nivvi.host.relation") ?? ""
+        let relation = FamilyRelation.wire(UserDefaults.standard.string(forKey: "nivvi.host.relation")) ?? ""
         let reply: FamilyReply = try await request("families/\(familyID)/host", method: "POST", body: body(["relation": relation]))
         publishing = true
         lastUpload = nil

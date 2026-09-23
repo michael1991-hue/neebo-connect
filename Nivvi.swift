@@ -202,6 +202,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     private var lastCustomMeasurement: Date?
     private var transportPolicy = MeasurementTransportPolicy()
     private var retryScan = false
+    private var connectionGap: DispatchWorkItem?
     private var rssiTimer: Timer?
     private var backgroundEnteredAt: Date?
     private var backgroundReminder = BackgroundDataReminderPolicy()
@@ -476,10 +477,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             acknowledged: alarmAcknowledged,
             activity_secret: LiveActivityPush.secret,
             place: UserDefaults.standard.string(forKey: "nivvi.place"),
-            host_relation: {
-                let value = UserDefaults.standard.string(forKey: "nivvi.host.relation") ?? ""
-                return value.isEmpty ? nil : value
-            }(),
+            host_relation: FamilyRelation.wire(UserDefaults.standard.string(forKey: "nivvi.host.relation")),
             battery: battery,
             charging: wearableCharging
         )
@@ -1248,7 +1246,15 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         resetTransport(); retrySeconds = 2; retryScan = false; central.stopScan(); connection = .discovering; p.delegate = self
         status = "Connected. Discovering battery and measurement services…"
         note("Bluetooth connection established. Continuous session enabled.")
-        recordEvent(kind: "connection", title: "Wearable connected", detail: "Continuous Bluetooth session active. Awaiting fresh measurements.")
+        let briefGap = connectionGap != nil
+        connectionGap?.cancel()
+        connectionGap = nil
+        cancelConnectionLossNotice()
+        if !briefGap {
+            recordEvent(kind: "connection", title: "Wearable connected", detail: "Continuous Bluetooth session active. Awaiting fresh measurements.")
+        } else {
+            note("Bluetooth returned within 20 seconds. No connection alert was saved.")
+        }
         startSignalMonitoring(p)
         p.discoverServices(nil)
         noDataTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
@@ -1277,8 +1283,15 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         note("Connection lost: \(error?.localizedDescription ?? "out of range or device stopped")")
         let lastReading = lastHeartRateUpdate
         resetTransport(); connection = .reconnecting
-        recordEvent(kind: "connection", title: "Connection lost", detail: "Measurements unavailable. Automatically reconnecting to the wearable.")
-        scheduleConnectionLossNotice(lastReading: lastReading)
+        connectionGap?.cancel()
+        let gap = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.connectionGap = nil
+            self.recordEvent(kind: "connection", title: "Connection lost", detail: "Measurements unavailable. Automatically reconnecting to the wearable.")
+            self.scheduleConnectionLossNotice(lastReading: lastReading)
+        }
+        connectionGap = gap
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: gap)
         if central.state == .poweredOn { resumeSession() }
         else { connection = .bluetoothOff }
     }
@@ -1836,6 +1849,7 @@ struct HistoryChartsView: View {
     let ink: Color
     var lowLimit: Double?
     var highLimit: Double?
+    var fahrenheit = false
     @State private var span: TimeInterval = 0
     @State private var windowEnd: Date?
     @State private var pinchStart: TimeInterval?
@@ -1913,6 +1927,7 @@ struct HistoryChartsView: View {
             scaleValues.append(36.4)
             scaleValues.append(36.7)
         }
+        if metric == .skin && fahrenheit { scaleValues = scaleValues.map { $0 * 9 / 5 + 32 } }
         let yDomain = heartScale(HistoryChartPolicy.yScale(
             values: scaleValues,
             floor: metric == .oxygen ? 70 : (metric == .skin ? 28 : 40),
@@ -1933,7 +1948,7 @@ struct HistoryChartsView: View {
                 Spacer()
                 if let shown {
                     VStack(alignment: .trailing, spacing: 0) {
-                        Text(metric == .skin ? String(format: "%.1f°C", shown.1) : MetricText.number(shown.1) + (metric == .heartRate ? " bpm" : "%"))
+                        Text(metric == .skin ? skinText(shown.1) : MetricText.number(shown.1) + (metric == .heartRate ? " bpm" : "%"))
                             .font(.title2.weight(.semibold)).foregroundStyle(zoneColor(shown.1, plain: tint)).monospacedDigit()
                         Text(caption(for: shown.0))
                             .font(.caption.weight(.semibold)).foregroundStyle(caption)
@@ -1950,6 +1965,12 @@ struct HistoryChartsView: View {
                 }
             }
         }
+    }
+    private func skinNumber(_ celsius: Double) -> Double {
+        metric == .skin && fahrenheit ? celsius * 9 / 5 + 32 : celsius
+    }
+    private func skinText(_ celsius: Double) -> String {
+        String(format: fahrenheit ? "%.1f°F" : "%.1f°C", skinNumber(celsius))
     }
     private func zoneName(_ value: Double) -> String {
         if activeMetric == .skin { return SkinTemperature.zone(value) }
@@ -1974,7 +1995,7 @@ struct HistoryChartsView: View {
     private func summaryColumn(_ title: String, _ value: Double, _ color: Color, decimals: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title).font(.caption).foregroundStyle(caption)
-            Text(decimals ? String(format: "%.1f", value) : MetricText.number(value)).font(.title2.weight(.semibold)).foregroundStyle(color).monospacedDigit()
+            Text(decimals ? String(format: "%.1f", metric == .skin ? skinNumber(value) : value) : MetricText.number(value)).font(.title2.weight(.semibold)).foregroundStyle(color).monospacedDigit()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 8)
@@ -2007,17 +2028,17 @@ struct HistoryChartsView: View {
                     }
                     ForEach(Array(lineRuns(points).enumerated()), id: \.offset) { _, run in
                         ForEach(run.points) { point in
-                            LineMark(x: .value("Time", point.entry.time), y: .value("Value", point.value), series: .value("Run", run.series))
+                            LineMark(x: .value("Time", point.entry.time), y: .value("Value", skinNumber(point.value)), series: .value("Run", run.series))
                                 .foregroundStyle(run.color)
                         }
                     }
                     if let latest = points.last, selected == nil {
                         RuleMark(x: .value("Latest", latest.entry.time)).foregroundStyle(caption.opacity(0.45))
-                        PointMark(x: .value("Latest", latest.entry.time), y: .value("Latest", latest.value)).foregroundStyle(zoneColor(latest.value, plain: tint)).symbolSize(36)
+                        PointMark(x: .value("Latest", latest.entry.time), y: .value("Latest", skinNumber(latest.value))).foregroundStyle(zoneColor(latest.value, plain: tint)).symbolSize(36)
                     }
                     if let entry = selected, let value = metric.value(entry), domain.contains(entry.time) {
                         RuleMark(x: .value("Selected time", entry.time)).foregroundStyle(lavender.opacity(0.6))
-                        PointMark(x: .value("Selected time", entry.time), y: .value("Selected value", value)).foregroundStyle(lavender).symbolSize(45)
+                        PointMark(x: .value("Selected time", entry.time), y: .value("Selected value", skinNumber(value))).foregroundStyle(lavender).symbolSize(45)
                     }
                 }
                 .chartXScale(domain: domain)
@@ -2099,6 +2120,7 @@ struct ContentView: View {
     @AppStorage("nivvi.profile.avatarSymbol") private var avatarSymbol = "star.fill"
     @AppStorage("nivvi.profile.avatarColor") private var avatarColor = "teal"
     @AppStorage("nivvi.place") private var placeRaw = NurseryPlace.home.rawValue
+    @AppStorage("nivvi.skin.fahrenheit") private var skinFahrenheit = false
     @AppStorage("nivvi.host.relation") private var hostRelation = ""
     @AppStorage("nivvi.nursery.acknowledged") private var nurseryAcknowledged = false
     @State private var skyOffset: CGFloat = 0
@@ -2975,7 +2997,7 @@ struct ContentView: View {
                         HStack {
                             Label("Skin", systemImage: "thermometer.medium").foregroundStyle(skinColor(skin))
                             Spacer()
-                            Text(String(format: "%.1f°C", skin)).font(.headline).foregroundStyle(skinColor(skin)).monospacedDigit()
+                            Text(skinReading(skin)).font(.headline).foregroundStyle(skinColor(skin)).monospacedDigit()
                         }
                     }
                     .buttonStyle(.plain)
@@ -2983,6 +3005,9 @@ struct ContentView: View {
                 }
             }
         }
+    }
+    private func skinReading(_ celsius: Double) -> String {
+        skinFahrenheit ? String(format: "%.1f°F", celsius * 9 / 5 + 32) : String(format: "%.1f°C", celsius)
     }
     private func openHistory(_ metric: HistoryMetric) {
         historyMetric = metric
@@ -3066,7 +3091,7 @@ struct ContentView: View {
                 }
             } else {
                 panel {
-                    HistoryChartsView(entries: displayedHistory, day: monitor.selectedHistoryDay, selected: $selectedHistoryReading, metric: $historyMetric, coral: coral, teal: accentMint, lavender: stamp, caption: muted, ink: ink, lowLimit: monitor.alarmSettings.lowEnabled ? monitor.alarmSettings.lowThreshold.map(Double.init) : nil, highLimit: monitor.alarmSettings.highEnabled ? monitor.alarmSettings.highThreshold.map(Double.init) : nil)
+                    HistoryChartsView(entries: displayedHistory, day: monitor.selectedHistoryDay, selected: $selectedHistoryReading, metric: $historyMetric, coral: coral, teal: accentMint, lavender: stamp, caption: muted, ink: ink, lowLimit: monitor.alarmSettings.lowEnabled ? monitor.alarmSettings.lowThreshold.map(Double.init) : nil, highLimit: monitor.alarmSettings.highEnabled ? monitor.alarmSettings.highThreshold.map(Double.init) : nil, fahrenheit: skinFahrenheit)
                         .id(Calendar.current.startOfDay(for: monitor.selectedHistoryDay))
                 }
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
@@ -3337,6 +3362,12 @@ struct ContentView: View {
             Text("A limit must stay crossed for this duration. Gaps restart the timer.").font(.caption)
                 Text("Changes save automatically.").font(.caption).foregroundStyle(.secondary)
             }.padding(.top, 12) }
+        } }
+        panel { VStack(alignment: .leading, spacing: 12) {
+            Text("Skin temperature").font(.headline)
+            Toggle("Show Fahrenheit", isOn: $skinFahrenheit).tint(switchOn)
+            Text("The band reading stays a wrist temperature. 32.1°C is about 89.8°F. Green, amber and red use the same limits either way.")
+                .font(.caption).foregroundStyle(muted)
         } }
         panel { VStack(alignment: .leading, spacing: 12) {
             Text("Sounds and notifications").font(.headline)

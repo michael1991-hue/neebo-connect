@@ -307,11 +307,11 @@ class Reset(Code):
 class Address(BaseModel):
     email: str = Field(max_length=254)
     role: str = Field(default="watcher", pattern="^(watcher|carer)$")
-    relation: str = Field(default="", max_length=20)
+    relation: str = Field(default="", max_length=24)
 
 
 class HostClaim(BaseModel):
-    relation: str = Field(default="", max_length=20)
+    relation: str = Field(default="", max_length=24)
 
 
 class ChildProfile(BaseModel):
@@ -358,7 +358,7 @@ class Snapshot(BaseModel):
     acknowledged: bool = False
     activity_secret: str | None = Field(default=None, max_length=80)
     place: str | None = Field(default=None, pattern="^(home|carer|exploring)$")
-    host_relation: str | None = Field(default=None, pattern="^(me|partner|mum|dad|nan|auntie|uncle|carer)$")
+    host_relation: str | None = Field(default=None, max_length=24)
     acknowledged_by: str | None = Field(default=None, max_length=20)
     battery: str | None = Field(default=None, max_length=20)
     charging: bool | None = None
@@ -679,7 +679,7 @@ def join_live(token: str, request: Request):
     stamp = snap.get("heart_rate_at") or snap.get("captured") or info["received"]
     age = time.time() - stamp if stamp else None
     waiting = hr is None or age is None or age > 45
-    who = {"me": "Me", "partner": "Partner", "mum": "Mum", "dad": "Dad", "nan": "Nan", "auntie": "Auntie", "uncle": "Uncle", "carer": "Carer"}.get(info.get("host_relation") or "", "family")
+    who = {"me": "Me", "partner": "Partner", "mum": "Mum", "dad": "Dad", "nan": "Nan", "auntie": "Auntie", "uncle": "Uncle", "carer": "Carer"}.get(info.get("host_relation") or "", "") or (info.get("host_relation") or "family")
     if waiting:
         status = "Waiting for the phone next to the band to start monitoring"
     else:
@@ -715,9 +715,12 @@ def apple_app_site_association():
 
 @app.post("/families/{family}/host")
 def claim_host(family: str, body: HostClaim, user=Depends(require_user)):
-    relation = (body.relation or "").strip().lower()
-    if relation and relation not in {"me", "partner", "mum", "dad", "nan", "auntie", "uncle", "carer"}:
-        raise HTTPException(400, "Choose who you are — Me, Partner, Mum, Dad, Nan, Auntie, Uncle or Carer.")
+    relation = (body.relation or "").strip()
+    if len(relation) > 24:
+        raise HTTPException(400, "Use a shorter name.")
+    known = {"me", "partner", "mum", "dad", "nan", "auntie", "uncle", "carer"}
+    if relation.lower() in known:
+        relation = relation.lower()
     stream = secrets.token_hex(16)
     with db() as c:
         publisher(c, family, user)
