@@ -1102,7 +1102,7 @@ def queue_activity(secret, state, paced=False):
         gate = ACTIVITY_GATE.get(secret)
         alarm = state.get("alarm") or ""
         urgent = alarm in ("high", "low") and (not gate or gate.get("alarm") != alarm)
-        if gate and not urgent and now - gate["at"] < 12:
+        if gate and not urgent and now - gate["at"] < 60:
             return
         ACTIVITY_GATE[secret] = {"at": now, "alarm": alarm}
         priority = "10"
@@ -1128,7 +1128,7 @@ async def deliver_activity(tokens, state, priority="10"):
         "timestamp": int(time.time()),
         "event": "update",
         "content-state": content,
-        "stale-date": int(time.time() + 90),
+        "stale-date": int(time.time() + 150),
     }
     if state.get("stale"):
         aps["stale-date"] = int(time.time())

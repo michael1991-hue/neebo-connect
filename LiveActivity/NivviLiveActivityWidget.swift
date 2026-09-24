@@ -69,12 +69,7 @@ struct NivviLiveActivityWidget: Widget {
                 Rectangle().fill(Color.white.opacity(0.18)).frame(width: 1, height: 52)
                 readingColumn(icon: "lungs.fill", tint: Color(red: 0.55, green: 0.78, blue: 0.95), value: metricNumber(context.state.oxygen), unit: "%", caption: "Oxygen", alert: false)
             }
-            Text(readingStamp(context))
-                .font(.caption.weight(.medium))
-                .foregroundStyle(Color.white.opacity(0.62))
-                .frame(maxWidth: .infinity)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
+            readingStamp(context)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
@@ -113,10 +108,21 @@ struct NivviLiveActivityWidget: Widget {
         return number.isEmpty ? "—" : String(number)
     }
 
-    private func readingStamp(_ context: ActivityViewContext<NivviActivityAttributes>) -> String {
-        guard context.state.measuredAt > 0 else { return "No reading yet" }
-        let time = Date(timeIntervalSince1970: context.state.measuredAt)
-        return "Last reading · " + time.formatted(Date.FormatStyle().hour().minute().second())
+    @ViewBuilder
+    private func readingStamp(_ context: ActivityViewContext<NivviActivityAttributes>) -> some View {
+        if context.state.measuredAt > 0 {
+            (Text("Last reading · ") + Text(Date(timeIntervalSince1970: context.state.measuredAt), style: .relative))
+                .font(.caption.weight(.medium))
+                .foregroundStyle(Color.white.opacity(0.62))
+                .frame(maxWidth: .infinity)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        } else {
+            Text("No reading yet")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(Color.white.opacity(0.62))
+                .frame(maxWidth: .infinity)
+        }
     }
 
     private func bannerStatus(_ context: ActivityViewContext<NivviActivityAttributes>) -> (title: String, color: Color) {
