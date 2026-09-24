@@ -44,7 +44,7 @@ targets:
   NivviLiveActivity:
     type: app-extension
     platform: iOS
-    deploymentTarget: '16.1'
+    deploymentTarget: '16.2'
     sources:
       - path: LiveActivity
     settings:

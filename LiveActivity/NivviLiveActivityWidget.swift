@@ -128,7 +128,7 @@ struct NivviLiveActivityWidget: Widget {
     private func bannerStatus(_ context: ActivityViewContext<NivviActivityAttributes>) -> (title: String, color: Color) {
         let mint = Color(red: 0.45, green: 0.86, blue: 0.74)
         let caution = Color(red: 1, green: 0.62, blue: 0.28)
-        if context.isStale || context.state.stale { return ("Delayed", caution) }
+        if activityIsStale(context) { return ("Delayed", caution) }
         if metricNumber(context.state.heartRate) == "—" { return ("Waiting", caution) }
         let connection = context.state.connection.lowercased()
         if connection.contains("not connected") || connection.contains("disconnect") || connection.contains("bluetooth") {
@@ -150,6 +150,13 @@ struct NivviLiveActivityWidget: Widget {
     }
 
     private func readingsDelayed(_ context: ActivityViewContext<NivviActivityAttributes>) -> Bool {
-        context.isStale || context.state.stale
+        activityIsStale(context)
+    }
+
+    private func activityIsStale(_ context: ActivityViewContext<NivviActivityAttributes>) -> Bool {
+        if #available(iOS 16.2, *) {
+            return context.isStale || context.state.stale
+        }
+        return context.state.stale
     }
 }
