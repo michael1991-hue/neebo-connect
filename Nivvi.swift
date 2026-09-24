@@ -737,6 +737,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         let ble = connection.isConnected || connection == .reconnecting || connection == .waiting
         guard ble || stale else { return }
         NivviLiveActivityBridge.preferLocalBluetooth = true
+        LiveActivityPush.releaseFollow()
         let hr = pulseOximeterRate ?? verifiedHeartRate.map(Double.init) ?? customHeartRateCandidate.map(Double.init)
         let ox = pulseOximeterOxygen ?? verifiedOxygen.map(Double.init) ?? customOxygenCandidate.map(Double.init)
         NivviLiveActivityBridge.sync(
@@ -2161,7 +2162,6 @@ struct ContentView: View {
     @AppStorage("nivvi.profile.gender") private var childGender = "Prefer not to say"
     @AppStorage("nivvi.profile.avatarSymbol") private var avatarSymbol = "star.fill"
     @AppStorage("nivvi.profile.avatarColor") private var avatarColor = "teal"
-    @AppStorage("nivvi.place") private var placeRaw = NurseryPlace.home.rawValue
     @AppStorage("nivvi.skin.fahrenheit") private var skinFahrenheit = false
     @AppStorage("nivvi.host.relation") private var hostRelation = ""
     @AppStorage("nivvi.nursery.acknowledged") private var nurseryAcknowledged = false
@@ -2618,7 +2618,6 @@ struct ContentView: View {
             persistSharedHistory()
             syncLiveActivity()
         }
-        .onChange(of: placeRaw) { _ in applyPlace() }
         .onChange(of: wifi.pin) { value in UserDefaults.standard.set(value, forKey: "nivvi.wifi.pin") }
         .sheet(isPresented: $showParentNote) {
             NavigationStack {
@@ -2695,11 +2694,7 @@ struct ContentView: View {
                     .clipShape(Capsule())
             }
             if !ageText.isEmpty { Text(childGender == "Prefer not to say" ? ageText : "\(ageText) · \(childGender)").font(.caption).foregroundStyle(muted) }
-            if watchingWifi || watchingFamily {
-                Text(remotePlace.banner(displayName)).font(.subheadline.weight(.semibold)).foregroundStyle(ink)
-            } else {
-                placePicker
-            }
+            hostPicker
             if family.signedIn { familySendBanner }
             if monitor.lowPowerMode {
                 Text("Low Power Mode is on. Turn it off so Nivvi can keep reading overnight.")
@@ -2847,37 +2842,6 @@ struct ContentView: View {
         }
     }
 
-    private var currentPlace: NurseryPlace {
-        let place = NurseryPlace(rawValue: placeRaw) ?? .home
-        return place == .exploring ? .carer : place
-    }
-    private var remotePlace: NurseryPlace {
-        let raw = wifi.latest?.place ?? family.remote?.snapshot?.place ?? placeRaw
-        return NurseryPlace(rawValue: raw) ?? .home
-    }
-    private var placePicker: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                ForEach(NurseryPlace.allCases) { option in
-                    Button { placeRaw = option.rawValue } label: {
-                        VStack(spacing: 4) {
-                            Image(systemName: option.symbol)
-                            Text(option.title).font(.caption2.weight(.bold)).multilineTextAlignment(.center)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                        .background(currentPlace == option ? teal.opacity(0.35) : cardFill)
-                        .foregroundStyle(ink)
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(option.title)
-                    .accessibilityAddTraits(currentPlace == option ? [.isSelected] : [])
-                }
-            }
-            hostPicker
-        }
-    }
     private var hostPicker: some View {
         HStack {
             Text("This phone is").font(.subheadline.weight(.semibold)).foregroundStyle(ink)
@@ -2909,15 +2873,6 @@ struct ContentView: View {
             } message: {
                 Text("Type who is using this phone. Family will see this name.")
             }
-        }
-    }
-    private func applyPlace() {
-        switch currentPlace {
-        case .home: break
-        case .carer: wifi.setFollowing(false)
-        case .exploring:
-            wifi.setHosting(false)
-            wifi.setFollowing(false)
         }
     }
 

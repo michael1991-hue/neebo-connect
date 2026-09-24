@@ -21,6 +21,14 @@ enum LiveActivityPush {
         set { UserDefaults.standard.set(newValue, forKey: followKey) }
     }
 
+    static func releaseFollow() {
+        let previous = followSecret
+        let token = lastToken.isEmpty ? (UserDefaults.standard.string(forKey: "nivvi.activity.token") ?? "") : lastToken
+        followSecret = nil
+        guard let previous, previous.count >= 16, !token.isEmpty else { return }
+        Task { await send("DELETE", path: "live-activity/token", body: ["secret": previous, "token": token]) }
+    }
+
     static func rememberFollowSecret(_ value: String?) {
         guard let value, value.count >= 16 else { return }
         if followSecret != value {
@@ -72,15 +80,20 @@ enum LiveActivityPush {
     }
 
     private static func register(_ token: String) async {
+        guard !NivviLiveActivityBridge.preferLocalBluetooth else { return }
         guard let secret = followSecret, secret.count >= 16 else { return }
-        await post("live-activity/token", body: ["secret": secret, "token": token])
+        await send("POST", path: "live-activity/token", body: ["secret": secret, "token": token])
     }
 
     private static func post(_ path: String, body: [String: Any]) async {
+        await send("POST", path: path, body: body)
+    }
+
+    private static func send(_ method: String, path: String, body: [String: Any]) async {
         guard let root = Bundle.main.object(forInfoDictionaryKey: "NivviFamilyServerURL") as? String,
               let url = URL(string: root)?.appendingPathComponent(path) else { return }
         var request = URLRequest(url: url)
-        request.httpMethod = "POST"
+        request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 8
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
