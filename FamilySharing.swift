@@ -241,6 +241,7 @@ final class FamilyRelay: ObservableObject {
     @Published private(set) var remoteFetched: Date?
     @Published var selected: String? { didSet { noteHold() } }
     @Published var message = ""
+    @Published var bandHandover = ""
     @Published var busy = false
     @Published private(set) var publishing = false { didSet { noteHold() } }
     @Published var shareLink = ""
@@ -761,10 +762,13 @@ final class FamilyRelay: ObservableObject {
                 publishing = true
                 return
             }
-            let who = FamilyRelation.display(raw["host_relation"] as? String) ?? "Family"
-            if publishing, !stream.isEmpty, stream != publishStream {
-                publishing = false
-                message = "\(who) took over monitoring on another phone."
+            let who = FamilyRelation.display(raw["host_relation"] as? String) ?? "Someone"
+            if publishing { publishing = false }
+            if !hostUser.isEmpty {
+                let child = (families.first(where: { $0.id == selected })?.child_name ?? UserDefaults.standard.string(forKey: "nivvi.profile.name") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                let withChild = child.isEmpty ? "" : " with \(child)"
+                message = "\(who) is\(withChild). If this phone is on the band, it will disconnect."
+                bandHandover = "\(who) is\(withChild). This phone has disconnected from the band so they can monitor."
             }
             return
         }

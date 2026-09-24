@@ -1654,8 +1654,16 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         soundStatus = "Acknowledged. The alarm stays active until a fresh in-range reading."
         publishFamilySnapshot()
     }
+    func releaseForHandover(_ notice: String) {
+        let holding = connection.isBusy || connection == .scanning || session.enabled
+        guard holding else { return }
+        handoverNotice = notice
+        notify(title: "Nivvi monitoring moved", body: notice, identifier: "nivvi-handover", sirenSound: false)
+        stop()
+    }
     func stop() {
-        if session.enabled { recordEvent(kind: "connection", title: "Session disconnected", detail: "Disconnected by the user. Automatic reconnection is off.") }
+        let moved = handoverNotice
+        if session.enabled { recordEvent(kind: "connection", title: moved == nil ? "Session disconnected" : "Monitoring moved", detail: moved ?? "Disconnected by the user. Automatic reconnection is off.") }
         session.stop(); saveSession(); cancelBackgroundWatchdog(); retryScan = false; backgroundEnteredAt = nil
         scanToken = UUID(); scanDeadline?.invalidate(); manager.stopScan()
         resetTransport(clearBattery: true); closeCaptureLog(); alarmEngine.reset(); alarmKind = nil; staleHeartRate.reset(); staleHeartRateDetected = false; alarmAcknowledged = false; clearAlarmNotifications(); cancelConnectionLossNotice(); stopSiren()
@@ -1664,10 +1672,13 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         } else { finish("Disconnected. Automatic reconnection is off.") }
         refreshBackgroundHold()
     }
+    private var handoverNotice: String?
     private func finish(_ message: String) {
+        let shown = handoverNotice ?? message
+        handoverNotice = nil
         resetTransport(clearBattery: true); closeCaptureLog()
         cancelConnectionLossNotice()
-        connection = .idle; peripheral = nil; status = message
+        connection = .idle; peripheral = nil; status = shown
         measurementStatus = "Session ended. Saved readings are in History."
     }
 
@@ -2588,6 +2599,12 @@ struct ContentView: View {
             monitor.refreshBackgroundHold()
         }
         .onChange(of: family.publishing) { _ in monitor.refreshBackgroundHold() }
+        .onChange(of: family.bandHandover) { notice in
+            let text = notice.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return }
+            family.bandHandover = ""
+            monitor.releaseForHandover(text)
+        }
         .onChange(of: monitor.staleHeartRateDetected) { _ in publishWiFiShare(); syncLiveActivity() }
         .onChange(of: monitor.wearableCharging) { _ in publishWiFiShare() }
         .onChange(of: family.remoteFetched) { _ in
