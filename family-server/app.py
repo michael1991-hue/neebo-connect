@@ -120,7 +120,7 @@ def initialize():
         CREATE TABLE IF NOT EXISTS latest(family TEXT PRIMARY KEY REFERENCES families ON DELETE CASCADE,payload TEXT NOT NULL,received REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS devices(token TEXT PRIMARY KEY,user_id TEXT REFERENCES users ON DELETE CASCADE);
         CREATE TABLE IF NOT EXISTS pushes(id TEXT PRIMARY KEY,family TEXT REFERENCES families ON DELETE CASCADE,kind TEXT,created REAL,attempts INTEGER DEFAULT 0);
-        CREATE TABLE IF NOT EXISTS activity_tokens(token TEXT PRIMARY KEY, secret TEXT NOT NULL, updated REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS activity_tokens(token TEXT PRIMARY KEY, secret TEXT NOT NULL, updated REAL NOT NULL, kind TEXT NOT NULL DEFAULT 'watcher');
         CREATE TABLE IF NOT EXISTS activity_latest(secret TEXT PRIMARY KEY, seq INTEGER NOT NULL, measured REAL NOT NULL);
         """)
         for stmt in (
@@ -142,6 +142,7 @@ def initialize():
             "ALTER TABLE families ADD COLUMN high_threshold INTEGER",
             "ALTER TABLE families ADD COLUMN low_threshold INTEGER",
             "ALTER TABLE families ADD COLUMN duration_seconds INTEGER NOT NULL DEFAULT 15",
+            "ALTER TABLE activity_tokens ADD COLUMN kind TEXT NOT NULL DEFAULT 'watcher'",
         ):
             try:
                 c.execute(stmt)
@@ -383,6 +384,7 @@ class Device(BaseModel):
 class ActivityToken(BaseModel):
     secret: str = Field(min_length=16, max_length=80)
     token: str = Field(pattern="^[a-fA-F0-9]{64,512}$")
+    kind: str = "watcher"
 
 
 class ActivityPublish(BaseModel):
@@ -1030,8 +1032,9 @@ def remove_device(token: str, user=Depends(require_user)):
 @app.post("/live-activity/token")
 def register_activity_token(body: ActivityToken, request: Request):
     throttle("activity-token:" + request.client.host, 30)
+    kind = "host" if body.kind == "host" else "watcher"
     with db() as c:
-        c.execute("INSERT OR REPLACE INTO activity_tokens VALUES(?,?,?)", (body.token.lower(), body.secret, time.time()))
+        c.execute("INSERT OR REPLACE INTO activity_tokens VALUES(?,?,?,?)", (body.token.lower(), body.secret, time.time(), kind))
         c.execute("DELETE FROM activity_tokens WHERE updated<?", (time.time() - 7 * 86400,))
     return {"ok": True}
 
@@ -1096,27 +1099,42 @@ def activity_state(payload, secret):
 
 
 def queue_activity(secret, state, paced=False):
-    priority = "10"
-    if paced:
-        now = time.time()
-        gate = ACTIVITY_GATE.get(secret)
-        alarm = state.get("alarm") or ""
-        urgent = alarm in ("high", "low") and (not gate or gate.get("alarm") != alarm)
-        if gate and not urgent and now - gate["at"] < 60:
-            return
-        ACTIVITY_GATE[secret] = {"at": now, "alarm": alarm}
-        priority = "10"
     with db() as c:
-        tokens = [r[0] for r in c.execute("SELECT token FROM activity_tokens WHERE secret=?", (secret,))]
+        rows = [(r[0], r[1] or "watcher") for r in c.execute("SELECT token, kind FROM activity_tokens WHERE secret=?", (secret,))]
+    if not rows:
+        return
+    now = time.time()
+    alarm = state.get("alarm") or ""
+    hosts = [token for token, kind in rows if kind == "host"]
+    watchers = [token for token, kind in rows if kind != "host"]
+
+    def due(label, interval):
+        gate = ACTIVITY_GATE.get(f"{secret}:{label}")
+        urgent = alarm in ("high", "low") and (not gate or gate.get("alarm") != alarm)
+        if paced and gate and not urgent and now - gate["at"] < interval:
+            return False
+        ACTIVITY_GATE[f"{secret}:{label}"] = {"at": now, "alarm": alarm}
+        return True
+
+    jobs = []
+    if not paced:
+        jobs.append(([token for token, _ in rows], "10", 45))
+    else:
+        if hosts and due("host", 12):
+            jobs.append((hosts, "10", 30))
+        if watchers and due("watcher", 60):
+            jobs.append((watchers, "10", 75))
     if TEST:
-        for token in tokens:
-            ACTIVITY_PUSHES.append({"token": token, "state": state, "priority": priority})
+        for tokens, priority, _stale in jobs:
+            for token in tokens:
+                ACTIVITY_PUSHES.append({"token": token, "state": state, "priority": priority})
         return
     if HUB.loop is not None:
-        HUB.loop.call_soon_threadsafe(lambda: asyncio.create_task(deliver_activity(tokens, state, priority)))
+        for tokens, priority, stale_for in jobs:
+            HUB.loop.call_soon_threadsafe(lambda tokens=tokens, priority=priority, stale_for=stale_for: asyncio.create_task(deliver_activity(tokens, state, priority, stale_for)))
 
 
-async def deliver_activity(tokens, state, priority="10"):
+async def deliver_activity(tokens, state, priority="10", fresh_for=150):
     key = os.environ.get("NIVVI_APNS_KEY")
     if not key or not tokens:
         return
@@ -1128,7 +1146,7 @@ async def deliver_activity(tokens, state, priority="10"):
         "timestamp": int(time.time()),
         "event": "update",
         "content-state": content,
-        "stale-date": int(time.time() + 150),
+        "stale-date": int(time.time() + fresh_for),
     }
     if state.get("stale"):
         aps["stale-date"] = int(time.time())

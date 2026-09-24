@@ -8,6 +8,7 @@ enum LiveActivityPush {
     private static var uploadSeq = 0
     private static var lastToken = ""
     private static var watching = false
+    private static var localOwner = false
 
     static var secret: String {
         if let saved = UserDefaults.standard.string(forKey: secretKey), saved.count >= 16 { return saved }
@@ -21,12 +22,21 @@ enum LiveActivityPush {
         set { UserDefaults.standard.set(newValue, forKey: followKey) }
     }
 
-    static func releaseFollow() {
-        let previous = followSecret
+    static func claimLocal() {
+        let first = !localOwner
+        localOwner = true
         let token = lastToken.isEmpty ? (UserDefaults.standard.string(forKey: "nivvi.activity.token") ?? "") : lastToken
+        let previous = followSecret
         followSecret = nil
-        guard let previous, previous.count >= 16, !token.isEmpty else { return }
-        Task { await send("DELETE", path: "live-activity/token", body: ["secret": previous, "token": token]) }
+        guard first else { return }
+        Task {
+            if let previous, previous != secret, !token.isEmpty {
+                await send("DELETE", path: "live-activity/token", body: ["secret": previous, "token": token])
+            }
+            if !token.isEmpty {
+                await send("POST", path: "live-activity/token", body: ["secret": secret, "token": token, "kind": "host"])
+            }
+        }
     }
 
     static func rememberFollowSecret(_ value: String?) {
@@ -80,9 +90,13 @@ enum LiveActivityPush {
     }
 
     private static func register(_ token: String) async {
-        guard !NivviLiveActivityBridge.preferLocalBluetooth else { return }
-        guard let secret = followSecret, secret.count >= 16 else { return }
-        await send("POST", path: "live-activity/token", body: ["secret": secret, "token": token])
+        if localOwner || NivviLiveActivityBridge.preferLocalBluetooth {
+            localOwner = true
+            await send("POST", path: "live-activity/token", body: ["secret": secret, "token": token, "kind": "host"])
+            return
+        }
+        guard let follow = followSecret, follow.count >= 16 else { return }
+        await send("POST", path: "live-activity/token", body: ["secret": follow, "token": token, "kind": "watcher"])
     }
 
     private static func post(_ path: String, body: [String: Any]) async {

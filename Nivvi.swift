@@ -737,7 +737,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         let ble = connection.isConnected || connection == .reconnecting || connection == .waiting
         guard ble || stale else { return }
         NivviLiveActivityBridge.preferLocalBluetooth = true
-        LiveActivityPush.releaseFollow()
+        LiveActivityPush.claimLocal()
         let hr = pulseOximeterRate ?? verifiedHeartRate.map(Double.init) ?? customHeartRateCandidate.map(Double.init)
         let ox = pulseOximeterOxygen ?? verifiedOxygen.map(Double.init) ?? customOxygenCandidate.map(Double.init)
         NivviLiveActivityBridge.sync(
@@ -2565,7 +2565,7 @@ struct ContentView: View {
             .allowsHitTesting(false)
             VStack(spacing: 0) {
                 header
-                if monitor.criticalAlertActive { alarmBanner.padding(.horizontal, 20) }
+                if monitor.criticalAlertActive && !alarmOwnsScreen { alarmBanner.padding(.horizontal, 20) }
                 ScrollView(showsIndicators: false) {
                     selectedTab
                     .padding(.horizontal, 20).padding(.bottom, 110)
@@ -2575,6 +2575,7 @@ struct ContentView: View {
                 bottomBar
             }
             .zIndex(1)
+            if alarmOwnsScreen { alarmTakeover.zIndex(2) }
         }
         .preferredColorScheme(mode == .night ? .dark : .light)
         .sheet(isPresented: $showSettings) {
@@ -2751,8 +2752,10 @@ struct ContentView: View {
                 headerButtons
             }
             HStack(spacing: 10) {
-                Circle().fill(monitor.wearableCharging ? Color.orange : (monitor.connection == .receiving || wifi.remoteFresh || (watchingFamily && family.linkState == .live) ? teal : (connected ? .orange : .gray))).frame(width: 11, height: 11)
-                Text(statusCaption).font(.subheadline.weight(.semibold)).foregroundStyle(ink)
+                Circle().fill(situationColor).frame(width: 11, height: 11)
+                Text(situationLine).font(.subheadline.weight(.bold)).foregroundStyle(ink)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.8)
                 Spacer()
                 Text(mode == .day ? "Day" : "Night").font(.caption.weight(.semibold))
                     .foregroundStyle(mode == .day ? ink : .white)
@@ -2837,6 +2840,77 @@ struct ContentView: View {
         .accessibilityLabel("Profile avatar")
     }
 
+    private var alarmOwnsScreen: Bool {
+        if monitor.alarmAcknowledged { return false }
+        if monitor.alarmActive { return true }
+        let shared = family.remote?.snapshot?.alarm ?? wifi.latest?.alarm ?? ""
+        return monitor.shareAlertActive && (shared == "high" || shared == "low")
+    }
+    private var alarmTakeover: some View {
+        let high = monitor.alarmKind == .high || family.remote?.snapshot?.alarm == "high" || wifi.latest?.alarm == "high"
+        return VStack(spacing: 22) {
+            Spacer()
+            Text(displayName).font(.title2.weight(.semibold)).foregroundStyle(.white.opacity(0.85))
+            Text(high ? "Heart rate is high" : "Heart rate is low")
+                .font(.title.weight(.bold))
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
+            Text(heroHeartRate)
+                .font(.system(size: 92, weight: .bold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(.white)
+                .minimumScaleFactor(0.4)
+                .lineLimit(1)
+            Text("bpm").font(.title2.weight(.semibold)).foregroundStyle(.white.opacity(0.8))
+            Text("Stay with them and follow their care plan.")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
+            Spacer()
+            Button("I heard it") { acknowledgeEverywhere() }
+                .font(.title2.weight(.bold))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 18)
+                .background(.white)
+                .foregroundStyle(coral)
+                .clipShape(RoundedRectangle(cornerRadius: 18))
+        }
+        .padding(28)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(coral.ignoresSafeArea())
+    }
+    private var situationLine: String {
+        if monitor.alarmActive && !monitor.alarmAcknowledged { return "Heart rate alarm. Stay with them." }
+        if monitor.wearableCharging { return "The band is charging." }
+        if localHeartLive {
+            if family.publishing {
+                let who = FamilyRelation.display(hostRelation) ?? "You"
+                return who == "You" ? "You are monitoring." : "\(who) is monitoring."
+            }
+            if family.signedIn { return "The band is connected here. Family cannot see it yet." }
+            return "You are monitoring."
+        }
+        if watchingFamily {
+            let who = FamilyRelation.display(family.remote?.snapshot?.host_relation) ?? "Family"
+            switch family.linkState {
+            case .live: return "\(who) is monitoring."
+            case .sensorDisconnected: return "The band is not connected."
+            default: return "Not receiving. Check the phone next to the band."
+            }
+        }
+        if watchingWifi {
+            return wifi.remoteFresh ? "You are watching on this Wi‑Fi." : "The band is not connected."
+        }
+        if monitor.connection == .idle || monitor.connection == .bluetoothOff { return "The band is not connected." }
+        return monitor.connection.label
+    }
+    private var situationColor: Color {
+        if situationLine.contains("not connected") || situationLine.contains("Not receiving") || situationLine.contains("cannot see") || situationLine.contains("alarm") {
+            return coral
+        }
+        if situationLine.contains("charging") { return .orange }
+        return accentMint
+    }
     private var alarmBanner: some View {
                 HStack(spacing: 12) {
                     Image(systemName: "bell.and.waves.fill").foregroundStyle(.white)
