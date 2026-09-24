@@ -1893,7 +1893,7 @@ struct HistoryChartsView: View {
     var lowLimit: Double?
     var highLimit: Double?
     var fahrenheit = false
-    @State private var span: TimeInterval = 0
+    @State private var span: TimeInterval = 3600
     @State private var windowEnd: Date?
     @State private var pinchStart: TimeInterval?
     private var domain: ClosedRange<Date> {
@@ -1908,9 +1908,9 @@ struct HistoryChartsView: View {
                 Text("Skin").tag(HistoryMetric.skin)
             }.pickerStyle(.segmented)
             Picker("Chart range", selection: $span) {
-                Text("24h").tag(0.0)
-                Text("6h").tag(6 * 3600.0)
                 Text("1h").tag(3600.0)
+                Text("6h").tag(6 * 3600.0)
+                Text("24h").tag(0.0)
             }.pickerStyle(.segmented)
             if span > 0 {
                 HStack {
@@ -1939,7 +1939,7 @@ struct HistoryChartsView: View {
         )
         .onChange(of: span) { _ in selected = nil }
         .onChange(of: metric) { _ in selected = nil }
-        .onChange(of: day) { _ in selected = nil; windowEnd = nil; span = 0 }
+        .onChange(of: day) { _ in selected = nil; windowEnd = nil; span = 3600 }
     }
     private var dayEnd: Date { Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: day))! }
     private func moveWindow(_ direction: Int) {
@@ -1992,19 +1992,20 @@ struct HistoryChartsView: View {
                 if let shown {
                     VStack(alignment: .trailing, spacing: 0) {
                         Text(metric == .skin ? skinText(shown.1) : MetricText.number(shown.1) + (metric == .heartRate ? " bpm" : "%"))
-                            .font(.title2.weight(.semibold)).foregroundStyle(zoneColor(shown.1, plain: tint)).monospacedDigit()
-                        Text(caption(for: shown.0))
+                            .font(.system(size: 34, weight: .bold, design: .rounded)).foregroundStyle(zoneColor(shown.1, plain: tint)).monospacedDigit()
+                        Text(readingDetail(shown.1, at: shown.0))
                             .font(.caption.weight(.semibold)).foregroundStyle(caption)
+                            .multilineTextAlignment(.trailing)
                     }
                 }
             }
             chartBody(points: points, metric: metric, tint: tint, yDomain: yDomain, visible: visible)
-                .frame(minHeight: 250)
+                .frame(minHeight: 300)
             if let stats {
                 HStack(spacing: 8) {
-                    summaryColumn("Min", stats.min, zoneColor(stats.min, plain: teal), decimals: metric == .skin)
-                    summaryColumn("Max", stats.max, zoneColor(stats.max, plain: coral), decimals: metric == .skin)
-                    summaryColumn("Median", stats.median, zoneColor(stats.median, plain: ink), decimals: metric == .skin)
+                    summaryColumn("Min", stats.min, zoneColor(stats.min, plain: teal), decimals: metric == .skin) { focus(stats.min, in: visible, metric: metric) }
+                    summaryColumn("Max", stats.max, zoneColor(stats.max, plain: coral), decimals: metric == .skin) { focus(stats.max, in: visible, metric: metric) }
+                    summaryColumn("Median", stats.median, zoneColor(stats.median, plain: ink), decimals: metric == .skin) { focus(stats.median, in: visible, metric: metric) }
                 }
             }
         }
@@ -2035,7 +2036,32 @@ struct HistoryChartsView: View {
         if span <= 0 && Calendar.current.isDateInToday(day) && Date().timeIntervalSince(time) < 90 { return "Now" }
         return time.formatted(date: .omitted, time: .shortened)
     }
-    private func summaryColumn(_ title: String, _ value: Double, _ color: Color, decimals: Bool = false) -> some View {
+    private func readingDetail(_ value: Double, at time: Date) -> String {
+        let clock = caption(for: time)
+        if activeMetric == .heartRate {
+            if let highLimit, value > highLimit { return "\(MetricText.number(value - highLimit)) above limit · \(clock)" }
+            if let lowLimit, value < lowLimit { return "\(MetricText.number(lowLimit - value)) below limit · \(clock)" }
+            if lowLimit != nil || highLimit != nil { return "Inside your limits · \(clock)" }
+        }
+        if activeMetric == .skin {
+            switch SkinTemperature.zone(value) {
+            case "green": return "Green · \(clock)"
+            case "amber": return "Amber · \(clock)"
+            default: return "Red · \(clock)"
+            }
+        }
+        return clock
+    }
+    private func focus(_ value: Double, in visible: [SavedMeasurement], metric: HistoryMetric) {
+        guard let match = visible.min(by: {
+            let left = metric.value($0).map { abs($0 - value) } ?? .greatestFiniteMagnitude
+            let right = metric.value($1).map { abs($0 - value) } ?? .greatestFiniteMagnitude
+            return left < right
+        }) else { return }
+        selected = match
+        if span > 0 { windowEnd = match.time.addingTimeInterval(span / 2) }
+    }
+    private func summaryColumn(_ title: String, _ value: Double, _ color: Color, decimals: Bool = false, choose: @escaping () -> Void) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title).font(.caption).foregroundStyle(caption)
             Text(decimals ? String(format: "%.1f", metric == .skin ? skinNumber(value) : value) : MetricText.number(value)).font(.title2.weight(.semibold)).foregroundStyle(color).monospacedDigit()
@@ -2043,8 +2069,12 @@ struct HistoryChartsView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 8)
         .padding(.horizontal, 10)
-        .background(ink.opacity(0.06))
+        .background(color.opacity(0.14))
         .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(color.opacity(0.45), lineWidth: 1))
+        .contentShape(RoundedRectangle(cornerRadius: 12))
+        .onTapGesture(perform: choose)
+        .accessibilityAddTraits(.isButton)
     }
     private func heartScale(_ domain: ClosedRange<Double>, metric: HistoryMetric) -> ClosedRange<Double> {
         guard metric == .heartRate else { return domain }
@@ -2062,26 +2092,52 @@ struct HistoryChartsView: View {
                     .font(.caption).foregroundStyle(caption)
                     .frame(maxWidth: .infinity, minHeight: 150, alignment: .leading)
             } else {
+                let runs = lineRuns(points)
                 Chart {
                     if metric == .heartRate, let lowLimit, let highLimit, lowLimit < highLimit {
-                        AreaMark(x: .value("Time", domain.lowerBound), yStart: .value("Low", lowLimit), yEnd: .value("High", highLimit))
-                            .foregroundStyle(Color.white.opacity(0.10))
-                        AreaMark(x: .value("Time", domain.upperBound), yStart: .value("Low", lowLimit), yEnd: .value("High", highLimit))
-                            .foregroundStyle(Color.white.opacity(0.10))
+                        RectangleMark(
+                            xStart: .value("From", domain.lowerBound),
+                            xEnd: .value("To", domain.upperBound),
+                            yStart: .value("Low", lowLimit),
+                            yEnd: .value("High", highLimit)
+                        )
+                        .foregroundStyle(teal.opacity(0.20))
+                        RuleMark(y: .value("Low limit", lowLimit))
+                            .foregroundStyle(teal.opacity(0.95))
+                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                        RuleMark(y: .value("High limit", highLimit))
+                            .foregroundStyle(coral.opacity(0.95))
+                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
                     }
-                    ForEach(Array(lineRuns(points).enumerated()), id: \.offset) { _, run in
+                    if metric == .skin {
+                        RectangleMark(
+                            xStart: .value("From", domain.lowerBound),
+                            xEnd: .value("To", domain.upperBound),
+                            yStart: .value("Warm from", skinNumber(36.4)),
+                            yEnd: .value("Warm to", skinNumber(36.7))
+                        )
+                        .foregroundStyle(Color.orange.opacity(0.18))
+                    }
+                    ForEach(Array(runs.enumerated()), id: \.offset) { _, run in
                         ForEach(run.points) { point in
                             LineMark(x: .value("Time", point.entry.time), y: .value("Value", skinNumber(point.value)), series: .value("Run", run.series))
                                 .foregroundStyle(run.color)
+                                .lineStyle(StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
+                                .interpolationMethod(.catmullRom)
+                        }
+                        if let mark = spellMarker(run) {
+                            PointMark(x: .value("Spell", mark.entry.time), y: .value("Spell", skinNumber(mark.value)))
+                                .foregroundStyle(run.color)
+                                .symbolSize(40)
                         }
                     }
                     if let latest = points.last, selected == nil {
-                        RuleMark(x: .value("Latest", latest.entry.time)).foregroundStyle(caption.opacity(0.45))
-                        PointMark(x: .value("Latest", latest.entry.time), y: .value("Latest", skinNumber(latest.value))).foregroundStyle(zoneColor(latest.value, plain: tint)).symbolSize(36)
+                        RuleMark(x: .value("Latest", latest.entry.time)).foregroundStyle(caption.opacity(0.55))
+                        PointMark(x: .value("Latest", latest.entry.time), y: .value("Latest", skinNumber(latest.value))).foregroundStyle(zoneColor(latest.value, plain: tint)).symbolSize(70)
                     }
                     if let entry = selected, let value = metric.value(entry), domain.contains(entry.time) {
-                        RuleMark(x: .value("Selected time", entry.time)).foregroundStyle(lavender.opacity(0.6))
-                        PointMark(x: .value("Selected time", entry.time), y: .value("Selected value", skinNumber(value))).foregroundStyle(lavender).symbolSize(45)
+                        RuleMark(x: .value("Selected time", entry.time)).foregroundStyle(lavender.opacity(0.85))
+                        PointMark(x: .value("Selected time", entry.time), y: .value("Selected value", skinNumber(value))).foregroundStyle(lavender).symbolSize(90)
                     }
                 }
                 .chartXScale(domain: domain)
@@ -2102,7 +2158,7 @@ struct HistoryChartsView: View {
                     GeometryReader { geometry in
                         Rectangle().fill(.clear).contentShape(Rectangle())
                             .gesture(
-                                DragGesture(minimumDistance: 8)
+                                DragGesture(minimumDistance: 0)
                                     .onChanged { value in pick(at: value.location, proxy: proxy, geometry: geometry, visible: visible, metric: metric) }
                             )
                             .simultaneousGesture(
@@ -2142,6 +2198,17 @@ struct HistoryChartsView: View {
             }
         }
         return runs
+    }
+    private func spellMarker(_ run: LineRun) -> HistoryChartPoint? {
+        guard let sample = run.points.last else { return nil }
+        switch zoneName(sample.value) {
+        case "high", "red", "amber":
+            return run.points.max { $0.value < $1.value }
+        case "low":
+            return run.points.min { $0.value < $1.value }
+        default:
+            return nil
+        }
     }
     private func pick(at location: CGPoint, proxy: ChartProxy, geometry: GeometryProxy, visible: [SavedMeasurement], metric: HistoryMetric) {
         let frame = geometry[proxy.plotAreaFrame]
