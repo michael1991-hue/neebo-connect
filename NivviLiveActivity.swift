@@ -5,6 +5,7 @@ import UIKit
 enum NivviLiveActivityBridge {
     private static var lastPush = Date.distantPast
     private static var lastStale = false
+    private static var lastRestart = Date.distantPast
     static var lastTitle = "Nivvi"
     static var preferLocalBluetooth = false
 
@@ -56,6 +57,9 @@ enum NivviLiveActivityBridge {
         let urgent = stale != lastStale
         if let activity = Activity<NivviActivityAttributes>.activities.first {
             LiveActivityPush.watch(activity)
+            if restartIfStale(activity, measuredAt: measuredAt.timeIntervalSince1970, state: state, attributesTitle: title) {
+                return
+            }
             if !urgent, Date().timeIntervalSince(lastPush) < 5 { return }
             lastPush = Date()
             lastStale = stale
@@ -91,6 +95,29 @@ enum NivviLiveActivityBridge {
                 }
             }
         }
+    }
+
+    private static func restartIfStale(_ activity: Activity<NivviActivityAttributes>, measuredAt: TimeInterval, state: NivviActivityAttributes.ContentState, attributesTitle: String) -> Bool {
+        guard !preferLocalBluetooth else { return false }
+        guard Date().timeIntervalSince(lastRestart) > 180 else { return false }
+        guard measuredAt > 0, Date().timeIntervalSince1970 - measuredAt < 30 else { return false }
+        guard #available(iOS 16.2, *) else { return false }
+        let shown = activity.content.state.measuredAt
+        guard shown > 0, Date().timeIntervalSince1970 - shown > 90 else { return false }
+        lastRestart = Date()
+        lastPush = Date()
+        let attributes = NivviActivityAttributes(title: attributesTitle)
+        Task {
+            await activity.end(nil, dismissalPolicy: .immediate)
+            if let replacement = try? Activity.request(
+                attributes: attributes,
+                content: ActivityContent(state: state, staleDate: freshUntil(measuredAt, stale: state.stale)),
+                pushType: .token
+            ) {
+                LiveActivityPush.watch(replacement)
+            }
+        }
+        return true
     }
 
     private static func freshUntil(_ measuredAt: TimeInterval, stale: Bool) -> Date {
