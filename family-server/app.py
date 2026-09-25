@@ -362,7 +362,7 @@ class Snapshot(BaseModel):
     source: str = Field(max_length=80)
     alarm: str = Field(default="none", pattern="^(none|high|low|sensor)$")
     connection: str = Field(max_length=80)
-    history: list[HistoryPoint] = Field(default_factory=list, max_length=500)
+    history: list[HistoryPoint] = Field(default_factory=list, max_length=800)
     stream_id: str | None = Field(default=None, max_length=80)
     seq: int | None = Field(default=None, ge=1)
     kind: str = Field(default="live", max_length=20)

@@ -457,7 +457,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         let oxFresh = lastOxygenUpdate.map { now.timeIntervalSince($0) <= 30 } == true
         let hr = hrFresh ? (pulseOximeterRate ?? verifiedHeartRate.map(Double.init) ?? customHeartRateCandidate.map(Double.init)) : nil
         let ox = oxFresh ? OxygenReading.clamp(pulseOximeterOxygen ?? verifiedOxygen.map(Double.init) ?? customOxygenCandidate.map(Double.init) ?? -1) : nil
-        let points = history.suffix(120).map { FamilySample(t: $0.time.timeIntervalSince1970, hr: $0.heartRateValue, o2: $0.oxygenValue, sk: $0.skinCelsius) }
+        let points = sharedGraph(now: now)
         let alarm = alarmKind.map { $0 == .high ? "high" : "low" } ?? (staleHeartRateDetected ? "sensor" : "none")
         let hrKey = hr.map { MetricText.number($0) } ?? "-"
         let oxKey = ox.map { MetricText.number($0) } ?? "-"
@@ -488,6 +488,31 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         )
         Task { @MainActor in FamilyRelay.shared.capture(snapshot) }
         pushLocalShare()
+    }
+    private var cachedGraph: [FamilySample] = []
+    private var cachedGraphAt: Date?
+    private func sharedGraph(now: Date) -> [FamilySample] {
+        if let cachedGraphAt, now.timeIntervalSince(cachedGraphAt) < 15 { return cachedGraph }
+        let start = now.addingTimeInterval(-6 * 3600)
+        let calendar = Calendar.current
+        var rows: [SavedMeasurement] = []
+        var day = calendar.startOfDay(for: start)
+        while day <= calendar.startOfDay(for: now) {
+            if let loaded = try? archive.load(day: day) { rows.append(contentsOf: loaded) }
+            guard let next = calendar.date(byAdding: .day, value: 1, to: day) else { break }
+            day = next
+        }
+        rows.append(contentsOf: history)
+        var buckets: [TimeInterval: FamilySample] = [:]
+        for row in rows where row.time >= start {
+            guard row.heartRateValue != nil || row.oxygenValue != nil || row.skinCelsius != nil else { continue }
+            let bucket = (row.time.timeIntervalSince1970 / 30).rounded(.towardZero) * 30
+            buckets[bucket] = FamilySample(t: bucket, hr: row.heartRateValue, o2: row.oxygenValue, sk: row.skinCelsius)
+        }
+        let graph = buckets.keys.sorted().suffix(720).map { buckets[$0]! }
+        cachedGraph = graph
+        cachedGraphAt = now
+        return graph
     }
     private func pushLocalShare() {
         guard WiFiRelay.shared.hosting else { return }

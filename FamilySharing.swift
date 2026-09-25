@@ -803,7 +803,8 @@ final class FamilyRelay: ObservableObject {
             serverReceived: snap.server_received
         )
         let catchup = type == "snapshot"
-        if event.seq > 0, FamilyLivePolicy.accept(currentStream: currentStream, lastSeq: lastSeq, incoming: event) == nil { return }
+        let duplicate = event.seq > 0 && FamilyLivePolicy.accept(currentStream: currentStream, lastSeq: lastSeq, incoming: event) == nil
+        if duplicate && !catchup { return }
         applyRemote(snap, catchup: catchup, serverReceived: snap.server_received)
     }
     private func applyRemote(_ snap: FamilySnapshot, catchup: Bool, serverReceived: Double?) {
@@ -812,10 +813,11 @@ final class FamilyRelay: ObservableObject {
             lastSeq = 0
             trail = []
         }
-        if catchup, trail.isEmpty, !snap.history.isEmpty {
-            trail = SavedMeasurement.uniquelyIdentified(snap.history.map {
+        if catchup, !snap.history.isEmpty {
+            let recent = SavedMeasurement.uniquelyIdentified(snap.history.map {
                 SavedMeasurement.mapped(time: Date(timeIntervalSince1970: $0.t), heartRate: $0.hr, oxygen: $0.o2, source: "family-share", skinCelsius: $0.sk)
-            })
+            }).filter { $0.time >= Date().addingTimeInterval(-120) }
+            if !recent.isEmpty { trail = recent }
         }
         if let seq = snap.seq { lastSeq = seq }
         lastEventAt = Date()
