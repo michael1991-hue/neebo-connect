@@ -5,6 +5,7 @@ import AVFoundation
 import UserNotifications
 import Charts
 import Security
+import ActivityKit
 
 struct Reading: Identifiable {
     let id: String
@@ -2764,6 +2765,10 @@ struct ContentView: View {
                     .clipShape(Capsule())
             }
             if !ageText.isEmpty { Text(childGender == "Prefer not to say" ? ageText : "\(ageText) · \(childGender)").font(.caption).foregroundStyle(muted) }
+            if watchingFamily, !frequentLockScreenUpdates {
+                Text("Turn on Settings → Nivvi → Live Activities → More Frequent Updates. Notifications being on is not enough, and the lock screen will lag without it.")
+                    .font(.caption.weight(.semibold)).foregroundStyle(coral)
+            }
             hostPicker
             if family.signedIn { familySendBanner }
             if monitor.lowPowerMode {
@@ -2903,6 +2908,10 @@ struct ContentView: View {
         }
         if monitor.connection == .idle || monitor.connection == .bluetoothOff { return "The band is not connected." }
         return monitor.connection.label
+    }
+    private var frequentLockScreenUpdates: Bool {
+        guard #available(iOS 16.2, *) else { return true }
+        return ActivityAuthorizationInfo().frequentPushesEnabled
     }
     private var situationColor: Color {
         if situationLine.contains("not connected") || situationLine.contains("Not receiving") || situationLine.contains("cannot see") || situationLine.contains("alarm") {

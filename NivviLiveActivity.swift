@@ -63,7 +63,7 @@ enum NivviLiveActivityBridge {
             Task {
                 defer { if background != .invalid { UIApplication.shared.endBackgroundTask(background) } }
                 if #available(iOS 16.2, *) {
-                    await activity.update(ActivityContent(state: state, staleDate: nil))
+                    await activity.update(ActivityContent(state: state, staleDate: freshUntil(measuredAt, stale: stale)))
                 } else {
                     await activity.update(using: state)
                 }
@@ -77,7 +77,7 @@ enum NivviLiveActivityBridge {
             if #available(iOS 16.2, *) {
                 let activity = try Activity.request(
                     attributes: attributes,
-                    content: ActivityContent(state: state, staleDate: nil),
+                    content: ActivityContent(state: state, staleDate: freshUntil(measuredAt, stale: stale)),
                     pushType: .token
                 )
                 LiveActivityPush.watch(activity)
@@ -86,10 +86,16 @@ enum NivviLiveActivityBridge {
             }
         } catch {
             if #available(iOS 16.2, *) {
-                if let activity = try? Activity.request(attributes: attributes, content: ActivityContent(state: state, staleDate: nil)) {
+                if let activity = try? Activity.request(attributes: attributes, content: ActivityContent(state: state, staleDate: freshUntil(measuredAt, stale: stale))) {
                     LiveActivityPush.watch(activity)
                 }
             }
         }
+    }
+
+    private static func freshUntil(_ measuredAt: TimeInterval, stale: Bool) -> Date {
+        if stale { return Date() }
+        let measured = measuredAt > 0 ? Date(timeIntervalSince1970: measuredAt) : Date()
+        return measured.addingTimeInterval(45)
     }
 }

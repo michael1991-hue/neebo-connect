@@ -1122,8 +1122,8 @@ def queue_activity(secret, state, paced=False):
     else:
         if hosts and due("host", 12):
             jobs.append((hosts, "10", 30))
-        if watchers and due("watcher", 60):
-            jobs.append((watchers, "10", 75))
+        if watchers and watcher_due(secret, state, now):
+            jobs.append((watchers, "10", 40))
     if TEST:
         for tokens, priority, _stale in jobs:
             for token in tokens:
@@ -1132,6 +1132,31 @@ def queue_activity(secret, state, paced=False):
     if HUB.loop is not None:
         for tokens, priority, stale_for in jobs:
             HUB.loop.call_soon_threadsafe(lambda tokens=tokens, priority=priority, stale_for=stale_for: asyncio.create_task(deliver_activity(tokens, state, priority, stale_for)))
+
+
+def reading_number(text):
+    try:
+        return int(float(str(text).split()[0]))
+    except (TypeError, ValueError):
+        return None
+
+
+def watcher_due(secret, state, now):
+    alarm = state.get("alarm") or ""
+    hr = reading_number(state.get("heartRate"))
+    ox = reading_number(state.get("oxygen"))
+    previous = ACTIVITY_GATE.get(f"{secret}:watcher") or {}
+    moved = False
+    if hr is not None and previous.get("hr") is not None and abs(hr - previous["hr"]) >= 8:
+        moved = True
+    if ox is not None and previous.get("ox") is not None and abs(ox - previous["ox"]) >= 2:
+        moved = True
+    if alarm in ("high", "low") and previous.get("alarm") != alarm:
+        moved = True
+    if previous and not moved and now - previous.get("at", 0) < 20:
+        return False
+    ACTIVITY_GATE[f"{secret}:watcher"] = {"at": now, "alarm": alarm, "hr": hr, "ox": ox}
+    return True
 
 
 async def deliver_activity(tokens, state, priority="10", fresh_for=150):
