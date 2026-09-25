@@ -57,7 +57,7 @@ enum NivviLiveActivityBridge {
         let urgent = stale != lastStale
         if let activity = Activity<NivviActivityAttributes>.activities.first {
             LiveActivityPush.watch(activity)
-            if restartIfStale(activity, measuredAt: measuredAt.timeIntervalSince1970, state: state, attributesTitle: title) {
+            if #available(iOS 16.2, *), restartIfStale(activity, measuredAt: measuredAt.timeIntervalSince1970, state: state, attributesTitle: title) {
                 return
             }
             if !urgent, Date().timeIntervalSince(lastPush) < 5 { return }
@@ -67,7 +67,7 @@ enum NivviLiveActivityBridge {
             Task {
                 defer { if background != .invalid { UIApplication.shared.endBackgroundTask(background) } }
                 if #available(iOS 16.2, *) {
-                    await activity.update(ActivityContent(state: state, staleDate: freshUntil(measuredAt, stale: stale)))
+                    await activity.update(ActivityContent(state: state, staleDate: freshUntil(measuredAt.timeIntervalSince1970, stale: stale)))
                 } else {
                     await activity.update(using: state)
                 }
@@ -81,7 +81,7 @@ enum NivviLiveActivityBridge {
             if #available(iOS 16.2, *) {
                 let activity = try Activity.request(
                     attributes: attributes,
-                    content: ActivityContent(state: state, staleDate: freshUntil(measuredAt, stale: stale)),
+                    content: ActivityContent(state: state, staleDate: freshUntil(measuredAt.timeIntervalSince1970, stale: stale)),
                     pushType: .token
                 )
                 LiveActivityPush.watch(activity)
@@ -90,18 +90,18 @@ enum NivviLiveActivityBridge {
             }
         } catch {
             if #available(iOS 16.2, *) {
-                if let activity = try? Activity.request(attributes: attributes, content: ActivityContent(state: state, staleDate: freshUntil(measuredAt, stale: stale))) {
+                if let activity = try? Activity.request(attributes: attributes, content: ActivityContent(state: state, staleDate: freshUntil(measuredAt.timeIntervalSince1970, stale: stale))) {
                     LiveActivityPush.watch(activity)
                 }
             }
         }
     }
 
+    @available(iOS 16.2, *)
     private static func restartIfStale(_ activity: Activity<NivviActivityAttributes>, measuredAt: TimeInterval, state: NivviActivityAttributes.ContentState, attributesTitle: String) -> Bool {
         guard !preferLocalBluetooth else { return false }
         guard Date().timeIntervalSince(lastRestart) > 180 else { return false }
         guard measuredAt > 0, Date().timeIntervalSince1970 - measuredAt < 30 else { return false }
-        guard #available(iOS 16.2, *) else { return false }
         let shown = activity.content.state.measuredAt
         guard shown > 0, Date().timeIntervalSince1970 - shown > 90 else { return false }
         lastRestart = Date()
