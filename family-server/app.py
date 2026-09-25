@@ -1120,10 +1120,10 @@ def queue_activity(secret, state, paced=False):
     if not paced:
         jobs.append(([token for token, _ in rows], "10", 45))
     else:
-        if hosts and due("host", 5):
-            jobs.append((hosts, "10", 20))
+        if hosts and due("host", 2):
+            jobs.append((hosts, "10", 15))
         if watchers and watcher_due(secret, state, now):
-            jobs.append((watchers, "10", 20))
+            jobs.append((watchers, "10", 15))
     if TEST:
         for tokens, priority, _stale in jobs:
             for token in tokens:
@@ -1153,7 +1153,7 @@ def watcher_due(secret, state, now):
         moved = True
     if alarm in ("high", "low") and previous.get("alarm") != alarm:
         moved = True
-    if previous and not moved and now - previous.get("at", 0) < 5:
+    if previous and not moved and now - previous.get("at", 0) < 2:
         return False
     ACTIVITY_GATE[f"{secret}:watcher"] = {"at": now, "alarm": alarm, "hr": hr, "ox": ox}
     return True

@@ -41,6 +41,7 @@ enum LiveActivityPush {
 
     static func rememberFollowSecret(_ value: String?) {
         guard let value, value.count >= 16 else { return }
+        localOwner = false
         if followSecret != value {
             followSecret = value
             lastToken = ""
@@ -90,13 +91,14 @@ enum LiveActivityPush {
     }
 
     private static func register(_ token: String) async {
-        if localOwner || NivviLiveActivityBridge.preferLocalBluetooth {
-            localOwner = true
-            await send("POST", path: "live-activity/token", body: ["secret": secret, "token": token, "kind": "host"])
+        if let follow = followSecret, follow.count >= 16, !NivviLiveActivityBridge.preferLocalBluetooth {
+            localOwner = false
+            await send("POST", path: "live-activity/token", body: ["secret": follow, "token": token, "kind": "watcher"])
             return
         }
-        guard let follow = followSecret, follow.count >= 16 else { return }
-        await send("POST", path: "live-activity/token", body: ["secret": follow, "token": token, "kind": "watcher"])
+        guard localOwner || NivviLiveActivityBridge.preferLocalBluetooth else { return }
+        localOwner = true
+        await send("POST", path: "live-activity/token", body: ["secret": secret, "token": token, "kind": "host"])
     }
 
     private static func post(_ path: String, body: [String: Any]) async {

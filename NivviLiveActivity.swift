@@ -56,7 +56,7 @@ enum NivviLiveActivityBridge {
         let urgent = stale != lastStale
         if let activity = Activity<NivviActivityAttributes>.activities.first {
             LiveActivityPush.watch(activity)
-            if !urgent, Date().timeIntervalSince(lastPush) < 5 { return }
+            if !urgent, Date().timeIntervalSince(lastPush) < (preferLocalBluetooth ? 2 : 1) { return }
             lastPush = Date()
             lastStale = stale
             let background = UIApplication.shared.beginBackgroundTask(withName: "nivvi.lock-screen") { }

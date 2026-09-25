@@ -459,8 +459,10 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         let ox = oxFresh ? OxygenReading.clamp(pulseOximeterOxygen ?? verifiedOxygen.map(Double.init) ?? customOxygenCandidate.map(Double.init) ?? -1) : nil
         let points = history.suffix(120).map { FamilySample(t: $0.time.timeIntervalSince1970, hr: $0.heartRateValue, o2: $0.oxygenValue, sk: $0.skinCelsius) }
         let alarm = alarmKind.map { $0 == .high ? "high" : "low" } ?? (staleHeartRateDetected ? "sensor" : "none")
-        let key = "\(alarm)|\(connection.rawValue)"
-        if key == lastFamilyUploadKey, let last = lastFamilyUploadAt, now.timeIntervalSince(last) < 5 {
+        let hrKey = hr.map { MetricText.number($0) } ?? "-"
+        let oxKey = ox.map { MetricText.number($0) } ?? "-"
+        let key = "\(alarm)|\(connection.rawValue)|\(hrKey)|\(oxKey)"
+        if key == lastFamilyUploadKey, let last = lastFamilyUploadAt, now.timeIntervalSince(last) < 1 {
             return
         }
         lastFamilyUploadAt = now
