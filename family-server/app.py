@@ -1120,10 +1120,10 @@ def queue_activity(secret, state, paced=False):
     if not paced:
         jobs.append(([token for token, _ in rows], "10", 45))
     else:
-        if hosts and due("host", 12):
-            jobs.append((hosts, "10", 30))
+        if hosts and due("host", 5):
+            jobs.append((hosts, "10", 20))
         if watchers and watcher_due(secret, state, now):
-            jobs.append((watchers, "10", 40))
+            jobs.append((watchers, "10", 20))
     if TEST:
         for tokens, priority, _stale in jobs:
             for token in tokens:
@@ -1147,13 +1147,13 @@ def watcher_due(secret, state, now):
     ox = reading_number(state.get("oxygen"))
     previous = ACTIVITY_GATE.get(f"{secret}:watcher") or {}
     moved = False
-    if hr is not None and previous.get("hr") is not None and abs(hr - previous["hr"]) >= 8:
+    if hr is not None and previous.get("hr") is not None and hr != previous["hr"]:
         moved = True
-    if ox is not None and previous.get("ox") is not None and abs(ox - previous["ox"]) >= 2:
+    if ox is not None and previous.get("ox") is not None and ox != previous["ox"]:
         moved = True
     if alarm in ("high", "low") and previous.get("alarm") != alarm:
         moved = True
-    if previous and not moved and now - previous.get("at", 0) < 20:
+    if previous and not moved and now - previous.get("at", 0) < 5:
         return False
     ACTIVITY_GATE[f"{secret}:watcher"] = {"at": now, "alarm": alarm, "hr": hr, "ox": ox}
     return True
