@@ -533,8 +533,9 @@ struct RateAlarmEngine {
     private var since: Date?
     private var previous: Date?
     private var muted: RateAlarm?
+    private var clearSince: Date?
     // Unknown or stale data interrupts the dwell period; it cannot declare an alarm resolved.
-    mutating func interrupt() { pending = nil; since = nil; previous = nil }
+    mutating func interrupt() { pending = nil; since = nil; previous = nil; clearSince = nil }
     mutating func reset() { self = Self() }
     // Acknowledgement silences the current alarm without declaring the reading
     // safe. The active excursion remains visible until a fresh in-range sample
@@ -552,7 +553,15 @@ struct RateAlarmEngine {
         if settings.lowEnabled, let limit = settings.lowThreshold, bpm < Double(limit) { direction = .low }
         else if settings.highEnabled, let limit = settings.highThreshold, bpm > Double(limit) { direction = .high }
         else { direction = nil }
-        guard let direction = direction else { reset(); return nil }
+        guard let direction = direction else {
+            // A high rate often dips under the limit for one packet. Keep sounding
+            // until it has stayed back in range for the same time it took to alarm.
+            guard active == .high else { reset(); return nil }
+            if clearSince == nil { clearSince = now }
+            if let start = clearSince, now.timeIntervalSince(start) >= Double(settings.durationSeconds) { reset() }
+            return nil
+        }
+        clearSince = nil
         if muted != direction { muted = nil }
         if pending != direction { pending = direction; since = now }
         guard muted != direction, active != direction, let start = since,
