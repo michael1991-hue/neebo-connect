@@ -8,6 +8,7 @@ enum LiveActivityPush {
     private static var uploadSeq = 0
     private static var lastToken = ""
     private static var watching = false
+    private static var watchGeneration = 0
     private static var localOwner = false
 
     static var secret: String {
@@ -74,14 +75,21 @@ enum LiveActivityPush {
         guard #available(iOS 16.2, *) else { return }
         guard !watching else { return }
         watching = true
+        let generation = watchGeneration
         Task {
             for await token in activity.pushTokenUpdates {
+                guard generation == watchGeneration else { return }
                 let hex = token.map { String(format: "%02x", $0) }.joined()
                 lastToken = hex
                 UserDefaults.standard.set(hex, forKey: "nivvi.activity.token")
                 await register(hex)
             }
         }
+    }
+
+    static func allowNextWatch() {
+        watchGeneration += 1
+        watching = false
     }
 
     static func registerStoredToken() async {

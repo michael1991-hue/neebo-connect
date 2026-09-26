@@ -2422,6 +2422,13 @@ struct ContentView: View {
         if monitor.connection == .reconnecting { return "Stay near the band" }
         return "Leave this iPhone near the band"
     }
+    private func refreshLockScreen() {
+        Task {
+            await NivviLiveActivityBridge.restart()
+            syncLiveActivity()
+        }
+    }
+
     private func syncLiveActivity() {
         let ble = monitor.connection.isConnected || monitor.connection == .reconnecting
         NivviLiveActivityBridge.preferLocalBluetooth = ble
@@ -2801,6 +2808,16 @@ struct ContentView: View {
             if monitor.lowPowerMode {
                 Text("Low Power Mode is on. Turn it off so Nivvi can keep reading overnight.")
                     .font(.caption.weight(.semibold)).foregroundStyle(coral)
+            }
+            if NivviLiveActivityBridge.cardRunning {
+                Button { refreshLockScreen() } label: {
+                    Text("Refresh lock screen").font(.caption.weight(.semibold))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(ink)
+                Text("Starts a new 8 hours. The card blinks off, then comes back.")
+                    .font(.caption2)
+                    .foregroundStyle(muted)
             }
             if watchingWifi && !wifi.remoteFresh {
                 Text(wifi.status)

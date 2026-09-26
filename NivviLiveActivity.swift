@@ -93,6 +93,25 @@ enum NivviLiveActivityBridge {
         }
     }
 
+    static var cardRunning: Bool {
+        guard #available(iOS 16.1, *) else { return false }
+        return !Activity<NivviActivityAttributes>.activities.isEmpty
+    }
+
+    @MainActor
+    static func restart() async {
+        guard #available(iOS 16.1, *) else { return }
+        for activity in Activity<NivviActivityAttributes>.activities {
+            if #available(iOS 16.2, *) {
+                await activity.end(nil, dismissalPolicy: .immediate)
+            } else {
+                await activity.end(dismissalPolicy: .immediate)
+            }
+        }
+        lastPush = .distantPast
+        LiveActivityPush.allowNextWatch()
+    }
+
     private static func freshUntil(_ measuredAt: TimeInterval, stale: Bool) -> Date {
         if stale { return Date() }
         let measured = measuredAt > 0 ? Date(timeIntervalSince1970: measuredAt) : Date()
