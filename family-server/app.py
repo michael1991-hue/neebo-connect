@@ -864,8 +864,6 @@ def merge_snapshot(old, body: Snapshot, received):
         payload["charging"] = payload.get("charging") if payload.get("charging") is not None else old.get("charging")
     if payload.get("skin") is None:
         payload["skin"] = old.get("skin")
-    if not payload.get("alerts") and old.get("alerts"):
-        payload["alerts"] = old["alerts"]
     for point in payload.get("history") or []:
         o2 = point.get("o2") if isinstance(point, dict) else None
         if isinstance(o2, (int, float)) and o2 > 99:

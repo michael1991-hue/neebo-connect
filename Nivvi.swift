@@ -407,7 +407,9 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     }
     func clearRecentAlerts() {
         do {
-            for event in recentAlerts() { try eventArchive.delete(event) }
+            let gone = recentAlerts()
+            dismissAlerts(gone)
+            for event in gone { try eventArchive.delete(event) }
             events = try eventArchive.load(day: selectedHistoryDay)
             eventDays = try eventArchive.days()
             eventError = nil
@@ -576,7 +578,9 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         guard !alerts.isEmpty else { return }
         for alert in alerts {
             guard let id = UUID(uuidString: alert.id) else { continue }
+            if dismissedAlertIDs().contains(id.uuidString) { continue }
             let time = Date(timeIntervalSince1970: alert.t)
+            if dismissedAlertIDs().contains(alertFingerprint(title: alert.title, time: time)) { continue }
             let existing = (try? eventArchive.load(day: time)) ?? []
             if existing.contains(where: { $0.id == id }) { continue }
             if existing.contains(where: { $0.title == alert.title && abs($0.time.timeIntervalSince(time)) < 30 }) { continue }
@@ -660,11 +664,30 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     }
     func deleteEvent(_ event: SavedEvent) {
         do {
+            dismissAlerts([event])
             try eventArchive.delete(event)
             events.removeAll { $0.id == event.id }
             eventDays = try eventArchive.days()
             eventError = nil
         } catch { eventError = "Item could not be deleted: \(error.localizedDescription)" }
+    }
+    private let dismissedAlertsKey = "nivvi.dismissed.alerts"
+    private func dismissedAlertIDs() -> Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: dismissedAlertsKey) ?? [])
+    }
+    private func alertFingerprint(title: String, time: Date) -> String {
+        "\(title)|\(Int(time.timeIntervalSince1970 / 30))"
+    }
+    private func dismissAlerts(_ events: [SavedEvent]) {
+        var saved = UserDefaults.standard.stringArray(forKey: dismissedAlertsKey) ?? []
+        for event in events {
+            let id = event.id.uuidString
+            let mark = alertFingerprint(title: event.title, time: event.time)
+            if !saved.contains(id) { saved.append(id) }
+            if !saved.contains(mark) { saved.append(mark) }
+        }
+        if saved.count > 400 { saved.removeFirst(saved.count - 400) }
+        UserDefaults.standard.set(saved, forKey: dismissedAlertsKey)
     }
     func loadHistorySpan(days: Int, endingOn day: Date = Date()) {
         let calendar = Calendar.current
@@ -2811,10 +2834,15 @@ struct ContentView: View {
             }
             if NivviLiveActivityBridge.cardRunning {
                 Button { refreshLockScreen() } label: {
-                    Text("Refresh lock screen").font(.caption.weight(.semibold))
+                    Text("Refresh lock screen")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Color(red: 0.08, green: 0.14, blue: 0.16))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(accentMint)
+                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(ink)
                 Text("Starts a new 8 hours. The card blinks off, then comes back.")
                     .font(.caption2)
                     .foregroundStyle(muted)
@@ -3407,8 +3435,12 @@ struct ContentView: View {
         let tint: Color = restored ? Color(red: 0.45, green: 0.95, blue: 0.65) : coral
         return VStack(alignment: .leading, spacing: 9) {
             timestamp(event.time, tint: tint)
-            Label(event.title, systemImage: restored ? "checkmark.circle.fill" : "bell.fill")
-                .font(.headline).foregroundStyle(restored ? tint : ink)
+            HStack {
+                Label(event.title, systemImage: restored ? "checkmark.circle.fill" : "bell.fill")
+                    .font(.headline).foregroundStyle(restored ? tint : ink)
+                Spacer(minLength: 8)
+                alertDelete(event)
+            }
             Text(event.detail).font(.subheadline).foregroundStyle(restored ? tint : muted)
             if let bpm = event.heartRate { Text("\(bpm) bpm").font(.title3.bold()).foregroundStyle(tint) }
         }
@@ -3433,11 +3465,23 @@ struct ContentView: View {
                 Text(event.time.formatted(date: .abbreviated, time: .shortened)).font(.caption.monospacedDigit()).foregroundStyle(muted)
             }
             Spacer()
+            alertDelete(event)
         }
         .padding(14)
         .background(cardFill)
         .clipShape(RoundedRectangle(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(tint.opacity(0.28), lineWidth: 1))
+    }
+    private func alertDelete(_ event: SavedEvent) -> some View {
+        Button { monitor.deleteEvent(event) } label: {
+            Image(systemName: "trash").font(.body.weight(.semibold))
+                .frame(width: 36, height: 36)
+                .background(coral.opacity(0.18))
+                .clipShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(coral)
+        .accessibilityLabel("Delete alert")
     }
     private var alertItems: [SavedEvent] {
         let relevant = monitor.recentAlerts()
