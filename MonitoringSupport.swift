@@ -554,9 +554,11 @@ struct RateAlarmEngine {
         else if settings.highEnabled, let limit = settings.highThreshold, bpm > Double(limit) { direction = .high }
         else { direction = nil }
         guard let direction = direction else {
-            // A high rate often dips under the limit for one packet. Keep sounding
-            // until it has stayed back in range for the same time it took to alarm.
+            // One beat under a high limit is normal jitter. Keep sounding until the
+            // rate is clearly under the limit for the full alert time.
             guard active == .high else { reset(); return nil }
+            let safelyUnder = settings.highThreshold.map { bpm <= Double($0 - 8) } ?? false
+            if !safelyUnder { clearSince = nil; return nil }
             if clearSince == nil { clearSince = now }
             if let start = clearSince, now.timeIntervalSince(start) >= Double(settings.durationSeconds) { reset() }
             return nil

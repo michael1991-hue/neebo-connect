@@ -122,6 +122,7 @@ check(sample(80, 35) == nil && engine.active == nil, "fresh in-range reading cle
 check(sample(100, 35) == nil, "return in range re-arms")
 check(sample(180, 40) == nil && sample(181, 45) == nil && sample(182, 50) == nil && sample(183, 60) == .high, "high alarm fires strictly above configured limit")
 check(sample(nil, 60) == nil && engine.active == .high, "unknown data does not imply alarm resolved")
+check(sample(179, 62) == nil && engine.active == .high, "a touch under the high limit does not stop the alarm")
 check(sample(100, 65) == nil && engine.active == .high, "one in-range reading does not stop a high alarm")
 check(sample(100, 79) == nil && engine.active == .high, "high alarm keeps sounding until the duration has passed")
 check(sample(100, 80) == nil && engine.active == nil, "sustained in-range reading clears the high alarm")

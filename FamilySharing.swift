@@ -781,7 +781,7 @@ final class FamilyRelay: ObservableObject {
             return
         }
         if !followingFamily {
-            if raw["acknowledged"] as? Bool == true { inboundAck = true }
+            if type == "ack" { inboundAck = true }
             return
         }
         var payload = data
