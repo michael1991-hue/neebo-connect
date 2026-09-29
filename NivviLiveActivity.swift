@@ -24,7 +24,7 @@ enum NivviLiveActivityBridge {
         )
     }
 
-    static func sync(title: String, heartRate: String, oxygen: String, connection: String, signal: String, nurseryHint: String, monitoring: Bool, measuredAt: Date = Date(), seq: Int = 0, session: String = "", stale: Bool = false, alarm: String = "") {
+    static func sync(title: String, heartRate: String, oxygen: String, connection: String, signal: String, nurseryHint: String, monitoring: Bool, measuredAt: Date = Date(), seq: Int = 0, session: String = "", stale: Bool = false, alarm: String = "", forceNew: Bool = false) {
         lastTitle = title
         guard #available(iOS 16.1, *) else { return }
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
@@ -54,7 +54,7 @@ enum NivviLiveActivityBridge {
             return
         }
         let urgent = stale != lastStale
-        if let activity = Activity<NivviActivityAttributes>.activities.first {
+        if !forceNew, let activity = Activity<NivviActivityAttributes>.activities.first {
             LiveActivityPush.watch(activity)
             if !urgent, Date().timeIntervalSince(lastPush) < (preferLocalBluetooth ? 2 : 1) { return }
             lastPush = Date()

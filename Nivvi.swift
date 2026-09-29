@@ -2379,6 +2379,7 @@ struct ContentView: View {
     @State private var skyOffset: CGFloat = 0
     @AppStorage("nivvi.favorite.device.ids") private var favoriteDeviceIDs = ""
     @State private var showFamily = false
+    @State private var lockScreenNote = "Starts a new 8 hours. The card blinks off, then comes back."
     @State private var showProfile = false
     @State private var showSettings = false
     @State private var historySpan = 1
@@ -2541,11 +2542,14 @@ struct ContentView: View {
     private func refreshLockScreen() {
         Task {
             await NivviLiveActivityBridge.restart()
-            syncLiveActivity()
+            syncLiveActivity(forceNew: true)
+            lockScreenNote = NivviLiveActivityBridge.cardRunning
+                ? "New lock screen started. That begins another 8 hours."
+                : "The lock screen did not start. Allow Live Activities for Nivvi, then try again."
         }
     }
 
-    private func syncLiveActivity() {
+    private func syncLiveActivity(forceNew: Bool = false) {
         let ble = monitor.connection.isConnected || monitor.connection == .reconnecting
         NivviLiveActivityBridge.preferLocalBluetooth = ble
         let wifiLive = watchingWifi && !ble
@@ -2594,7 +2598,8 @@ struct ContentView: View {
             monitoring: ble || wifi.following || watchingFamily,
             measuredAt: measured ?? Date(timeIntervalSince1970: 0),
             stale: stale,
-            alarm: alarm
+            alarm: alarm,
+            forceNew: forceNew
         )
     }
     private func publishWiFiShare() {
@@ -2928,7 +2933,7 @@ struct ContentView: View {
                 Text("Low Power Mode is on. Turn it off so Nivvi can keep reading overnight.")
                     .font(.caption.weight(.semibold)).foregroundStyle(coral)
             }
-            if NivviLiveActivityBridge.cardRunning {
+            if localHeartLive || watchingFamily || watchingWifi || NivviLiveActivityBridge.cardRunning {
                 Button { refreshLockScreen() } label: {
                     Text("Refresh lock screen")
                         .font(.subheadline.weight(.semibold))
@@ -2939,7 +2944,7 @@ struct ContentView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 }
                 .buttonStyle(.plain)
-                Text("Starts a new 8 hours. The card blinks off, then comes back.")
+                Text(lockScreenNote)
                     .font(.caption2)
                     .foregroundStyle(muted)
             }
