@@ -143,6 +143,13 @@ enum BluetoothPolicy {
         } else if bytes.count != end { return nil }
         return (1...65535).contains(bpm) ? bpm : nil
     }
+    static func reportsNoContact(_ data: Data) -> Bool {
+        let bytes = Array(data)
+        guard bytes.count >= 2 else { return false }
+        let flags = bytes[0]
+        guard flags & 0xE0 == 0 else { return false }
+        return flags & 0x04 != 0 && flags & 0x02 == 0
+    }
     static func shouldObserve(service: String, characteristic: String) -> Bool {
         let service = normalized(service), characteristic = normalized(characteristic)
         switch service {
@@ -362,6 +369,18 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     @Published var selectedRelief: NivviRelief = NivviRelief(rawValue: UserDefaults.standard.string(forKey: "nivvi.sound.relief") ?? "") ?? .soft {
         didSet { UserDefaults.standard.set(selectedRelief.rawValue, forKey: "nivvi.sound.relief") }
     }
+    @Published var removalAlertEnabled = UserDefaults.standard.object(forKey: "nivvi.removal.enabled") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(removalAlertEnabled, forKey: "nivvi.removal.enabled") }
+    }
+    @Published var removalMessage = UserDefaults.standard.string(forKey: "nivvi.removal.message") ?? "The band may have been taken off. Check it is still worn." {
+        didSet { UserDefaults.standard.set(String(removalMessage.prefix(140)), forKey: "nivvi.removal.message") }
+    }
+    @Published var removalSiren: NivviSiren = NivviSiren(rawValue: UserDefaults.standard.string(forKey: "nivvi.removal.sound") ?? "") ?? .pulse {
+        didSet { UserDefaults.standard.set(removalSiren.rawValue, forKey: "nivvi.removal.sound") }
+    }
+    @Published private(set) var bandRemoved = false
+    private var hadLivePulse = false
+    private var removalPlayer: AVAudioPlayer?
     @Published var experimentalCustomAlarms = false { didSet { alarmSettings.experimentalCustomEnabled = experimentalCustomAlarms } }
     @Published var testingSiren = false
     @Published private(set) var lowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
@@ -419,6 +438,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         event.kind == "critical" || event.kind == "alarm" || event.kind == "connection"
             || event.title == "Heart rate back to normal" || event.title == "High heart-rate alert" || event.title == "Low heart-rate alert"
             || event.title == "Check sensor data" || event.title == "Alarm acknowledged"
+            || event.title == "Band removed" || event.title == "Band back on"
             || event.title.localizedCaseInsensitiveContains("needs your attention")
     }
     func recordEvent(kind: String, title: String, detail: String, heartRate: Int? = nil) {
@@ -460,7 +480,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         let hr = hrFresh ? (pulseOximeterRate ?? verifiedHeartRate.map(Double.init) ?? customHeartRateCandidate.map(Double.init)) : nil
         let ox = oxFresh ? OxygenReading.clamp(pulseOximeterOxygen ?? verifiedOxygen.map(Double.init) ?? customOxygenCandidate.map(Double.init) ?? -1) : nil
         let points = sharedGraph(now: now)
-        let alarm = alarmKind.map { $0 == .high ? "high" : "low" } ?? (staleHeartRateDetected ? "sensor" : "none")
+        let alarm = alarmKind.map { $0 == .high ? "high" : "low" } ?? (bandRemoved ? "removed" : (staleHeartRateDetected ? "sensor" : "none"))
         let hrKey = hr.map { MetricText.number($0) } ?? "-"
         let oxKey = ox.map { MetricText.number($0) } ?? "-"
         let key = "\(alarm)|\(connection.rawValue)|\(hrKey)|\(oxKey)"
@@ -758,7 +778,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         }
         if heartRateFreshness.pause() {
             continuityID = UUID(); sampling.reset()
-            if !alarmActive && !wearableCharging { notify(title: "Check sensor data", body: "No fresh reading received. Check the wearable and connection.", identifier: "nivvi-sensor-paused", soundName: "NivviSensor.wav") }
+            if !alarmActive && !wearableCharging && !bandRemoved { notify(title: "Check sensor data", body: "No fresh reading received. Check the wearable and connection.", identifier: "nivvi-sensor-paused", soundName: "NivviSensor.wav") }
         }
         verifiedHeartRate = nil; customHeartRateCandidate = nil; alarmEngine.interrupt()
         pulseOximeterRate = nil
@@ -813,6 +833,10 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         }
         if heartRateFreshness.isExpired(at: Date()) {
             pauseHeartRate("No usable heart-rate reading received for over \(Int(HeartRateFreshness.timeout)) seconds. Check the wearable and connection; the cause is unknown.")
+        }
+        if removalAlertEnabled, connection.isConnected, !wearableCharging, hadLivePulse, !bandRemoved,
+           let last = lastHeartRateUpdate, Date().timeIntervalSince(last) >= 20 {
+            noteBandRemoved()
         }
         if criticalAlertActive, !alarmAcknowledged, !shareAlertSensor, siren?.isPlaying != true, !testingSiren {
             startSiren(loop: true)
@@ -1464,11 +1488,17 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         lastSample = Date()
         let key = (c.service?.uuid.uuidString ?? "?") + "/" + uuid
         if uuid == "2A37", serviceID == "180D" {
+            if BluetoothPolicy.reportsNoContact(data) {
+                noteBandRemoved()
+                pauseHeartRate("The band reports it is not on the skin.")
+                return
+            }
             guard let bpm = BluetoothPolicy.standardHeartRate(data) else {
                 pauseHeartRate("No usable heart rate in this packet. The packet is invalid or the device reports no sensor contact.")
                 return
             }
             receiveHeartRate(at: Date())
+            noteBandWorn()
             measurementStatus = "Standard Bluetooth heart-rate measurements received."
             verifiedHeartRate = bpm
             saveMeasurement(heartRate: bpm, oxygen: nil, source: "standard-2A37")
@@ -1483,7 +1513,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             customOxygenCandidate = candidate.oxygen
             if let skin = candidate.skinCelsius { skinCelsius = skin }
             if candidate.oxygen != nil { lastOxygenUpdate = Date() }
-            if candidate.heartRate != nil { receiveHeartRate(at: Date()) }
+            if candidate.heartRate != nil { receiveHeartRate(at: Date()); noteBandWorn() }
             else { pauseHeartRate("No usable heart rate in the mapped Bluetooth packet. Oxygen or other values do not confirm a fresh heart rate.") }
             measurementStatus = candidate.heartRate == nil && candidate.oxygen == nil ? "Bluetooth measurement received (\(data.count) bytes), but the values or frame format are not recognised." : "Mapped Bluetooth values received. Verify readings with your care plan."
             if candidate.heartRate != nil || candidate.oxygen != nil {
@@ -1638,7 +1668,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         }
     }
     private func evaluatePulseOximeterAlarm(_ pulse: Double) {
-        if wearableCharging { return }
+        if wearableCharging || bandRemoved { return }
         observeStaleHeartRate(pulse, source: "pulse-oximeter")
         let previous = alarmKind
         let event = alarmEngine.ingestExact(bpm: pulse, source: "standard-PLX-continuous", at: Date(), settings: alarmSettings)
@@ -1657,7 +1687,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         }
     }
     private func evaluateExperimentalRateAlarm(_ bpm: Int) {
-        if wearableCharging { return }
+        if wearableCharging || bandRemoved { return }
         observeStaleHeartRate(Double(bpm), source: "mapped Bluetooth")
         let previousAlarm = alarmKind
         let event = alarmEngine.ingest(bpm: bpm, source: "experimental-custom", at: Date(), settings: alarmSettings, allowExperimentalCustom: experimentalCustomAlarms)
@@ -1678,7 +1708,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     }
 
     private func evaluateRateAlarm(_ bpm: Int) {
-        if wearableCharging { return }
+        if wearableCharging || bandRemoved { return }
         observeStaleHeartRate(Double(bpm), source: "standard Bluetooth")
         let previousAlarm = alarmKind
         let event = alarmEngine.ingest(bpm: bpm, source: "standard-2A37", at: Date(), settings: alarmSettings, allowExperimentalCustom: experimentalCustomAlarms)
@@ -1717,6 +1747,58 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         soundStatus = "Acknowledged. The alarm stays active until a fresh in-range reading."
         publishFamilySnapshot()
     }
+    private func noteBandRemoved() {
+        guard removalAlertEnabled, !wearableCharging, !bandRemoved, hadLivePulse else { return }
+        guard connection.isConnected || connection == .waiting else { return }
+        bandRemoved = true
+        let text = removalMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        let body = text.isEmpty ? "The band may have been taken off. Check it is still worn." : text
+        recordEvent(kind: "measurement", title: "Band removed", detail: body)
+        notify(title: "Band removed", body: body, identifier: "nivvi-band-removed", sirenSound: false, soundName: removalSiren.notificationFile)
+        if !alarmActive { playRemovalSound() }
+        publishFamilySnapshot()
+    }
+    private func noteBandWorn() {
+        hadLivePulse = true
+        guard bandRemoved else { return }
+        bandRemoved = false
+        stopRemovalSound()
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["nivvi-band-removed"])
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["nivvi-band-removed"])
+        recordEvent(kind: "measurement", title: "Band back on", detail: "A fresh heart-rate reading replaced the removal alert.")
+    }
+    private func playRemovalSound() {
+        stopRemovalSound()
+        do {
+            try configureAlarmAudio()
+            guard let url = Bundle.main.url(forResource: removalSiren.resource, withExtension: "wav") else { return }
+            removalPlayer = try AVAudioPlayer(contentsOf: url)
+            removalPlayer?.numberOfLoops = -1
+            removalPlayer?.volume = 1
+            _ = removalPlayer?.play()
+        } catch {
+            removalPlayer = nil
+        }
+    }
+    private func stopRemovalSound() {
+        removalPlayer?.stop()
+        removalPlayer = nil
+    }
+    func beginRemovalAlert() {
+        guard removalAlertEnabled, !bandRemoved else { return }
+        bandRemoved = true
+        let text = removalMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        let body = text.isEmpty ? "The band may have been taken off. Check it is still worn." : text
+        notify(title: "Band removed", body: body, identifier: "nivvi-band-removed", sirenSound: false, soundName: removalSiren.notificationFile)
+        if !alarmActive { playRemovalSound() }
+    }
+    func endRemovalAlert() {
+        guard bandRemoved else { return }
+        bandRemoved = false
+        stopRemovalSound()
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["nivvi-band-removed"])
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["nivvi-band-removed"])
+    }
     func releaseForHandover(_ notice: String) {
         let holding = connection.isBusy || connection == .scanning || session.enabled
         guard holding else { return }
@@ -1729,7 +1811,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         if session.enabled { recordEvent(kind: "connection", title: moved == nil ? "Session disconnected" : "Monitoring moved", detail: moved ?? "Disconnected by the user. Automatic reconnection is off.") }
         session.stop(); saveSession(); cancelBackgroundWatchdog(); retryScan = false; backgroundEnteredAt = nil
         scanToken = UUID(); scanDeadline?.invalidate(); manager.stopScan()
-        resetTransport(clearBattery: true); closeCaptureLog(); alarmEngine.reset(); alarmKind = nil; staleHeartRate.reset(); staleHeartRateDetected = false; alarmAcknowledged = false; clearAlarmNotifications(); cancelConnectionLossNotice(); stopSiren()
+        resetTransport(clearBattery: true); closeCaptureLog(); alarmEngine.reset(); alarmKind = nil; staleHeartRate.reset(); staleHeartRateDetected = false; alarmAcknowledged = false; bandRemoved = false; hadLivePulse = false; stopRemovalSound(); clearAlarmNotifications(); cancelConnectionLossNotice(); stopSiren()
         if let p = peripheral, p.state != .disconnected && manager.state == .poweredOn {
             connection = .stopping; status = "Disconnecting…"; manager.cancelPeripheralConnection(p)
         } else { finish("Disconnected. Automatic reconnection is off.") }
@@ -2491,13 +2573,13 @@ struct ContentView: View {
         let measured = remoteStamp ?? monitor.lastHeartRateUpdate
         let alarm: String
         if ble {
-            alarm = monitor.alarmKind?.rawValue ?? ""
+            alarm = monitor.bandRemoved ? "removed" : (monitor.alarmKind?.rawValue ?? "")
         } else if familyLive {
             let remoteAlarm = family.remote?.snapshot?.alarm ?? ""
-            alarm = remoteAlarm == "high" || remoteAlarm == "low" ? remoteAlarm : ""
+            alarm = remoteAlarm == "high" || remoteAlarm == "low" || remoteAlarm == "removed" ? remoteAlarm : ""
         } else if wifiLive {
             let remoteAlarm = wifi.latest?.alarm ?? ""
-            alarm = remoteAlarm == "high" || remoteAlarm == "low" ? remoteAlarm : ""
+            alarm = remoteAlarm == "high" || remoteAlarm == "low" || remoteAlarm == "removed" ? remoteAlarm : ""
         } else {
             alarm = ""
         }
@@ -2534,6 +2616,7 @@ struct ContentView: View {
     }
     private var shareAlarmKind: String {
         if let kind = monitor.alarmKind { return kind.rawValue }
+        if monitor.bandRemoved { return "removed" }
         if monitor.staleHeartRateDetected { return "sensor" }
         return "none"
     }
@@ -2567,7 +2650,8 @@ struct ContentView: View {
                 if alarm == "none" { monitor.endShareAlert() }
                 return
             }
-            if alarm == "none" { monitor.endShareAlert(); return }
+            if alarm == "none" { monitor.endRemovalAlert(); monitor.endShareAlert(); return }
+            if alarm == "removed" { monitor.beginRemovalAlert(); return }
             if snap.acknowledged == true { monitor.silenceAlarm() }
             monitor.beginShareAlert(sensor: alarm == "sensor")
             return
@@ -2575,8 +2659,9 @@ struct ContentView: View {
         if watchingWifi, let snap = wifi.latest, Date().timeIntervalSince1970 - snap.captured < 90 {
             let alarm = snap.alarm ?? "none"
             noteSharedAlert(alarm: alarm, acknowledged: snap.acknowledged == true, heartRate: remoteBeats.flatMap { $0 > 0 ? Int($0.rounded()) : nil }, catchup: false)
-            if alarm == "none" { monitor.endShareAlert(); return }
+            if alarm == "none" { monitor.endRemovalAlert(); monitor.endShareAlert(); return }
             guard wifi.playAlerts else { return }
+            if alarm == "removed" { monitor.beginRemovalAlert(); return }
             if snap.acknowledged == true { monitor.silenceAlarm() }
             monitor.beginShareAlert(sensor: alarm == "sensor")
             return
@@ -3638,6 +3723,18 @@ struct ContentView: View {
             Stepper("Duration: \(monitor.alarmSettings.durationSeconds) seconds", value: $monitor.alarmSettings.durationSeconds, in: 5...120, step: 5)
             if let message = monitor.alarmSettings.validationMessage { Text(message).font(.caption).foregroundStyle(coral) }
             Text("A limit must stay crossed for this duration. Gaps restart the timer.").font(.caption)
+            Divider()
+            Toggle("Band removed alert", isOn: $monitor.removalAlertEnabled).tint(switchOn)
+                .onChange(of: monitor.removalAlertEnabled) { enabled in if enabled { monitor.requestNotificationPermission() } }
+            if monitor.removalAlertEnabled {
+                TextField("Message", text: $monitor.removalMessage, axis: .vertical)
+                    .lineLimit(2...4)
+                Picker("Removed sound", selection: $monitor.removalSiren) {
+                    ForEach(NivviSiren.allCases) { Text($0.title).tag($0) }
+                }
+                Text("Sounds if the band says it left the skin, or the pulse stops for 20 seconds while it is still connected. A Bluetooth disconnect stays Connection lost.")
+                    .font(.caption).foregroundStyle(muted)
+            }
                 Text("Changes save automatically.").font(.caption).foregroundStyle(.secondary)
             }.padding(.top, 12) }
         } }

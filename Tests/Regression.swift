@@ -25,6 +25,7 @@ check(ProfileAvatarPolicy.symbols.count == 16 && ProfileAvatarPolicy.colors.coun
 check(BluetoothPolicy.standardHeartRate(Data([0, 95])) == 95, "standard 8-bit heart rate")
 check(BluetoothPolicy.standardHeartRate(Data([1, 4, 1])) == 260, "standard 16-bit heart rate")
 check(BluetoothPolicy.standardHeartRate(Data([4, 95])) == nil, "lost sensor contact is not a pulse")
+check(BluetoothPolicy.reportsNoContact(Data([4, 95])) && !BluetoothPolicy.reportsNoContact(Data([6, 95])), "only a contact-capable packet with no skin contact counts as removed")
 check(BluetoothPolicy.standardHeartRate(Data([6, 95])) == 95, "sensor reports contact")
 check(BluetoothPolicy.standardHeartRate(Data([1, 95])) == nil, "truncated wide value")
 check(BluetoothPolicy.standardHeartRate(Data([8, 95])) == nil, "missing optional energy field")

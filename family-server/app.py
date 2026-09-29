@@ -360,7 +360,7 @@ class Snapshot(BaseModel):
     heart_rate_at: float | None = None
     oxygen_at: float | None = None
     source: str = Field(max_length=80)
-    alarm: str = Field(default="none", pattern="^(none|high|low|sensor)$")
+    alarm: str = Field(default="none", pattern="^(none|high|low|sensor|removed)$")
     connection: str = Field(max_length=80)
     history: list[HistoryPoint] = Field(default_factory=list, max_length=800)
     stream_id: str | None = Field(default=None, max_length=80)
@@ -913,10 +913,11 @@ def publish(family: str, body: Snapshot, user=Depends(require_user)):
         c.execute("INSERT OR REPLACE INTO latest VALUES(?,?,?)", (family, json.dumps(payload), now))
         if body.alarm != old.get("alarm", "none"):
             recovery = body.alarm == "none" and body.heart_rate is not None and old.get("alarm") in ("high", "low")
-            restored = body.alarm == "none" and body.heart_rate is not None and old.get("alarm") == "sensor"
+            restored = body.alarm == "none" and body.heart_rate is not None and old.get("alarm") in ("sensor", "removed")
+            kind = "recovery" if recovery else "sensor-restored" if restored else "removed" if body.alarm == "removed" else "sensor" if body.alarm == "sensor" else "attention"
             if recovery or restored or body.alarm != "none":
                 c.execute("DELETE FROM pushes WHERE family=?", (family,))
-                c.execute("INSERT INTO pushes(id,family,kind,created) VALUES(?,?,?,?)", (secrets.token_hex(16), family, "recovery" if recovery else "sensor-restored" if restored else "sensor" if body.alarm == "sensor" else "attention", now))
+                c.execute("INSERT INTO pushes(id,family,kind,created) VALUES(?,?,?,?)", (secrets.token_hex(16), family, kind, now))
     live = {key: value for key, value in payload.items() if key != "history"}
     live["type"] = "live"
     live["kind"] = "live"
@@ -1253,6 +1254,7 @@ async def deliver_pushes():
                     continue
                 recovery = event["kind"] == "recovery"
                 handover = event["kind"] == "handover"
+                removed = event["kind"] == "removed"
                 sensor = event["kind"] in ("sensor", "sensor-restored")
                 if handover:
                     with db() as c:
@@ -1260,9 +1262,11 @@ async def deliver_pushes():
                     who = ((named["host_relation"] or "Someone") if named else "Someone").strip() or "Someone"
                     child = ((named["child_name"] or named["label"] or "them") if named else "them").strip() or "them"
                     message = f"{who[:1].upper()}{who[1:]} is with {child}. This phone will disconnect from the band."
+                elif removed:
+                    message = "The band may have been taken off. Check it is still worn."
                 else:
                     message = "A shared reading has returned to range. Open Nivvi to check its time." if recovery else "Changed readings received from the shared sensor. Open Nivvi to check." if event["kind"] == "sensor-restored" else "Check the shared sensor data. Open Nivvi for the latest status." if sensor else "A shared monitor needs attention. Open Nivvi for the latest status."
-                payload = {"aps": {"alert": {"title": "Nivvi family update", "body": message}, "sound": "NivviRelief.wav" if recovery else "NivviSensor.wav" if sensor or handover else "NivviSiren.wav"}, "family_id": event["family"]}
+                payload = {"aps": {"alert": {"title": "Nivvi family update", "body": message}, "sound": "NivviRelief.wav" if recovery else "NivviSensor.wav" if sensor or handover or removed else "NivviSiren.wav"}, "family_id": event["family"]}
                 if handover:
                     payload["handover"] = True
                 result = await client.post(f"https://{host}/3/device/{token}", headers={"authorization": "bearer " + bearer, "apns-topic": os.environ["NIVVI_APNS_TOPIC"], "apns-push-type": "alert", "apns-expiration": str(int(event["created"]+120)), "apns-collapse-id": event["family"]}, json=payload)

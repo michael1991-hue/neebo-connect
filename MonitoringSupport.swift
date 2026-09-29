@@ -134,6 +134,12 @@ struct SharedAlertLog {
         if (previous == "high" || previous == "low"), next == "none" {
             return ("critical", "Heart rate back to normal", "Reading on the monitoring phone returned within the configured limits. Saved on this iPhone.")
         }
+        if previous == "none", next == "removed" {
+            return ("measurement", "Band removed", "The monitoring phone reports the band may have been taken off. Saved on this iPhone.")
+        }
+        if previous == "removed", next == "none" {
+            return ("measurement", "Band back on", "A fresh reading replaced the removal alert. Saved on this iPhone.")
+        }
         if !wasAcknowledged, acknowledged, next == "high" || next == "low" {
             return ("critical", "Alarm acknowledged", "Heard it was tapped. The alert on the monitoring phone stays active until a fresh in-range reading. Saved on this iPhone.")
         }
