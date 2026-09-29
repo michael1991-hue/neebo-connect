@@ -600,6 +600,11 @@ final class FamilyRelay: ObservableObject {
         message = "\(who) is\(withChild). This phone will disconnect from the band."
         bandHandover = message
     }
+    func acceptHandover(_ notice: String) {
+        publishing = false
+        let text = notice.trimmingCharacters(in: .whitespacesAndNewlines)
+        bandHandover = text.isEmpty ? "Someone else is with the band. This phone will disconnect." : text
+    }
     func clearRemote() {
         remote = nil
         remoteFetched = nil

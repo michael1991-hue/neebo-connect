@@ -911,8 +911,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     private func applyHandoverNotification(_ notification: UNNotification) {
         guard notification.request.content.userInfo["handover"] != nil else { return }
         let body = notification.request.content.body
-        FamilyRelay.shared.publishing = false
-        FamilyRelay.shared.bandHandover = body.isEmpty ? "Someone else is with the band. This phone will disconnect." : body
+        FamilyRelay.shared.acceptHandover(body)
     }
     private func notify(title: String, body: String, identifier: String, delay: TimeInterval? = nil, sirenSound: Bool = true, soundName: String? = nil, repeatInterval: TimeInterval? = nil, critical: Bool = false) {
         let content = UNMutableNotificationContent()
