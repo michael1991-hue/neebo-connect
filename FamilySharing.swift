@@ -1009,9 +1009,31 @@ struct FamilySharingView: View {
             }
             .accessibilityElement(children: .combine)
             .accessibilityAddTraits(.isHeader)
-            Text("One person. One 6-letter code. That’s it.")
+            Text("How to start")
+                .font(.headline)
+                .foregroundStyle(ink)
+            familyStep(1, "Each person opens Family sharing and signs in with their own email.")
+            familyStep(2, "The phone next to the band taps Create family code.")
+            familyStep(3, "Send that 6-letter code once. Everyone else types the same code and chooses who they are.")
+            familyStep(4, "Whoever is with them taps I’m with their name. That phone connects. The other phone drops the band.")
+            familyStep(5, "To hand over, the next person taps I’m with their name on their own phone.")
         }
         .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func familyStep(_ number: Int, _ text: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Text("\(number)")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(sheetBg)
+                .frame(width: 22, height: 22)
+                .background(accent)
+                .clipShape(Circle())
+            Text(text)
+                .font(.subheadline)
+                .foregroundStyle(ink)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     @ViewBuilder private var authFlow: some View {

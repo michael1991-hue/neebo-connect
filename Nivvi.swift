@@ -3769,7 +3769,7 @@ struct ContentView: View {
         Group {
         panel { DisclosureGroup("FAQ") { VStack(alignment: .leading, spacing: 12) {
             DisclosureGroup("How do I share with family?") {
-                Text("Settings → Family sharing. Sign in with your own email. The phone next to the band taps Create family code and sends the 6 letters. Everyone else types that same code and chooses who they are. Whoever is with the wearer taps I’m with [name]. Same code when someone else takes over. Same-house Wi‑Fi PIN is only for downstairs.")
+                Text("Each person signs in with their own email. The phone next to the band taps Create family code and sends the 6 letters. Everyone else types that same code and chooses who they are. Whoever is with them taps I’m with their name. The next person does the same on their phone to take over.")
                     .font(.caption).padding(.top, 6)
             }
             DisclosureGroup("Which devices work?") {
