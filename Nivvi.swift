@@ -375,8 +375,8 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     @Published var removalMessage = UserDefaults.standard.string(forKey: "nivvi.removal.message") ?? "The band may have been taken off. Check it is still worn." {
         didSet { UserDefaults.standard.set(String(removalMessage.prefix(140)), forKey: "nivvi.removal.message") }
     }
-    @Published var removalSiren: NivviSiren = NivviSiren(rawValue: UserDefaults.standard.string(forKey: "nivvi.removal.sound") ?? "") ?? .pulse {
-        didSet { UserDefaults.standard.set(removalSiren.rawValue, forKey: "nivvi.removal.sound") }
+    @Published var removalSound: NivviRelief = NivviRelief(rawValue: UserDefaults.standard.string(forKey: "nivvi.removal.sound") ?? "") ?? .warm {
+        didSet { UserDefaults.standard.set(removalSound.rawValue, forKey: "nivvi.removal.sound") }
     }
     @Published private(set) var bandRemoved = false
     private var hadLivePulse = false
@@ -927,7 +927,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             }
         } else if let soundName {
             content.sound = UNNotificationSound(named: UNNotificationSoundName(rawValue: soundName))
-            content.interruptionLevel = soundName == "NivviSensor.wav" ? .active : .timeSensitive
+            content.interruptionLevel = (identifier == "nivvi-band-removed" || soundName == "NivviSensor.wav") ? .active : .timeSensitive
         } else {
             content.sound = sirenSound ? UNNotificationSound(named: UNNotificationSoundName(rawValue: selectedSiren.notificationFile)) : .default
             content.interruptionLevel = .timeSensitive
@@ -1755,7 +1755,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         let text = removalMessage.trimmingCharacters(in: .whitespacesAndNewlines)
         let body = text.isEmpty ? "The band may have been taken off. Check it is still worn." : text
         recordEvent(kind: "measurement", title: "Band removed", detail: body)
-        notify(title: "Band removed", body: body, identifier: "nivvi-band-removed", sirenSound: false, soundName: removalSiren.notificationFile)
+        notify(title: "Band removed", body: body, identifier: "nivvi-band-removed", sirenSound: false, soundName: removalSound.notificationFile)
         if !alarmActive { playRemovalSound() }
         publishFamilySnapshot()
     }
@@ -1768,14 +1768,28 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["nivvi-band-removed"])
         recordEvent(kind: "measurement", title: "Band back on", detail: "A fresh heart-rate reading replaced the removal alert.")
     }
+    func previewRemovalSound() {
+        guard !alarmActive else { return }
+        stopRemovalSound()
+        do {
+            try configureAlarmAudio()
+            guard let url = Bundle.main.url(forResource: removalSound.resource, withExtension: "wav") else { return }
+            removalPlayer = try AVAudioPlayer(contentsOf: url)
+            removalPlayer?.numberOfLoops = 0
+            removalPlayer?.volume = 0.45
+            _ = removalPlayer?.play()
+        } catch {
+            removalPlayer = nil
+        }
+    }
     private func playRemovalSound() {
         stopRemovalSound()
         do {
             try configureAlarmAudio()
-            guard let url = Bundle.main.url(forResource: removalSiren.resource, withExtension: "wav") else { return }
+            guard let url = Bundle.main.url(forResource: removalSound.resource, withExtension: "wav") else { return }
             removalPlayer = try AVAudioPlayer(contentsOf: url)
             removalPlayer?.numberOfLoops = -1
-            removalPlayer?.volume = 1
+            removalPlayer?.volume = 0.45
             _ = removalPlayer?.play()
         } catch {
             removalPlayer = nil
@@ -1790,7 +1804,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         bandRemoved = true
         let text = removalMessage.trimmingCharacters(in: .whitespacesAndNewlines)
         let body = text.isEmpty ? "The band may have been taken off. Check it is still worn." : text
-        notify(title: "Band removed", body: body, identifier: "nivvi-band-removed", sirenSound: false, soundName: removalSiren.notificationFile)
+        notify(title: "Band removed", body: body, identifier: "nivvi-band-removed", sirenSound: false, soundName: removalSound.notificationFile)
         if !alarmActive { playRemovalSound() }
     }
     func endRemovalAlert() {
@@ -3729,20 +3743,22 @@ struct ContentView: View {
             Stepper("Duration: \(monitor.alarmSettings.durationSeconds) seconds", value: $monitor.alarmSettings.durationSeconds, in: 5...120, step: 5)
             if let message = monitor.alarmSettings.validationMessage { Text(message).font(.caption).foregroundStyle(coral) }
             Text("A limit must stay crossed for this duration. Gaps restart the timer.").font(.caption)
-            Divider()
-            Toggle("Band removed alert", isOn: $monitor.removalAlertEnabled).tint(switchOn)
-                .onChange(of: monitor.removalAlertEnabled) { enabled in if enabled { monitor.requestNotificationPermission() } }
-            if monitor.removalAlertEnabled {
-                TextField("Message", text: $monitor.removalMessage, axis: .vertical)
-                    .lineLimit(2...4)
-                Picker("Removed sound", selection: $monitor.removalSiren) {
-                    ForEach(NivviSiren.allCases) { Text($0.title).tag($0) }
-                }
-                Text("Sounds if the band says it left the skin, or the pulse stops for 20 seconds while it is still connected. A Bluetooth disconnect stays Connection lost.")
-                    .font(.caption).foregroundStyle(muted)
-            }
                 Text("Changes save automatically.").font(.caption).foregroundStyle(.secondary)
             }.padding(.top, 12) }
+        } }
+        panel { VStack(alignment: .leading, spacing: 12) {
+            Text("Band removed").font(.headline)
+            Toggle("Band removed alert", isOn: $monitor.removalAlertEnabled).tint(switchOn)
+                .onChange(of: monitor.removalAlertEnabled) { enabled in if enabled { monitor.requestNotificationPermission() } }
+            TextField("Message", text: $monitor.removalMessage, axis: .vertical)
+                .lineLimit(2...4)
+            Picker("Warning sound", selection: $monitor.removalSound) {
+                ForEach(NivviRelief.allCases) { Text($0.title).tag($0) }
+            }
+            Button("Preview warning") { monitor.previewRemovalSound() }
+                .buttonStyle(.bordered)
+            Text("A quiet repeating chime, not the heart-rate siren. It sounds if the band leaves the skin, or the pulse stops for 20 seconds while Bluetooth is still connected. A disconnect stays Connection lost.")
+                .font(.caption).foregroundStyle(muted)
         } }
         panel { VStack(alignment: .leading, spacing: 12) {
             Text("Skin temperature").font(.headline)

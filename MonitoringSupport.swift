@@ -249,6 +249,7 @@ enum NivviRelief: String, CaseIterable, Identifiable {
         case .hush: return "NivviReliefHush"
         }
     }
+    var notificationFile: String { resource + ".wav" }
 }
 
 struct WearableBatteryPolicy {
