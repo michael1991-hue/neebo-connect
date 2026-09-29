@@ -12,6 +12,7 @@ struct SharedFamily: Codable, Identifiable {
     let owner: String
     var role: String?
     var host_relation: String?
+    var host_user: String?
     var share_token: String?
     var join_code: String?
     var child_name: String?
@@ -539,6 +540,7 @@ final class FamilyRelay: ObservableObject {
         let _: FamilyReply = try await request("families/\(selected)/members/\(user)", method: "DELETE")
         clearRemote(); try await refreshFamilies()
     }
+    private var lastHostCheck: Date?
     func startWatching() {
         if watching { return }
         watching = true
@@ -577,9 +579,26 @@ final class FamilyRelay: ObservableObject {
         if followingFamily || publishing {
             if socket == nil { scheduleReconnect() }
             if followingFamily, !socketConnected { await fetchRemote() }
+            if publishing { await checkHostMoved() }
         } else {
             dropSocket()
         }
+    }
+    private func checkHostMoved() async {
+        guard publishing else { return }
+        if let lastHostCheck, Date().timeIntervalSince(lastHostCheck) < 5 { return }
+        lastHostCheck = Date()
+        try? await refreshFamilies()
+        guard publishing, let me = userID else { return }
+        let familyID = publishFamilyID ?? selected
+        guard let row = families.first(where: { $0.id == familyID }),
+              let host = row.host_user, !host.isEmpty, host != me else { return }
+        publishing = false
+        let who = FamilyRelation.display(row.host_relation) ?? "Someone"
+        let child = (row.child_name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let withChild = child.isEmpty ? "" : " with \(child)"
+        message = "\(who) is\(withChild). This phone will disconnect from the band."
+        bandHandover = message
     }
     func clearRemote() {
         remote = nil

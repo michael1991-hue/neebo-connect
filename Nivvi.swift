@@ -875,9 +875,20 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         }
     }
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        applyHandoverNotification(notification)
         // The foreground alarm already loops its own sound. Tests play the notification sound.
         let alarmNotification = ["nivvi-rate-alarm", "nivvi-rate-alarm-reminder"].contains(notification.request.identifier)
         completionHandler(alarmNotification && foreground ? [.banner] : [.banner, .sound])
+    }
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
+        applyHandoverNotification(response.notification)
+        completionHandler()
+    }
+    private func applyHandoverNotification(_ notification: UNNotification) {
+        guard notification.request.content.userInfo["handover"] != nil else { return }
+        let body = notification.request.content.body
+        FamilyRelay.shared.publishing = false
+        FamilyRelay.shared.bandHandover = body.isEmpty ? "Someone else is with the band. This phone will disconnect." : body
     }
     private func notify(title: String, body: String, identifier: String, delay: TimeInterval? = nil, sirenSound: Bool = true, soundName: String? = nil, repeatInterval: TimeInterval? = nil, critical: Bool = false) {
         let content = UNMutableNotificationContent()

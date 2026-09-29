@@ -546,6 +546,7 @@ def families(user=Depends(require_user)):
             """SELECT id,label,owner,
                       CASE WHEN owner=? THEN 'owner' ELSE COALESCE((SELECT role FROM members WHERE family=families.id AND user_id=?),'watcher') END AS role,
                       host_relation,
+                      host_user,
                       share_token,
                       join_code,
                       child_name, child_gender, child_birth, place,
@@ -744,7 +745,10 @@ def claim_host(family: str, body: HostClaim, user=Depends(require_user)):
             c.execute("UPDATE members SET role='carer', relation=? WHERE family=? AND user_id=?", (relation, family, user["id"]))
         else:
             c.execute("UPDATE members SET role='carer' WHERE family=? AND user_id=?", (family, user["id"]))
-    HUB.emit(family, {"type": "host", "stream_id": stream, "host_relation": relation, "host_user": user["id"]})
+        child = c.execute("SELECT child_name, label FROM families WHERE id=?", (family,)).fetchone()
+        c.execute("INSERT INTO pushes(id,family,kind,created) VALUES(?,?,?,?)", (secrets.token_hex(16), family, "handover", time.time()))
+    child_name = ((child["child_name"] or child["label"] or "") if child else "").strip()
+    HUB.emit(family, {"type": "host", "stream_id": stream, "host_relation": relation, "host_user": user["id"], "child_name": child_name})
     return {"ok": True, "stream_id": stream, "host_relation": relation}
 
 
@@ -1248,9 +1252,19 @@ async def deliver_pushes():
                 if not allowed:
                     continue
                 recovery = event["kind"] == "recovery"
+                handover = event["kind"] == "handover"
                 sensor = event["kind"] in ("sensor", "sensor-restored")
-                message = "A shared reading has returned to range. Open Nivvi to check its time." if recovery else "Changed readings received from the shared sensor. Open Nivvi to check." if event["kind"] == "sensor-restored" else "Check the shared sensor data. Open Nivvi for the latest status." if sensor else "A shared monitor needs attention. Open Nivvi for the latest status."
-                payload = {"aps": {"alert": {"title": "Nivvi family update", "body": message}, "sound": "NivviRelief.wav" if recovery else "NivviSensor.wav" if sensor else "NivviSiren.wav"}, "family_id": event["family"]}
+                if handover:
+                    with db() as c:
+                        named = c.execute("SELECT child_name, label, host_relation FROM families WHERE id=?", (event["family"],)).fetchone()
+                    who = ((named["host_relation"] or "Someone") if named else "Someone").strip() or "Someone"
+                    child = ((named["child_name"] or named["label"] or "them") if named else "them").strip() or "them"
+                    message = f"{who[:1].upper()}{who[1:]} is with {child}. This phone will disconnect from the band."
+                else:
+                    message = "A shared reading has returned to range. Open Nivvi to check its time." if recovery else "Changed readings received from the shared sensor. Open Nivvi to check." if event["kind"] == "sensor-restored" else "Check the shared sensor data. Open Nivvi for the latest status." if sensor else "A shared monitor needs attention. Open Nivvi for the latest status."
+                payload = {"aps": {"alert": {"title": "Nivvi family update", "body": message}, "sound": "NivviRelief.wav" if recovery else "NivviSensor.wav" if sensor or handover else "NivviSiren.wav"}, "family_id": event["family"]}
+                if handover:
+                    payload["handover"] = True
                 result = await client.post(f"https://{host}/3/device/{token}", headers={"authorization": "bearer " + bearer, "apns-topic": os.environ["NIVVI_APNS_TOPIC"], "apns-push-type": "alert", "apns-expiration": str(int(event["created"]+120)), "apns-collapse-id": event["family"]}, json=payload)
                 if result.status_code == 410 or (result.status_code == 400 and result.json().get("reason") == "BadDeviceToken"):
                     with db() as c:
