@@ -379,6 +379,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         didSet { UserDefaults.standard.set(removalSound.rawValue, forKey: "nivvi.removal.sound") }
     }
     @Published private(set) var bandRemoved = false
+    @Published private(set) var removalAcknowledged = false
     private var hadLivePulse = false
     private var removalPlayer: AVAudioPlayer?
     @Published var experimentalCustomAlarms = false { didSet { alarmSettings.experimentalCustomEnabled = experimentalCustomAlarms } }
@@ -438,7 +439,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         event.kind == "critical" || event.kind == "alarm" || event.kind == "connection"
             || event.title == "Heart rate back to normal" || event.title == "High heart-rate alert" || event.title == "Low heart-rate alert"
             || event.title == "Check sensor data" || event.title == "Alarm acknowledged"
-            || event.title == "Band removed" || event.title == "Band back on"
+            || event.title == "Band removed" || event.title == "Band back on" || event.title == "Band removed acknowledged"
             || event.title.localizedCaseInsensitiveContains("needs your attention")
     }
     func recordEvent(kind: String, title: String, detail: String, heartRate: Int? = nil) {
@@ -1755,7 +1756,8 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         let text = removalMessage.trimmingCharacters(in: .whitespacesAndNewlines)
         let body = text.isEmpty ? "The band may have been taken off. Check it is still worn." : text
         recordEvent(kind: "measurement", title: "Band removed", detail: body)
-        notify(title: "Band removed", body: body, identifier: "nivvi-band-removed", sirenSound: false, soundName: removalSound.notificationFile)
+        notify(title: "Band removed", body: body, identifier: "nivvi-band-removed", sirenSound: false, soundName: removalSound.notificationFile, critical: true)
+        removalAcknowledged = false
         if !alarmActive { playRemovalSound() }
         publishFamilySnapshot()
     }
@@ -1763,10 +1765,19 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         hadLivePulse = true
         guard bandRemoved else { return }
         bandRemoved = false
+        removalAcknowledged = false
         stopRemovalSound()
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["nivvi-band-removed"])
         UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["nivvi-band-removed"])
         recordEvent(kind: "measurement", title: "Band back on", detail: "A fresh heart-rate reading replaced the removal alert.")
+    }
+    func acknowledgeRemoval() {
+        guard bandRemoved, !removalAcknowledged else { return }
+        removalAcknowledged = true
+        stopRemovalSound()
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["nivvi-band-removed"])
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["nivvi-band-removed"])
+        recordEvent(kind: "measurement", title: "Band removed acknowledged", detail: "The band-off alarm was silenced. It stays quiet until the band is worn again.")
     }
     func previewRemovalSound() {
         guard !alarmActive else { return }
@@ -1783,13 +1794,14 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         }
     }
     private func playRemovalSound() {
+        guard !removalAcknowledged else { return }
         stopRemovalSound()
         do {
             try configureAlarmAudio()
             guard let url = Bundle.main.url(forResource: removalSound.resource, withExtension: "wav") else { return }
             removalPlayer = try AVAudioPlayer(contentsOf: url)
             removalPlayer?.numberOfLoops = -1
-            removalPlayer?.volume = 0.45
+            removalPlayer?.volume = 0.75
             _ = removalPlayer?.play()
         } catch {
             removalPlayer = nil
@@ -1804,12 +1816,14 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         bandRemoved = true
         let text = removalMessage.trimmingCharacters(in: .whitespacesAndNewlines)
         let body = text.isEmpty ? "The band may have been taken off. Check it is still worn." : text
-        notify(title: "Band removed", body: body, identifier: "nivvi-band-removed", sirenSound: false, soundName: removalSound.notificationFile)
+        notify(title: "Band removed", body: body, identifier: "nivvi-band-removed", sirenSound: false, soundName: removalSound.notificationFile, critical: true)
+        removalAcknowledged = false
         if !alarmActive { playRemovalSound() }
     }
     func endRemovalAlert() {
         guard bandRemoved else { return }
         bandRemoved = false
+        removalAcknowledged = false
         stopRemovalSound()
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["nivvi-band-removed"])
         UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["nivvi-band-removed"])
@@ -1826,7 +1840,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         if session.enabled { recordEvent(kind: "connection", title: moved == nil ? "Session disconnected" : "Monitoring moved", detail: moved ?? "Disconnected by the user. Automatic reconnection is off.") }
         session.stop(); saveSession(); cancelBackgroundWatchdog(); retryScan = false; backgroundEnteredAt = nil
         scanToken = UUID(); scanDeadline?.invalidate(); manager.stopScan()
-        resetTransport(clearBattery: true); closeCaptureLog(); alarmEngine.reset(); alarmKind = nil; staleHeartRate.reset(); staleHeartRateDetected = false; alarmAcknowledged = false; bandRemoved = false; hadLivePulse = false; stopRemovalSound(); clearAlarmNotifications(); cancelConnectionLossNotice(); stopSiren()
+        resetTransport(clearBattery: true); closeCaptureLog(); alarmEngine.reset(); alarmKind = nil; staleHeartRate.reset(); staleHeartRateDetected = false; alarmAcknowledged = false; bandRemoved = false; removalAcknowledged = false; hadLivePulse = false; stopRemovalSound(); clearAlarmNotifications(); cancelConnectionLossNotice(); stopSiren()
         if let p = peripheral, p.state != .disconnected && manager.state == .poweredOn {
             connection = .stopping; status = "Disconnecting…"; manager.cancelPeripheralConnection(p)
         } else { finish("Disconnected. Automatic reconnection is off.") }
@@ -2740,6 +2754,15 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 header
                 if monitor.criticalAlertActive && !alarmOwnsScreen { alarmBanner.padding(.horizontal, 20) }
+                if monitor.bandRemoved && monitor.removalAcknowledged && !alarmOwnsScreen {
+                    Text("Band is off. Alarm silenced until it is worn again.")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(red: 0.16, green: 0.42, blue: 0.78))
+                }
                 ScrollView(showsIndicators: false) {
                     selectedTab
                     .padding(.horizontal, 20).padding(.bottom, 110)
@@ -2750,6 +2773,7 @@ struct ContentView: View {
             }
             .zIndex(1)
             if alarmOwnsScreen { alarmTakeover.zIndex(2) }
+            else if removalOwnsScreen { removalTakeover.zIndex(2) }
         }
         .preferredColorScheme(mode == .night ? .dark : .light)
         .sheet(isPresented: $showSettings) {
@@ -3072,8 +3096,42 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(coral.ignoresSafeArea())
     }
+    private var removalOwnsScreen: Bool {
+        monitor.bandRemoved && !monitor.removalAcknowledged && !alarmOwnsScreen
+    }
+    private var removalTakeover: some View {
+        let blue = Color(red: 0.12, green: 0.38, blue: 0.78)
+        let message = monitor.removalMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        return VStack(spacing: 22) {
+            Spacer()
+            Image(systemName: "applewatch.slash")
+                .font(.system(size: 54, weight: .semibold))
+                .foregroundStyle(.white)
+            Text(displayName).font(.title2.weight(.semibold)).foregroundStyle(.white.opacity(0.85))
+            Text("Band off")
+                .font(.title.weight(.bold))
+                .foregroundStyle(.white)
+            Text(message.isEmpty ? "The band may have been taken off. Check it is still worn." : message)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
+            Spacer()
+            Button("I heard it") { monitor.acknowledgeRemoval() }
+                .font(.title2.weight(.bold))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 18)
+                .background(.white)
+                .foregroundStyle(blue)
+                .clipShape(RoundedRectangle(cornerRadius: 18))
+        }
+        .padding(28)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(blue.ignoresSafeArea())
+    }
     private var situationLine: String {
         if monitor.alarmActive && !monitor.alarmAcknowledged { return "Heart rate alarm. Stay with them." }
+        if monitor.bandRemoved && !monitor.removalAcknowledged { return "The band is off." }
+        if monitor.bandRemoved { return "The band is off. Alarm silenced." }
         if monitor.wearableCharging { return "The band is charging." }
         if localHeartLive {
             if family.publishing {
@@ -3757,7 +3815,7 @@ struct ContentView: View {
             }
             Button("Preview warning") { monitor.previewRemovalSound() }
                 .buttonStyle(.bordered)
-            Text("A quiet repeating chime, not the heart-rate siren. It sounds if the band leaves the skin, or the pulse stops for 20 seconds while Bluetooth is still connected. A disconnect stays Connection lost.")
+            Text("A critical notice with a blue screen. Tap I heard it to silence it. The chime is not the heart-rate siren. It sounds if the band leaves the skin, or the pulse stops for 20 seconds while Bluetooth is still connected. A disconnect stays Connection lost.")
                 .font(.caption).foregroundStyle(muted)
         } }
         panel { VStack(alignment: .leading, spacing: 12) {
