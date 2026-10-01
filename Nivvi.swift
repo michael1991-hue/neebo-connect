@@ -824,6 +824,15 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             stale: stale,
             alarm: alarmKind?.rawValue ?? ""
         )
+        let title = UserDefaults.standard.string(forKey: "nivvi.profile.name").flatMap { $0.isEmpty ? nil : $0 } ?? "Nivvi"
+        LiveActivityPush.publish(
+            title: title,
+            heartRate: hr.map { "\(MetricText.number($0)) bpm" } ?? "No reading",
+            oxygen: ox.map { "\(MetricText.number($0))%" } ?? "No reading",
+            connection: connection.label,
+            measuredAt: lastHeartRateUpdate ?? Date(),
+            session: title
+        )
     }
     private func expireMeasurements() {
         defer { publishFamilySnapshot() }

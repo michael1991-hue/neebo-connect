@@ -1139,7 +1139,7 @@ def activity_state(payload, secret):
         "measuredAt": measured,
         "seq": int(payload.get("seq") or 0),
         "session": payload.get("source") or "Nivvi",
-        "stale": age > 45,
+        "stale": age > 180,
         "alarm": alarm if alarm in ("high", "low") else "",
         "title": "Nivvi",
     }
@@ -1165,12 +1165,12 @@ def queue_activity(secret, state, paced=False):
 
     jobs = []
     if not paced:
-        jobs.append(([token for token, _ in rows], "10", 45))
+        jobs.append(([token for token, _ in rows], "10", 180))
     else:
         if hosts and due("host", 8):
-            jobs.append((hosts, "10", 25))
+            jobs.append((hosts, "10", 180))
         if watchers and watcher_due(secret, state, now):
-            jobs.append((watchers, "10", 25))
+            jobs.append((watchers, "10", 180))
     if TEST:
         for tokens, priority, _stale in jobs:
             for token in tokens:
