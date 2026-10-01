@@ -439,7 +439,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         event.kind == "critical" || event.kind == "alarm" || event.kind == "connection"
             || event.title == "Heart rate back to normal" || event.title == "High heart-rate alert" || event.title == "Low heart-rate alert"
             || event.title == "Check sensor data" || event.title == "Alarm acknowledged"
-            || event.title == "Band removed" || event.title == "Band back on" || event.title == "Band removed acknowledged"
+            || event.title == "Band removed" || event.title == "Band back on" || event.title == "Band removed acknowledged" || event.title == "No heart rate"
             || event.title.localizedCaseInsensitiveContains("needs your attention")
     }
     func recordEvent(kind: String, title: String, detail: String, heartRate: Int? = nil) {
@@ -839,7 +839,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
            let last = lastHeartRateUpdate, Date().timeIntervalSince(last) >= 20 {
             noteBandRemoved()
         }
-        if criticalAlertActive, !alarmAcknowledged, !shareAlertSensor, siren?.isPlaying != true, !testingSiren {
+        if criticalAlertActive, !alarmAcknowledged, !bandRemoved, !shareAlertSensor, siren?.isPlaying != true, !testingSiren {
             startSiren(loop: true)
         }
         guard let time = measurementTime, Date().timeIntervalSince(time) > HeartRateFreshness.timeout else { return }
@@ -1496,6 +1496,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
                 return
             }
             guard let bpm = BluetoothPolicy.standardHeartRate(data) else {
+                noteNoHeartRate()
                 pauseHeartRate("No usable heart rate in this packet. The packet is invalid or the device reports no sensor contact.")
                 return
             }
@@ -1670,6 +1671,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         }
     }
     private func evaluatePulseOximeterAlarm(_ pulse: Double) {
+        if pulse <= 0 { noteNoHeartRate(); return }
         if wearableCharging || bandRemoved { return }
         observeStaleHeartRate(pulse, source: "pulse-oximeter")
         let previous = alarmKind
@@ -1710,6 +1712,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     }
 
     private func evaluateRateAlarm(_ bpm: Int) {
+        if bpm <= 0 { noteNoHeartRate(); return }
         if wearableCharging || bandRemoved { return }
         observeStaleHeartRate(Double(bpm), source: "standard Bluetooth")
         let previousAlarm = alarmKind
@@ -1749,6 +1752,21 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         soundStatus = "Acknowledged. The alarm stays active until a fresh in-range reading."
         publishFamilySnapshot()
     }
+    private var noPulseNotified = false
+    private func noteNoHeartRate() {
+        guard !noPulseNotified, !wearableCharging, alarmKind != .high else { return }
+        noPulseNotified = true
+        if alarmKind == .low {
+            alarmAcknowledged = true
+            alarmEngine.silence()
+            stopSiren()
+            clearAlarmNotifications()
+        }
+        recordEvent(kind: "measurement", title: "No heart rate", detail: "The band reported no pulse. Notified once. It stays quiet until a real reading returns.")
+        notify(title: "No heart rate", body: "The band reported no pulse. This will not repeat until a reading returns.", identifier: "nivvi-no-heart-rate", sirenSound: false, soundName: removalSound.notificationFile, critical: true)
+        stopSiren()
+        clearAlarmNotifications()
+    }
     private func noteBandRemoved() {
         guard removalAlertEnabled, !wearableCharging, !bandRemoved, hadLivePulse else { return }
         guard connection.isConnected || connection == .waiting else { return }
@@ -1757,12 +1775,15 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         let body = text.isEmpty ? "The band may have been taken off. Check it is still worn." : text
         recordEvent(kind: "measurement", title: "Band removed", detail: body)
         notify(title: "Band removed", body: body, identifier: "nivvi-band-removed", sirenSound: false, soundName: removalSound.notificationFile, critical: true)
-        removalAcknowledged = false
-        if !alarmActive { playRemovalSound() }
+        removalAcknowledged = true
+        stopSiren()
+        clearAlarmNotifications()
+        stopRemovalSound()
         publishFamilySnapshot()
     }
     private func noteBandWorn() {
         hadLivePulse = true
+        noPulseNotified = false
         guard bandRemoved else { return }
         bandRemoved = false
         removalAcknowledged = false
@@ -1817,8 +1838,10 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         let text = removalMessage.trimmingCharacters(in: .whitespacesAndNewlines)
         let body = text.isEmpty ? "The band may have been taken off. Check it is still worn." : text
         notify(title: "Band removed", body: body, identifier: "nivvi-band-removed", sirenSound: false, soundName: removalSound.notificationFile, critical: true)
-        removalAcknowledged = false
-        if !alarmActive { playRemovalSound() }
+        removalAcknowledged = true
+        stopRemovalSound()
+        stopSiren()
+        clearAlarmNotifications()
     }
     func endRemovalAlert() {
         guard bandRemoved else { return }
@@ -1840,7 +1863,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         if session.enabled { recordEvent(kind: "connection", title: moved == nil ? "Session disconnected" : "Monitoring moved", detail: moved ?? "Disconnected by the user. Automatic reconnection is off.") }
         session.stop(); saveSession(); cancelBackgroundWatchdog(); retryScan = false; backgroundEnteredAt = nil
         scanToken = UUID(); scanDeadline?.invalidate(); manager.stopScan()
-        resetTransport(clearBattery: true); closeCaptureLog(); alarmEngine.reset(); alarmKind = nil; staleHeartRate.reset(); staleHeartRateDetected = false; alarmAcknowledged = false; bandRemoved = false; removalAcknowledged = false; hadLivePulse = false; stopRemovalSound(); clearAlarmNotifications(); cancelConnectionLossNotice(); stopSiren()
+        resetTransport(clearBattery: true); closeCaptureLog(); alarmEngine.reset(); alarmKind = nil; staleHeartRate.reset(); staleHeartRateDetected = false; alarmAcknowledged = false; bandRemoved = false; removalAcknowledged = false; noPulseNotified = false; hadLivePulse = false; stopRemovalSound(); clearAlarmNotifications(); cancelConnectionLossNotice(); stopSiren()
         if let p = peripheral, p.state != .disconnected && manager.state == .poweredOn {
             connection = .stopping; status = "Disconnecting…"; manager.cancelPeripheralConnection(p)
         } else { finish("Disconnected. Automatic reconnection is off.") }
@@ -3815,7 +3838,7 @@ struct ContentView: View {
             }
             Button("Preview warning") { monitor.previewRemovalSound() }
                 .buttonStyle(.bordered)
-            Text("A critical notice with a blue screen. Tap I heard it to silence it. The chime is not the heart-rate siren. It sounds if the band leaves the skin, or the pulse stops for 20 seconds while Bluetooth is still connected. A disconnect stays Connection lost.")
+            Text("Notifies once, then stays quiet until the band is worn again. It does not keep alarming. It sounds if the band leaves the skin, or the pulse stops for 20 seconds while Bluetooth is still connected. A reading of no pulse notifies once as well. A disconnect stays Connection lost.")
                 .font(.caption).foregroundStyle(muted)
         } }
         panel { VStack(alignment: .leading, spacing: 12) {
