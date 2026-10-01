@@ -143,6 +143,7 @@ def initialize():
             "ALTER TABLE families ADD COLUMN low_threshold INTEGER",
             "ALTER TABLE families ADD COLUMN duration_seconds INTEGER NOT NULL DEFAULT 15",
             "ALTER TABLE activity_tokens ADD COLUMN kind TEXT NOT NULL DEFAULT 'watcher'",
+            "CREATE UNIQUE INDEX IF NOT EXISTS families_join_code ON families(join_code) WHERE join_code IS NOT NULL AND join_code != ''",
         ):
             try:
                 c.execute(stmt)
@@ -221,9 +222,16 @@ def ensure_join_code(c, family):
     row = c.execute("SELECT join_code FROM families WHERE id=?", (family,)).fetchone()
     if row and row["join_code"]:
         return row["join_code"]
-    code = new_join_code(c)
-    c.execute("UPDATE families SET join_code=? WHERE id=?", (code, family))
-    return code
+    for _ in range(8):
+        code = new_join_code(c)
+        try:
+            c.execute("UPDATE families SET join_code=? WHERE id=? AND (join_code IS NULL OR join_code='')", (code, family))
+        except sqlite3.IntegrityError:
+            continue
+        saved = c.execute("SELECT join_code FROM families WHERE id=?", (family,)).fetchone()
+        if saved and saved["join_code"]:
+            return saved["join_code"]
+    raise HTTPException(500, "Could not create a family code")
 
 
 def ensure_share_token(c, family):
