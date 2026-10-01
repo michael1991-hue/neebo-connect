@@ -3881,7 +3881,7 @@ struct ContentView: View {
         Group {
         panel { DisclosureGroup("FAQ") { VStack(alignment: .leading, spacing: 12) {
             DisclosureGroup("How do I share with family?") {
-                Text("Only the phone next to the band needs an account. It creates the 6-letter code. Everyone else types that code and who they are. No email. Whoever is with them taps I’m with their name. The next person does the same on their phone to take over.")
+                Text("The phone next to the band taps Start a family. No email. It shows a 6-letter code. Everyone else types that code and who they are, then Follow. Whoever is with them taps I’m with their name. The next person does the same on their phone to take over.")
                     .font(.caption).padding(.top, 6)
             }
             DisclosureGroup("Which devices work?") {
@@ -3902,7 +3902,7 @@ struct ContentView: View {
             }
         }.padding(.top, 12) } }
         panel { DisclosureGroup("Privacy") { VStack(alignment: .leading, spacing: 12) {
-            Text("Local use needs no account. Readings, notes and the profile stay on this iPhone for 30 days. Family sharing is optional: a verified email, a 6-letter family code, and the latest live numbers — including band battery — on the Nivvi server in London (family.nivvi.app). Birth dates, avatars and notes are not uploaded. No ads or analytics.")
+            Text("Local use needs no account. Readings, notes and the profile stay on this iPhone for 30 days. Family sharing is optional: a 6-letter family code and the latest live numbers — including band battery — on the Nivvi server in London (family.nivvi.app). No email is required. Birth dates, avatars and notes are not uploaded. No ads or analytics.")
                 .font(.caption)
             Text("Anyone with the family code can join that family. Stop sharing with everyone ends the code. Delete account removes the online login, not this phone’s history. Full notice: nivvi.app/privacy")
                 .font(.caption).foregroundStyle(muted)

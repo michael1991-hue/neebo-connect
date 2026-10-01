@@ -403,6 +403,14 @@ final class FamilyRelay: ObservableObject {
         try await refreshFamilies()
         message = "You’re in as \(who). No account needed."
     }
+    func startFamily() async throws {
+        let value: FamilyAccount = try await request("start", method: "POST", body: nil, authenticated: false)
+        try FamilyKeychain.save(value)
+        account = value
+        generation = UUID()
+        try await refreshFamilies()
+        message = familyCode.isEmpty ? "Family started." : "Family code \(familyCode). Send it once. No email was needed."
+    }
     func refreshFamilies() async throws {
         let token = generation
         let result: [SharedFamily] = try await request("families")
@@ -965,7 +973,21 @@ struct FamilySharingView: View {
                         .foregroundStyle(muted)
                 } else if !relay.signedIn {
                     guestJoinCard
-                    DisclosureGroup("Starting this family? Create an account") {
+                    Button {
+                        relay.perform { try await relay.startFamily() }
+                    } label: {
+                        Text("Start a family")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(accent)
+                    .disabled(relay.busy)
+                    Text("No email. The 6-letter code appears on this phone.")
+                        .font(.caption)
+                        .foregroundStyle(muted)
+                    DisclosureGroup("Already using an email account?") {
                         authFlow.padding(.top, 8)
                     }
                 } else {
@@ -1031,10 +1053,10 @@ struct FamilySharingView: View {
             Text("How to start")
                 .font(.headline)
                 .foregroundStyle(ink)
-            familyStep(1, "Only the phone next to the band needs an account. It taps Create family code.")
-            familyStep(2, "Everyone else types that 6-letter code and who they are. No email and no password.")
-            familyStep(3, "Whoever is with them taps I’m with their name. That phone connects. The other phone drops the band.")
-            familyStep(4, "To hand over, the next person taps I’m with their name on their own phone.")
+            familyStep(1, "The phone next to the band taps Start a family. No email and no password.")
+            familyStep(2, "Send the 6-letter code once. It stays on that phone.")
+            familyStep(3, "Everyone else types the code and who they are, then taps Follow.")
+            familyStep(4, "Whoever is with them taps I’m with their name. The next person does the same to take over.")
         }
         .fixedSize(horizontal: false, vertical: true)
     }

@@ -531,6 +531,27 @@ def login(body: Credentials, request: Request):
     return {"token": token, "user_id": row["id"], "email": address}
 
 
+@app.post("/start")
+def start_family(request: Request):
+    auth_limit(request)
+    throttle("start:" + digest(request.client.host), 8, 3600)
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        user_id = secrets.token_hex(16)
+        owner_email = f"owner-{user_id[:12]}@nivvi.guest"
+        c.execute(
+            "INSERT INTO users(id,email,password,verified) VALUES(?,?,?,1)",
+            (user_id, owner_email, password_hash(secrets.token_urlsafe(32))),
+        )
+        family_id = secrets.token_hex(16)
+        c.execute("INSERT INTO families(id, owner, label) VALUES(?,?,?)", (family_id, user_id, "Family"))
+        ensure_join_code(c, family_id)
+        ensure_share_token(c, family_id)
+        token = secrets.token_urlsafe(32)
+        c.execute("INSERT INTO sessions VALUES(?,?,?)", (digest(token), user_id, time.time() + 30 * 86400))
+    return {"token": token, "user_id": user_id, "email": owner_email}
+
+
 @app.post("/join")
 def guest_join(body: Invite, request: Request):
     auth_limit(request)
