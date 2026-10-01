@@ -334,7 +334,7 @@ class Family(BaseModel):
 
 class Invite(BaseModel):
     code: str = Field(min_length=6, max_length=128)
-    relation: str = Field(default="", max_length=20)
+    relation: str = Field(default="", max_length=24)
 
 
 class FamilyAlertPoint(BaseModel):
@@ -521,6 +521,42 @@ def login(body: Credentials, request: Request):
         token = secrets.token_urlsafe(32)
         c.execute("INSERT INTO sessions VALUES(?,?,?)", (digest(token), row["id"], time.time() + 30 * 86400))
     return {"token": token, "user_id": row["id"], "email": address}
+
+
+@app.post("/join")
+def guest_join(body: Invite, request: Request):
+    auth_limit(request)
+    short = body.code.strip().upper().replace(" ", "").replace("-", "")
+    if len(short) != 6 or any(ch not in JOIN_ALPHABET for ch in short):
+        raise HTTPException(400, "Enter the 6-letter family code.")
+    relation = (body.relation or "").strip()
+    if len(relation) > 24:
+        raise HTTPException(400, "Use a shorter name.")
+    if not relation:
+        raise HTTPException(400, "Type who you are, such as Dad or Nan.")
+    known = {"me", "partner", "mum", "dad", "nan", "auntie", "uncle", "carer"}
+    if relation.lower() in known:
+        relation = relation.lower()
+    throttle("guest:" + digest(short), 40, 3600)
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        family = c.execute("SELECT id FROM families WHERE join_code=?", (short,)).fetchone()
+        if not family:
+            raise HTTPException(400, "That family code is not recognised.")
+        user_id = secrets.token_hex(16)
+        guest_email = f"guest-{user_id[:12]}@nivvi.guest"
+        c.execute(
+            "INSERT INTO users(id,email,password,verified) VALUES(?,?,?,1)",
+            (user_id, guest_email, password_hash(secrets.token_urlsafe(32))),
+        )
+        role = "carer" if relation in ("carer", "me") else "watcher"
+        c.execute(
+            "INSERT INTO members(family,user_id,role,relation) VALUES(?,?,?,?)",
+            (family["id"], user_id, role, relation),
+        )
+        token = secrets.token_urlsafe(32)
+        c.execute("INSERT INTO sessions VALUES(?,?,?)", (digest(token), user_id, time.time() + 30 * 86400))
+    return {"token": token, "user_id": user_id, "email": guest_email}
 
 
 @app.post("/auth/logout")

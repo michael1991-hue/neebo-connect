@@ -392,6 +392,17 @@ final class FamilyRelay: ObservableObject {
             message = result.message ?? "Done."
         }
     }
+    func guestJoin(code: String, relation: String) async throws {
+        let who = relation.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard who.count >= 2 else { throw FamilyError.message("Type who you are, such as Dad or Nan.") }
+        let value: FamilyAccount = try await request("join", method: "POST", body: body(["code": code, "relation": who]), authenticated: false)
+        try FamilyKeychain.save(value)
+        account = value
+        generation = UUID()
+        UserDefaults.standard.set(who, forKey: "nivvi.host.relation")
+        try await refreshFamilies()
+        message = "You’re in as \(who). No account needed."
+    }
     func refreshFamilies() async throws {
         let token = generation
         let result: [SharedFamily] = try await request("families")
@@ -953,7 +964,10 @@ struct FamilySharingView: View {
                         .font(.subheadline)
                         .foregroundStyle(muted)
                 } else if !relay.signedIn {
-                    authFlow
+                    guestJoinCard
+                    DisclosureGroup("Starting this family? Create an account") {
+                        authFlow.padding(.top, 8)
+                    }
                 } else {
                     signedIn
                 }
@@ -1017,11 +1031,10 @@ struct FamilySharingView: View {
             Text("How to start")
                 .font(.headline)
                 .foregroundStyle(ink)
-            familyStep(1, "Each person opens Family sharing and signs in with their own email.")
-            familyStep(2, "The phone next to the band taps Create family code.")
-            familyStep(3, "Send that 6-letter code once. Everyone else types the same code and chooses who they are.")
-            familyStep(4, "Whoever is with them taps I’m with their name. That phone connects. The other phone drops the band.")
-            familyStep(5, "To hand over, the next person taps I’m with their name on their own phone.")
+            familyStep(1, "Only the phone next to the band needs an account. It taps Create family code.")
+            familyStep(2, "Everyone else types that 6-letter code and who they are. No email and no password.")
+            familyStep(3, "Whoever is with them taps I’m with their name. That phone connects. The other phone drops the band.")
+            familyStep(4, "To hand over, the next person taps I’m with their name on their own phone.")
         }
         .fixedSize(horizontal: false, vertical: true)
     }
@@ -1038,6 +1051,38 @@ struct FamilySharingView: View {
                 .font(.subheadline)
                 .foregroundStyle(ink)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var guestJoinCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Have a family code?")
+                .font(.headline)
+                .foregroundStyle(ink)
+            Text("Type the 6 letters and who you are. Friends and family do not need an account.")
+                .font(.subheadline)
+                .foregroundStyle(muted)
+            labeled("Family code") {
+                TextField("e.g. K7M4QP", text: $joinCode)
+                    .textInputAutocapitalization(.characters)
+                    .autocorrectionDisabled()
+                    .keyboardType(.asciiCapable)
+            }
+            labeled("I am") {
+                TextField("Dad, Nan, Daddy", text: $hostRelation)
+                    .textInputAutocapitalization(.words)
+                    .onChange(of: hostRelation) { value in
+                        if value.count > 24 { hostRelation = String(value.prefix(24)) }
+                    }
+            }
+            Button {
+                relay.perform { try await relay.guestJoin(code: joinCode, relation: hostRelation) }
+            } label: {
+                Text("Follow").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 14)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(accent)
+            .disabled(joinCode.trimmingCharacters(in: .whitespacesAndNewlines).count < 6 || hostRelation.trimmingCharacters(in: .whitespacesAndNewlines).count < 2 || relay.busy)
         }
     }
 
@@ -1269,7 +1314,7 @@ struct FamilySharingView: View {
         DisclosureGroup("Account") {
             VStack(alignment: .leading, spacing: 12) {
                 if let email = relay.account?.email, !email.isEmpty {
-                    Text(email)
+                    Text(email.contains("@nivvi.guest") ? "No account on this phone. You joined with a family code." : email)
                         .font(.subheadline)
                         .foregroundStyle(muted)
                         .textSelection(.enabled)
