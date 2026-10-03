@@ -109,6 +109,7 @@ check(sleep.face(at: start.addingTimeInterval(9 * 60)).title == "SETTLING", "nin
 sleep.observe(still: true, at: start.addingTimeInterval(10 * 60))
 check(sleep.face(at: start.addingTimeInterval(10 * 60)).title == "ASLEEP", "ten still minutes starts sleep")
 check(sleep.face(at: start.addingTimeInterval(72 * 60)).duration == "1h 12m", "sleep time includes the still minutes")
+sleep.observe(still: true, at: start.addingTimeInterval(72 * 60))
 sleep.observe(still: false, at: start.addingTimeInterval(72 * 60 + 20))
 check(sleep.face(at: start.addingTimeInterval(72 * 60 + 20)).title == "ASLEEP", "one movement does not end sleep")
 sleep.observe(still: false, at: start.addingTimeInterval(73 * 60 + 20))
