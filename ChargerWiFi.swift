@@ -159,7 +159,7 @@ final class ChargerSetup: NSObject, ObservableObject, CBCentralManagerDelegate, 
     private func isCharger(_ name: String, _ services: [CBUUID]) -> Bool {
         let upper = name.uppercased()
         if upper == "NCO" || upper == "NC0" || upper.contains("CHARGER") { return true }
-        for service in services where BluetoothPolicy.normalized(service.uuid.uuidString) == "FFB0" {
+        for service in services where BluetoothPolicy.normalized(service.uuidString) == "FFB0" {
             return true
         }
         return false

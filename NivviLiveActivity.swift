@@ -61,7 +61,7 @@ enum NivviLiveActivityBridge {
             lastPush = Date()
             lastStale = stale
             let background = UIApplication.shared.beginBackgroundTask(withName: "nivvi.lock-screen") { }
-            Task {
+            Task { @MainActor in
                 defer { if background != .invalid { UIApplication.shared.endBackgroundTask(background) } }
                 if #available(iOS 16.2, *) {
                     await activity.update(ActivityContent(state: state, staleDate: freshUntil(measuredAt.timeIntervalSince1970, stale: stale)))
