@@ -24,7 +24,7 @@ enum NivviLiveActivityBridge {
         )
     }
 
-    static func sync(title: String, heartRate: String, oxygen: String, connection: String, signal: String, nurseryHint: String, monitoring: Bool, measuredAt: Date = Date(), seq: Int = 0, session: String = "", stale: Bool = false, alarm: String = "", forceNew: Bool = false) {
+    static func sync(title: String, heartRate: String, oxygen: String, connection: String, signal: String, nurseryHint: String, monitoring: Bool, measuredAt: Date = Date(), seq: Int = 0, session: String = "", stale: Bool = false, alarm: String = "", forceNew: Bool = false, sleep: String = "") {
         lastTitle = title
         guard #available(iOS 16.1, *) else { return }
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
@@ -39,7 +39,8 @@ enum NivviLiveActivityBridge {
             seq: seq,
             session: session.isEmpty ? title : session,
             stale: stale,
-            alarm: alarm
+            alarm: alarm,
+            sleep: sleep
         )
         if !monitoring {
             Task { @MainActor in

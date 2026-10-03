@@ -11,8 +11,8 @@ struct NivviWidgetBundle: WidgetBundle {
 
 struct NivviLiveActivityWidget: Widget {
     var body: some WidgetConfiguration {
-        ActivityConfiguration(for: NivviActivityAttributes.self) { context in
-            lockScreen(context)
+        let base = ActivityConfiguration(for: NivviActivityAttributes.self) { context in
+            NivviPresentedActivity(context: context)
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
@@ -28,6 +28,11 @@ struct NivviLiveActivityWidget: Widget {
                     }
                 }
                 DynamicIslandExpandedRegion(.bottom) {
+                    if !context.state.sleep.isEmpty {
+                        Text(context.state.sleep)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(Color(red: 0.45, green: 0.86, blue: 0.74))
+                    }
                     Text(lockCaption(context))
                         .font(.caption)
                     if !context.state.nurseryHint.isEmpty && !readingsDelayed(context) {
@@ -42,10 +47,18 @@ struct NivviLiveActivityWidget: Widget {
                 Image(systemName: "heart.fill")
             }
         }
+        return carPlayReady(base)
+    }
+
+    private func carPlayReady<T: WidgetConfiguration>(_ configuration: T) -> some WidgetConfiguration {
+        if #available(iOS 18.0, *) {
+            return configuration.supplementalActivityFamilies([.small])
+        }
+        return configuration
     }
 
     @ViewBuilder
-    private func lockScreen(_ context: ActivityViewContext<NivviActivityAttributes>) -> some View {
+    func lockScreen(_ context: ActivityViewContext<NivviActivityAttributes>) -> some View {
         let status = bannerStatus(context)
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .center, spacing: 8) {
@@ -65,9 +78,21 @@ struct NivviLiveActivityWidget: Widget {
                 .fixedSize(horizontal: true, vertical: false)
             }
             HStack(alignment: .center, spacing: 0) {
-                readingColumn(icon: "heart.fill", tint: Color(red: 0.93, green: 0.38, blue: 0.42), value: metricNumber(context.state.heartRate), unit: "bpm", caption: "Heart rate", alert: context.state.alarm == "high" || context.state.alarm == "low")
+                readingColumn(icon: "heart.fill", tint: Color(red: 0.93, green: 0.38, blue: 0.42), value: metricNumber(context.state.heartRate), unit: charging(context.state.heartRate) ? "" : "bpm", caption: charging(context.state.heartRate) ? "Charging" : "Heart rate", alert: context.state.alarm == "high" || context.state.alarm == "low")
                 Rectangle().fill(Color.white.opacity(0.18)).frame(width: 1, height: 52)
-                readingColumn(icon: "lungs.fill", tint: Color(red: 0.55, green: 0.78, blue: 0.95), value: metricNumber(context.state.oxygen), unit: "%", caption: "Oxygen", alert: false)
+                readingColumn(icon: "lungs.fill", tint: Color(red: 0.55, green: 0.78, blue: 0.95), value: metricNumber(context.state.oxygen), unit: charging(context.state.oxygen) ? "" : "%", caption: charging(context.state.oxygen) ? "Charging" : "Oxygen", alert: false)
+            }
+            if !context.state.sleep.isEmpty {
+                HStack(spacing: 8) {
+                    Image(systemName: "moon.fill")
+                        .font(.subheadline)
+                        .foregroundStyle(Color(red: 0.45, green: 0.86, blue: 0.74))
+                    Text(context.state.sleep)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Color(red: 0.45, green: 0.86, blue: 0.74))
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                }
             }
             readingStamp(context)
         }
@@ -103,6 +128,7 @@ struct NivviLiveActivityWidget: Widget {
 
     private func metricNumber(_ raw: String) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        if charging(trimmed) { return "Charging" }
         if trimmed.isEmpty || trimmed == "—" || trimmed.localizedCaseInsensitiveContains("no reading") { return "—" }
         let number = trimmed.prefix { $0.isNumber || $0 == "." }
         return number.isEmpty ? "—" : String(number)
@@ -128,6 +154,7 @@ struct NivviLiveActivityWidget: Widget {
     private func bannerStatus(_ context: ActivityViewContext<NivviActivityAttributes>) -> (title: String, color: Color) {
         let mint = Color(red: 0.45, green: 0.86, blue: 0.74)
         let caution = Color(red: 1, green: 0.62, blue: 0.28)
+        if charging(context.state.heartRate) { return ("Charging", Color(red: 1, green: 0.72, blue: 0.28)) }
         if activityIsStale(context) { return ("Delayed", caution) }
         if context.state.alarm == "removed" { return ("Removed", caution) }
         if metricNumber(context.state.heartRate) == "—" { return ("Waiting", caution) }
@@ -150,6 +177,10 @@ struct NivviLiveActivityWidget: Widget {
         return context.state.connection
     }
 
+    private func charging(_ raw: String) -> Bool {
+        raw.localizedCaseInsensitiveContains("charg")
+    }
+
     private func readingsDelayed(_ context: ActivityViewContext<NivviActivityAttributes>) -> Bool {
         activityIsStale(context)
     }
@@ -159,5 +190,92 @@ struct NivviLiveActivityWidget: Widget {
             return context.isStale || context.state.stale
         }
         return context.state.stale
+    }
+}
+
+struct NivviPresentedActivity: View {
+    let context: ActivityViewContext<NivviActivityAttributes>
+
+    var body: some View {
+        if #available(iOS 18.0, *) {
+            NivviFamilyActivity(context: context)
+        } else {
+            NivviLiveActivityWidget().lockScreen(context)
+        }
+    }
+}
+
+@available(iOS 18.0, *)
+struct NivviFamilyActivity: View {
+    @Environment(\.activityFamily) private var activityFamily
+    let context: ActivityViewContext<NivviActivityAttributes>
+
+    var body: some View {
+        if activityFamily == .small {
+            NivviCarPlayCard(context: context)
+        } else {
+            NivviLiveActivityWidget().lockScreen(context)
+        }
+    }
+}
+
+/// Glance layout for the CarPlay dashboard. The system already prints “Nivvi” above this.
+struct NivviCarPlayCard: View {
+    let context: ActivityViewContext<NivviActivityAttributes>
+
+    var body: some View {
+        let alert = context.state.alarm == "high" || context.state.alarm == "low"
+        let charging = context.state.heartRate.localizedCaseInsensitiveContains("charg")
+        let delayed = context.state.stale || context.isStale
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Image(systemName: "heart.fill")
+                    .font(.title3)
+                    .foregroundStyle(alert ? Color.red : Color.pink)
+                Text(number(context.state.heartRate))
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .foregroundStyle(alert ? Color.red : Color.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                if !charging {
+                    Text("bpm")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 4)
+                if !charging, number(context.state.oxygen) != "—" {
+                    Text(number(context.state.oxygen))
+                        .font(.title2.bold())
+                        .foregroundStyle(Color.primary)
+                    Text("%")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Text(line(alert: alert, charging: charging, delayed: delayed))
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(alert || delayed ? Color.orange : Color.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+        }
+    }
+
+    private func line(alert: Bool, charging: Bool, delayed: Bool) -> String {
+        let name = context.attributes.title
+        if charging { return "Charging" }
+        if context.state.alarm == "high" { return "\(name) · High" }
+        if context.state.alarm == "low" { return "\(name) · Low" }
+        if context.state.alarm == "removed" { return "\(name) · Band off" }
+        if delayed { return "\(name) · Delayed" }
+        if !context.state.sleep.isEmpty { return "\(name) · \(context.state.sleep)" }
+        return name
+    }
+
+    private func number(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        if trimmed.localizedCaseInsensitiveContains("charg") { return "Charging" }
+        if trimmed.isEmpty || trimmed == "—" || trimmed.localizedCaseInsensitiveContains("no reading") { return "—" }
+        let digits = trimmed.prefix { $0.isNumber || $0 == "." }
+        return digits.isEmpty ? "—" : String(digits)
     }
 }

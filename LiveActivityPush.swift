@@ -50,7 +50,7 @@ enum LiveActivityPush {
         Task { await registerStoredToken() }
     }
 
-    static func publish(title: String, heartRate: String, oxygen: String, connection: String, measuredAt: Date, session: String) {
+    static func publish(title: String, heartRate: String, oxygen: String, connection: String, measuredAt: Date, session: String, sleep: String = "") {
         uploadSeq += 1
         let seq = uploadSeq
         let measured = measuredAt.timeIntervalSince1970
@@ -65,7 +65,8 @@ enum LiveActivityPush {
             "oxygen": oxygen,
             "connection": connection,
             "session": session,
-            "title": title
+            "title": title,
+            "sleep": sleep
         ]
         Task { await post("live-activity/publish", body: body) }
     }

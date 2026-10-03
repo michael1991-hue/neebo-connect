@@ -181,6 +181,24 @@ enum BluetoothPolicy {
         default: return nil
         }
     }
+    /// FFE4 on the band: 0x01 is still, 0x00 is movement, 0x04 is charging.
+    static func stillness(_ data: Data) -> Bool? {
+        switch bandFlag(data) {
+        case .still: return true
+        case .moving: return false
+        default: return nil
+        }
+    }
+    enum BandFlag { case still, moving, charging }
+    static func bandFlag(_ data: Data) -> BandFlag? {
+        guard data.count == 1 else { return nil }
+        switch data[0] {
+        case 0: return .moving
+        case 1: return .still
+        case 4: return .charging
+        default: return nil
+        }
+    }
 }
 // END TESTABLE BLUETOOTH POLICY
 
@@ -207,6 +225,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     private var pendingRead: CBCharacteristic?
     private var readQueue: [CBCharacteristic] = []
     private var measurementCharacteristic: CBCharacteristic?
+    private var powerCharacteristic: CBCharacteristic?
     private var lastCustomMeasurement: Date?
     private var transportPolicy = MeasurementTransportPolicy()
     private var retryScan = false
@@ -342,6 +361,14 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     @Published var customHeartRateCandidate: Int?
     @Published var customOxygenCandidate: Int?
     @Published private(set) var skinCelsius: Double?
+    @Published var sleep = SleepClock() {
+        didSet {
+            guard oldValue.naps != sleep.naps else { return }
+            if let data = try? JSONEncoder().encode(sleep.naps) {
+                UserDefaults.standard.set(data, forKey: "nivvi.sleep.log")
+            }
+        }
+    }
     @Published var alarmSettings = AlarmSettings() {
         didSet {
             if let data = try? JSONEncoder().encode(alarmSettings) { UserDefaults.standard.set(data, forKey: "nivvi.alarms") }
@@ -353,6 +380,9 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     var alarmActive: Bool { alarmKind != nil }
     @Published private(set) var staleHeartRateDetected = false
     @Published private(set) var wearableCharging = false
+    @Published private(set) var bandPowerOn = true
+    @Published private(set) var powerReady = false
+    @Published private(set) var powerNote = "Off sends 01. On sends 00."
     private var chargePolicy = WearableChargePolicy()
     private var batteryPolicy = WearableBatteryPolicy()
     private var batteryFromStandard = false
@@ -772,6 +802,12 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         alarmEngine.interrupt()
     }
     private func pauseHeartRate(_ reason: String) {
+        if wearableCharging {
+            status = "Charging"
+            measurementStatus = "Charging"
+            pushLockScreen(stale: false)
+            return
+        }
         let recent = lastHeartRateUpdate.map { Date().timeIntervalSince($0) <= 15 } ?? false
         if recent {
             measurementStatus = reason
@@ -810,29 +846,38 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         guard ble || stale else { return }
         NivviLiveActivityBridge.preferLocalBluetooth = true
         LiveActivityPush.claimLocal()
+        let chargingNow = wearableCharging
         let hr = pulseOximeterRate ?? verifiedHeartRate.map(Double.init) ?? customHeartRateCandidate.map(Double.init)
         let ox = pulseOximeterOxygen ?? verifiedOxygen.map(Double.init) ?? customOxygenCandidate.map(Double.init)
+        let heartText = wearableCharging ? "Charging" : (hr.map { "\(MetricText.number($0)) bpm" } ?? "No reading")
+        let oxygenText = wearableCharging ? "Charging" : (ox.map { "\(MetricText.number($0))%" } ?? "No reading")
         NivviLiveActivityBridge.sync(
             title: UserDefaults.standard.string(forKey: "nivvi.profile.name").flatMap { $0.isEmpty ? nil : $0 } ?? "Nivvi",
-            heartRate: hr.map { "\(MetricText.number($0)) bpm" } ?? "No reading",
-            oxygen: ox.map { "\(MetricText.number($0))%" } ?? "No reading",
+            heartRate: heartText,
+            oxygen: oxygenText,
             connection: connection.label,
             signal: BluetoothSignal.label(signalRSSI),
             nurseryHint: "",
             monitoring: true,
             measuredAt: lastHeartRateUpdate ?? Date(timeIntervalSince1970: 0),
-            stale: stale,
-            alarm: alarmKind?.rawValue ?? ""
+            stale: chargingNow ? false : stale,
+            alarm: alarmKind?.rawValue ?? "",
+            sleep: sleepLockLine
         )
         let title = UserDefaults.standard.string(forKey: "nivvi.profile.name").flatMap { $0.isEmpty ? nil : $0 } ?? "Nivvi"
         LiveActivityPush.publish(
             title: title,
-            heartRate: hr.map { "\(MetricText.number($0)) bpm" } ?? "No reading",
-            oxygen: ox.map { "\(MetricText.number($0))%" } ?? "No reading",
+            heartRate: heartText,
+            oxygen: oxygenText,
             connection: connection.label,
             measuredAt: lastHeartRateUpdate ?? Date(),
-            session: title
+            session: title,
+            sleep: sleepLockLine
         )
+    }
+    var sleepLockLine: String {
+        let enabled = UserDefaults.standard.object(forKey: "nivvi.sleep.enabled") as? Bool ?? true
+        return enabled ? sleep.lockLine : ""
     }
     private func expireMeasurements() {
         defer { publishFamilySnapshot() }
@@ -875,6 +920,11 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         NotificationCenter.default.addObserver(self, selector: #selector(powerStateChanged),
                                                name: .NSProcessInfoPowerStateDidChange, object: nil)
         if let data = UserDefaults.standard.data(forKey: "nivvi.alarms"), let saved = try? JSONDecoder().decode(AlarmSettings.self, from: data) { alarmSettings = saved; experimentalCustomAlarms = saved.experimentalCustomEnabled }
+        if let data = UserDefaults.standard.data(forKey: "nivvi.sleep.log"), let saved = try? JSONDecoder().decode([SleepNap].self, from: data) {
+            var clock = sleep
+            clock.naps = saved
+            sleep = clock
+        }
         session.deviceID = UserDefaults.standard.string(forKey: "nivvi.session.device").flatMap(UUID.init(uuidString:))
         session.enabled = UserDefaults.standard.bool(forKey: "nivvi.session.enabled")
         if session.enabled && UIApplication.shared.applicationState == .background { backgroundEnteredAt = Date() }
@@ -1184,6 +1234,8 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         signalRSSI = nil
         measurementNotificationsEnabled = false
         readQueue = []; pendingRead = nil; measurementCharacteristic = nil
+        powerCharacteristic = nil
+        powerReady = false
         lastSample = nil
         if clearBattery {
             clearLiveValues()
@@ -1449,6 +1501,13 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     private func configureCharacteristics(_ service: CBService, peripheral p: CBPeripheral) {
         for c in (service.characteristics ?? []).sorted(by: { $0.uuid.uuidString < $1.uuid.uuidString }) {
             let sid = BluetoothPolicy.normalized(service.uuid.uuidString), cid = BluetoothPolicy.normalized(c.uuid.uuidString)
+            if sid == "FFE0" && cid == "FFC1" {
+                powerCharacteristic = c
+                powerReady = true
+                powerNote = "Off sends 01. On sends 00."
+                note("Found band power command FFC1")
+                continue
+            }
             log(["event": "characteristic", "service": sid, "uuid": cid, "properties": String(c.properties.rawValue)])
             guard BluetoothPolicy.shouldObserve(service: sid, characteristic: cid) else { continue }
             if (profile.hasStandardHeartRate || profile.hasPulseOximeter) && sid == "FFE0" { continue }
@@ -1465,6 +1524,27 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             enqueueRead(c)
         }
         refreshBackgroundDelivery()
+    }
+    func setBandPower(on: Bool) {
+        guard let p = peripheral, p.state == .connected, let c = powerCharacteristic else {
+            powerNote = "Reconnect the band, then try again."
+            return
+        }
+        let byte: UInt8 = on ? 0x00 : 0x01
+        let type: CBCharacteristicWriteType = c.properties.contains(.write) ? .withResponse : .withoutResponse
+        p.writeValue(Data([byte]), for: c, type: type)
+        bandPowerOn = on
+        powerNote = on ? "Sent on (00)." : "Sent off (01)."
+        note("Wrote band power \(on ? "on 00" : "off 01")")
+    }
+    func peripheral(_ p: CBPeripheral, didWriteValueFor c: CBCharacteristic, error: Error?) {
+        guard owns(p), c === powerCharacteristic else { return }
+        if let error {
+            powerNote = "Write failed. \(error.localizedDescription)"
+            note("Band power write failed: \(error.localizedDescription)")
+        } else {
+            note("Band power write accepted")
+        }
     }
     func peripheral(_ p: CBPeripheral, didUpdateNotificationStateFor c: CBCharacteristic, error: Error?) {
         guard owns(p) else { return }
@@ -1551,6 +1631,21 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             }
         }
         if uuid == "FFEA", serviceID == "FFE0", data.count == 2 { counter = "\(Int(data[0]) | (Int(data[1]) << 8)) — possible minutes" }
+        if uuid == "FFE4", serviceID == "FFE0", let flag = BluetoothPolicy.bandFlag(data) {
+            switch flag {
+            case .charging:
+                applyCharging(true)
+                var clock = sleep
+                clock.pause(at: Date())
+                sleep = clock
+            case .still, .moving:
+                if wearableCharging { applyCharging(false) }
+                var clock = sleep
+                clock.observe(still: flag == .still, at: Date())
+                sleep = clock
+            }
+            pushLockScreen()
+        }
     }
     private func receivePulseOximetry(_ data: Data, characteristic: String) {
         guard profile.hasPulseOximeter else { return }
@@ -2435,6 +2530,7 @@ struct ContentView: View {
     @AppStorage("nivvi.profile.avatarSymbol") private var avatarSymbol = "star.fill"
     @AppStorage("nivvi.profile.avatarColor") private var avatarColor = "teal"
     @AppStorage("nivvi.skin.fahrenheit") private var skinFahrenheit = false
+    @AppStorage("nivvi.sleep.enabled") private var sleepTimer = true
     @AppStorage("nivvi.host.relation") private var hostRelation = ""
     @AppStorage("nivvi.nursery.acknowledged") private var nurseryAcknowledged = false
     @State private var skyOffset: CGFloat = 0
@@ -2518,15 +2614,23 @@ struct ContentView: View {
                 || monitor.customHeartRateCandidate != nil
         )
     }
-    private var watchingFamily: Bool { family.viewingRemote && !localHeartLive }
-    private var watchingWifi: Bool { wifi.following && !watchingFamily && !localHeartLive }
+    private var bandHere: Bool {
+        monitor.wearableCharging || monitor.connection.isConnected || monitor.connection == .reconnecting
+    }
+    private var watchingFamily: Bool { family.viewingRemote && !localHeartLive && !bandHere }
+    private var watchingWifi: Bool { wifi.following && !watchingFamily && !localHeartLive && !bandHere }
     private var heartRateDisplay: String {
         if watchingFamily {
+            if family.remote?.snapshot?.charging == true { return "Charging" }
             if let remote = family.liveHeartRate { return remote }
             if let value = family.remote?.snapshot?.heart_rate { return "\(Int(value.rounded())) bpm" }
             return "No reading"
         }
-        if watchingWifi, wifi.remoteFresh, let remote = wifi.latest { return remote.heartRate }
+        if watchingWifi, wifi.remoteFresh, let remote = wifi.latest {
+            if remote.charging == true { return "Charging" }
+            return remote.heartRate
+        }
+        if monitor.wearableCharging { return "Charging" }
         let value = monitor.verifiedHeartRate.map(Double.init) ?? monitor.pulseOximeterRate ?? monitor.customHeartRateCandidate.map(Double.init)
         return value.map { "\(MetricText.number($0)) bpm" } ?? "No reading"
     }
@@ -2556,13 +2660,18 @@ struct ContentView: View {
     }
     private var oxygenDisplay: String {
         if watchingFamily {
+            if family.remote?.snapshot?.charging == true { return "Charging" }
             if let remote = family.liveOxygen { return remote }
             if let value = family.remote?.snapshot?.oxygen, let shown = OxygenReading.clamp(value) {
                 return "\(Int(shown.rounded()))%"
             }
             return "No reading"
         }
-        if watchingWifi, wifi.remoteFresh, let remote = wifi.latest { return remote.oxygen }
+        if watchingWifi, wifi.remoteFresh, let remote = wifi.latest {
+            if remote.charging == true { return "Charging" }
+            return remote.oxygen
+        }
+        if monitor.wearableCharging { return "Charging" }
         let value = monitor.pulseOximeterOxygen ?? monitor.customOxygenCandidate.map(Double.init)
         return value.flatMap(OxygenReading.clamp).map { "\(MetricText.number($0))%" } ?? "No reading"
     }
@@ -2660,7 +2769,8 @@ struct ContentView: View {
             measuredAt: measured ?? Date(timeIntervalSince1970: 0),
             stale: stale,
             alarm: alarm,
-            forceNew: forceNew
+            forceNew: forceNew,
+            sleep: monitor.sleepLockLine
         )
     }
     private func publishWiFiShare() {
@@ -2881,6 +2991,8 @@ struct ContentView: View {
         .onChange(of: monitor.customOxygenCandidate) { _ in publishWiFiShare(); syncLiveActivity() }
         .onChange(of: monitor.signalRSSI) { _ in syncLiveActivity() }
         .onChange(of: monitor.alarmKind) { _ in publishWiFiShare(); syncLiveActivity() }
+        .onChange(of: sleepTimer) { _ in syncLiveActivity() }
+        .onChange(of: monitor.sleep) { _ in syncLiveActivity() }
         .onChange(of: monitor.alarmAcknowledged) { _ in publishWiFiShare() }
         .onChange(of: wifi.inboundAck) { _ in
             if wifi.consumeInboundAck() { monitor.silenceAlarm() }
@@ -2965,6 +3077,11 @@ struct ContentView: View {
         }
     }
 
+    private func timeGreeting(at date: Date) -> String {
+        let hour = Calendar.current.component(.hour, from: date)
+        return (hour >= 19 || hour < 6) ? "Good night," : "Good morning,"
+    }
+
     @ViewBuilder
     private var header: some View {
         if tab == 0 { liveHeader } else { compactHeader }
@@ -2975,18 +3092,29 @@ struct ContentView: View {
             HStack {
                 avatarBadge(size: 52, symbolSize: .title2)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(Calendar.current.component(.hour, from: Date()) >= 12 && mode == .day ? "Hello," : mode.greeting).font(.subheadline.weight(.semibold)).foregroundStyle(muted)
+                    TimelineView(.periodic(from: .now, by: 60)) { context in
+                        Text(timeGreeting(at: context.date)).font(.subheadline.weight(.semibold)).foregroundStyle(muted)
+                    }
                     Text(displayName).font(.system(size: 34, weight: .bold, design: .rounded)).foregroundStyle(ink)
+                    if sleepTimer && monitor.sleep.asleep {
+                        HStack(spacing: 6) {
+                            Text("\(displayName) is asleep")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(accentMint)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.7)
+                            sleepZzz
+                        }
+                    }
                 }
                 Spacer()
                 headerButtons
             }
-            HStack(spacing: 10) {
-                Circle().fill(situationColor).frame(width: 11, height: 11)
+            HStack(alignment: .top, spacing: 10) {
+                Circle().fill(situationColor).frame(width: 11, height: 11).padding(.top, 4)
                 Text(situationLine).font(.subheadline.weight(.bold)).foregroundStyle(ink)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.8)
-                Spacer()
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 Text(mode == .day ? "Day" : "Night").font(.caption.weight(.semibold))
                     .foregroundStyle(mode == .day ? ink : .white)
                     .padding(.horizontal, 10).padding(.vertical, 5)
@@ -3003,6 +3131,8 @@ struct ContentView: View {
             if monitor.lowPowerMode {
                 Text("Low Power Mode is on. Turn it off so Nivvi can keep reading overnight.")
                     .font(.caption.weight(.semibold)).foregroundStyle(coral)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             if localHeartLive || watchingFamily || watchingWifi || NivviLiveActivityBridge.cardRunning {
                 Button { refreshLockScreen() } label: {
@@ -3034,16 +3164,22 @@ struct ContentView: View {
                     Text(age < 20 ? "Family send OK · \(age)s ago" : "Family send stalled · \(age)s ago")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(age < 20 ? accentMint : coral)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
                     Text(family.message.isEmpty ? "Starting family send…" : family.message)
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(coral)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         } else if localHeartLive {
             Text("Band is live here. Family won’t see it until you tap I’m with \(displayName) — start monitoring.")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(coral)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -3185,6 +3321,7 @@ struct ContentView: View {
             return wifi.remoteFresh ? "You are watching on this Wi‑Fi." : "The band is not connected."
         }
         if monitor.connection == .idle || monitor.connection == .bluetoothOff { return "The band is not connected." }
+        if monitor.wearableCharging { return "The band is charging." }
         return monitor.connection.label
     }
     private var frequentLockScreenUpdates: Bool {
@@ -3229,6 +3366,7 @@ struct ContentView: View {
     private var home: some View {
         VStack(alignment: .leading, spacing: 16) {
             liveHero
+            if !mirroringNursery { sleepCard }
             if monitor.batteryWarning != .ok && !monitor.wearableCharging {
                 HStack(spacing: 10) {
                     Image(systemName: "battery.25percent")
@@ -3379,6 +3517,101 @@ struct ContentView: View {
             }
         }
     }
+    private var sleepCard: some View {
+        panel {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Label("Sleep", systemImage: "moon.fill").font(.headline).foregroundStyle(accentMint)
+                    Spacer()
+                    Toggle("Sleep timer", isOn: $sleepTimer)
+                        .labelsHidden()
+                        .tint(switchOn)
+                        .accessibilityLabel("Sleep timer")
+                }
+                if sleepTimer {
+                    TimelineView(.periodic(from: .now, by: 30)) { context in
+                        let face = monitor.sleep.face(at: context.date)
+                        if face.title == "ASLEEP" {
+                            HStack(spacing: 6) {
+                                Text("\(displayName) is asleep")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(accentMint)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.7)
+                                sleepZzz
+                            }
+                        }
+                        Text(face.title == "ASLEEP" ? "ASLEEP" : (face.title == "SETTLING" ? "SETTLING" : (face.title == "AWAKE" ? "AWAKE" : (face.title == "CHARGING" ? "CHARGING" : "SLEEP"))))
+                            .font(.caption.weight(.bold))
+                            .tracking(1.1)
+                            .foregroundStyle(accentMint)
+                        Text(face.title == "ASLEEP" ? face.duration : (face.title == "AWAKE" ? "Awake" : (face.title == "SETTLING" ? "Settling" : (face.title == "CHARGING" ? "Charging" : "—"))))
+                            .font(.system(size: 40, weight: .bold, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(ink)
+                        Text(face.detail)
+                            .font(.subheadline)
+                            .foregroundStyle(muted)
+                        sleepLog(at: context.date)
+                    }
+                } else {
+                    Text("Off. Turn it on to time stillness from the band.")
+                        .font(.subheadline)
+                        .foregroundStyle(muted)
+                }
+            }
+        }
+    }
+    private var sleepZzz: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 15, paused: reduceMotion)) { context in
+            HStack(alignment: .lastTextBaseline, spacing: 0) {
+                zLetter("z", at: context.date, delay: 0, size: 15)
+                zLetter("z", at: context.date, delay: 0.45, size: 19)
+                zLetter("Z", at: context.date, delay: 0.9, size: 24)
+            }
+            .accessibilityHidden(true)
+        }
+    }
+    private func zLetter(_ text: String, at time: Date, delay: TimeInterval, size: CGFloat) -> some View {
+        let cycle = reduceMotion ? 0 : (time.timeIntervalSinceReferenceDate + delay).truncatingRemainder(dividingBy: 2.4)
+        let rise = min(1, cycle / 1.5)
+        let fade = cycle < 1.5 ? 0.35 + 0.65 * rise : max(0.2, 1 - (cycle - 1.5) / 0.9)
+        return Text(text)
+            .font(.system(size: size, weight: .bold, design: .rounded))
+            .foregroundStyle(accentMint)
+            .opacity(reduceMotion ? 1 : fade)
+            .offset(y: reduceMotion ? 0 : -8 * rise)
+    }
+    private func sleepLog(at time: Date) -> some View {
+        let naps = monitor.sleep.logged(on: time)
+        return VStack(alignment: .leading, spacing: 8) {
+            Divider().overlay(muted.opacity(0.25))
+            Text("Daily log").font(.caption.weight(.bold)).tracking(1.1).foregroundStyle(muted)
+            if naps.isEmpty {
+                Text("No sleep recorded today.").font(.subheadline).foregroundStyle(muted)
+            } else {
+                Text("Slept for \(SleepClock.clock(monitor.sleep.slept(on: time, at: time)))")
+                    .font(.headline)
+                    .foregroundStyle(ink)
+                ForEach(naps.reversed()) { nap in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(sleepStamp(nap, now: time))
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(ink)
+                        Text("Slept for \(SleepClock.clock(nap.length(at: time)))")
+                            .font(.caption)
+                            .foregroundStyle(muted)
+                    }
+                }
+            }
+        }
+    }
+    private func sleepStamp(_ nap: SleepNap, now: Date) -> String {
+        let clock = Date.FormatStyle().hour().minute()
+        let start = nap.started.formatted(clock)
+        if let ended = nap.ended { return "\(start) – \(ended.formatted(clock))" }
+        return "\(start) – now"
+    }
     private var liveHero: some View {
         panel {
             VStack(alignment: .leading, spacing: 8) {
@@ -3389,12 +3622,12 @@ struct ContentView: View {
                         tint: monitor.staleHeartRateDetected && !mirroringNursery ? coral : Color(red: 0.93, green: 0.38, blue: 0.42)
                     )
                     Text(heroHeartRate)
-                        .font(.system(size: 58, weight: .bold, design: .rounded))
+                        .font(.system(size: monitor.wearableCharging ? 34 : 58, weight: .bold, design: .rounded))
                         .monospacedDigit()
-                        .foregroundStyle(monitor.staleHeartRateDetected ? coral : ink)
+                        .foregroundStyle(monitor.wearableCharging ? .orange : (monitor.staleHeartRateDetected ? coral : ink))
                         .minimumScaleFactor(0.5)
                         .lineLimit(1)
-                    if heartRateDisplay != "No reading" {
+                    if heartRateDisplay != "No reading" && heartRateDisplay != "Charging" {
                         Text("bpm").font(.title3.weight(.semibold)).foregroundStyle(muted).padding(.top, 14)
                     }
                     Spacer(minLength: 0)
@@ -3403,7 +3636,7 @@ struct ContentView: View {
                 .onTapGesture { openHistory(.heartRate) }
                 .accessibilityElement(children: .combine)
                 TimelineView(.periodic(from: .now, by: 1)) { context in
-                    Text(readingAge(mirroringNursery ? remoteStamp : monitor.lastHeartRateUpdate, now: context.date))
+                    Text(monitor.wearableCharging && !mirroringNursery ? "Charging" : readingAge(mirroringNursery ? remoteStamp : monitor.lastHeartRateUpdate, now: context.date))
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle((family.viewingRemote && family.linkState != .live) || (monitor.staleHeartRateDetected && !mirroringNursery) ? coral : accentMint)
                 }
@@ -3478,6 +3711,7 @@ struct ContentView: View {
         }
     }
     private var heroHeartRate: String {
+        if heartRateDisplay == "Charging" { return "Charging" }
         if heartRateDisplay == "No reading" { return "—" }
         return heartRateDisplay.replacingOccurrences(of: " bpm", with: "")
     }
@@ -3710,12 +3944,25 @@ struct ContentView: View {
                         Circle()
                             .fill(monitor.connection == .receiving ? accentMint : (connected ? accentMint.opacity(0.55) : muted))
                             .frame(width: 8, height: 8)
-                        Text(monitor.connection.label).foregroundStyle(connected ? accentMint : muted)
+                        Text(monitor.wearableCharging ? "Charging" : monitor.connection.label)
+                            .foregroundStyle(monitor.wearableCharging ? .orange : (connected ? accentMint : muted))
                     }
                     if monitor.connection.isConnected {
                         Text("Signal: \(BluetoothSignal.label(monitor.signalRSSI))").font(.caption).foregroundStyle(muted)
                     }
                     Text(monitor.profile.readingSummary).font(.subheadline)
+                    if connected {
+                        Toggle(isOn: Binding(get: { monitor.bandPowerOn }, set: { monitor.setBandPower(on: $0) })) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Band power").font(.subheadline.weight(.semibold))
+                                Text(monitor.powerReady ? monitor.powerNote : "Waiting for the power command.")
+                                    .font(.caption)
+                                    .foregroundStyle(muted)
+                            }
+                        }
+                        .tint(switchOn)
+                        .disabled(!monitor.powerReady)
+                    }
                 }
             }
             HStack(spacing: 14) { metric("Battery", batteryLabel); metric("Mode", mode.rawValue) }
@@ -3848,6 +4095,12 @@ struct ContentView: View {
             Button("Preview warning") { monitor.previewRemovalSound() }
                 .buttonStyle(.bordered)
             Text("Notifies once, then stays quiet until the band is worn again. It does not keep alarming. It sounds if the band leaves the skin, or the pulse stops for 20 seconds while Bluetooth is still connected. A reading of no pulse notifies once as well. A disconnect stays Connection lost.")
+                .font(.caption).foregroundStyle(muted)
+        } }
+        panel { VStack(alignment: .leading, spacing: 12) {
+            Text("Sleep timer").font(.headline)
+            Toggle("Show sleep on Live and the lock screen", isOn: $sleepTimer).tint(switchOn)
+            Text("Still for 10 minutes starts the time. One movement does not end it. This is stillness, not a medical sleep stage.")
                 .font(.caption).foregroundStyle(muted)
         } }
         panel { VStack(alignment: .leading, spacing: 12) {

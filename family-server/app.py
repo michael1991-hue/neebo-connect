@@ -404,6 +404,7 @@ class ActivityPublish(BaseModel):
     connection: str = Field(max_length=80)
     session: str = Field(default="", max_length=80)
     title: str = Field(default="Nivvi", max_length=80)
+    sleep: str = Field(default="", max_length=40)
 
 
 @asynccontextmanager
@@ -1139,6 +1140,7 @@ def publish_activity(body: ActivityPublish, request: Request):
         "stale": False,
         "alarm": "",
         "title": body.title,
+        "sleep": body.sleep,
     }
     queue_activity(body.secret, state)
     return {"ok": True, "seq": body.seq}
@@ -1163,6 +1165,7 @@ def activity_state(payload, secret):
         "stale": age > 180,
         "alarm": alarm if alarm in ("high", "low") else "",
         "title": "Nivvi",
+        "sleep": str(payload.get("sleep") or "")[:40],
     }
 
 

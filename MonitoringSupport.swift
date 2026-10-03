@@ -862,3 +862,139 @@ struct BackgroundDataReminderPolicy {
     }
     mutating func reset() { self = Self() }
 }
+
+/// Stillness from the band. Sleep is counted only after 10 minutes still, and one twitch does not end it.
+struct SleepNap: Codable, Equatable, Identifiable {
+    var id: UUID
+    var started: Date
+    var ended: Date?
+
+    func length(at time: Date) -> TimeInterval {
+        max(0, (ended ?? time).timeIntervalSince(started))
+    }
+}
+
+struct SleepClock: Equatable {
+    var stillSince: Date?
+    var movingSince: Date?
+    var asleep = false
+    var lastSample: Date?
+    var naps: [SleepNap] = []
+    var docked = false
+
+    static let settle: TimeInterval = 600
+    static let wake: TimeInterval = 60
+    static let fresh: TimeInterval = 180
+
+    mutating func observe(still: Bool, at time: Date) {
+        if let last = lastSample, time.timeIntervalSince(last) > Self.fresh {
+            if asleep, let start = stillSince { finish(start: start, end: last) }
+            stillSince = nil
+            movingSince = nil
+            asleep = false
+        }
+        if let open = naps.last, open.ended == nil, time.timeIntervalSince(open.started) > 14 * 3600 {
+            finish(start: open.started, end: open.started.addingTimeInterval(14 * 3600))
+        }
+        lastSample = time
+        docked = false
+        if still {
+            movingSince = nil
+            if stillSince == nil {
+                if let open = naps.last, open.ended == nil {
+                    stillSince = open.started
+                    asleep = true
+                } else {
+                    stillSince = time
+                }
+            }
+            if !asleep, let start = stillSince, time.timeIntervalSince(start) >= Self.settle {
+                asleep = true
+                begin(at: start)
+            }
+            return
+        }
+        guard stillSince != nil else {
+            movingSince = time
+            asleep = false
+            return
+        }
+        if movingSince == nil { movingSince = time }
+        if let moving = movingSince, time.timeIntervalSince(moving) >= Self.wake {
+            if asleep, let start = stillSince { finish(start: start, end: moving) }
+            asleep = false
+            stillSince = nil
+            movingSince = time
+        }
+    }
+
+    /// Charging is not sleep and not movement. Close an open nap where the dock started.
+    mutating func pause(at time: Date) {
+        if asleep, let start = stillSince { finish(start: start, end: time) }
+        else if let open = naps.last, open.ended == nil { finish(start: open.started, end: time) }
+        stillSince = nil
+        movingSince = nil
+        asleep = false
+        docked = true
+        lastSample = time
+    }
+
+    func face(at time: Date) -> (title: String, duration: String, detail: String) {
+        if lastSample == nil || (lastSample.map { time.timeIntervalSince($0) > Self.fresh } ?? true) {
+            return ("WAITING", "—", lastSample == nil ? "Waiting for the band" : "No stillness update from the band")
+        }
+        if docked { return ("CHARGING", "—", "On the charger") }
+        if asleep, let start = stillSince {
+            return ("ASLEEP", Self.clock(time.timeIntervalSince(start)), "Still since \(start.formatted(date: .omitted, time: .shortened))")
+        }
+        if stillSince != nil {
+            return ("SETTLING", "—", "Still. Sleep time starts after 10 minutes")
+        }
+        return ("AWAKE", "—", "Moving")
+    }
+
+    func logged(on day: Date) -> [SleepNap] {
+        naps.filter { nap in
+            Calendar.current.isDate(nap.started, inSameDayAs: day)
+                || (nap.ended.map { Calendar.current.isDate($0, inSameDayAs: day) } ?? true)
+        }
+    }
+
+    func slept(on day: Date, at time: Date) -> TimeInterval {
+        logged(on: day).reduce(0) { $0 + $1.length(at: time) }
+    }
+
+    var lockLine: String {
+        let shown = face(at: Date())
+        switch shown.title {
+        case "ASLEEP": return "Asleep  \(shown.duration)"
+        case "SETTLING": return "Settling"
+        case "AWAKE": return "Awake"
+        default: return ""
+        }
+    }
+
+    static func clock(_ interval: TimeInterval) -> String {
+        let minutes = max(0, Int(interval) / 60)
+        let hours = minutes / 60
+        let remain = minutes % 60
+        if hours > 0 { return "\(hours)h \(remain)m" }
+        if minutes > 0 { return "\(minutes)m" }
+        return "Just now"
+    }
+
+    private mutating func begin(at start: Date) {
+        if let last = naps.last, last.ended == nil, abs(last.started.timeIntervalSince(start)) < 2 { return }
+        if naps.last?.ended == nil, let index = naps.indices.last { naps[index].ended = start }
+        naps.append(SleepNap(id: UUID(), started: start, ended: nil))
+        let cutoff = Date().addingTimeInterval(-14 * 86400)
+        naps.removeAll { $0.started < cutoff && $0.ended != nil }
+    }
+
+    private mutating func finish(start: Date, end: Date) {
+        guard end >= start else { return }
+        if let index = naps.lastIndex(where: { $0.ended == nil && abs($0.started.timeIntervalSince(start)) < 2 }) {
+            naps[index].ended = end
+        }
+    }
+}
