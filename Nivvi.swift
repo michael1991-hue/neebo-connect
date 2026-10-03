@@ -226,6 +226,8 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     private var readQueue: [CBCharacteristic] = []
     private var measurementCharacteristic: CBCharacteristic?
     private var powerCharacteristic: CBCharacteristic?
+    private var stillnessCharacteristic: CBCharacteristic?
+    private var lastStillnessRead: Date?
     private var lastCustomMeasurement: Date?
     private var transportPolicy = MeasurementTransportPolicy()
     private var retryScan = false
@@ -907,6 +909,11 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         if criticalAlertActive, !alarmAcknowledged, !bandRemoved, !shareAlertSensor, siren?.isPlaying != true, !testingSiren {
             startSiren(loop: true)
         }
+        if connection.isConnected, let c = stillnessCharacteristic, c.properties.contains(.read),
+           lastStillnessRead == nil || Date().timeIntervalSince(lastStillnessRead!) >= 15 {
+            lastStillnessRead = Date()
+            enqueueRead(c)
+        }
         guard let time = measurementTime, Date().timeIntervalSince(time) > HeartRateFreshness.timeout else { return }
         clearLiveValues(resetFreshness: false)
     }
@@ -1247,6 +1254,8 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         readQueue = []; pendingRead = nil; measurementCharacteristic = nil
         powerCharacteristic = nil
         powerReady = false
+        stillnessCharacteristic = nil
+        lastStillnessRead = nil
         lastSample = nil
         if clearBattery {
             clearLiveValues()
@@ -1519,9 +1528,12 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
                 note("Found band power command FFC1")
                 continue
             }
+            if sid == "FFE0" && cid == "FFE4" {
+                stillnessCharacteristic = c
+            }
             log(["event": "characteristic", "service": sid, "uuid": cid, "properties": String(c.properties.rawValue)])
             guard BluetoothPolicy.shouldObserve(service: sid, characteristic: cid) else { continue }
-            if (profile.hasStandardHeartRate || profile.hasPulseOximeter) && sid == "FFE0" { continue }
+            if (profile.hasStandardHeartRate || profile.hasPulseOximeter) && sid == "FFE0" && cid != "FFE4" { continue }
             note("Found \(sid)/\(cid): read=\(c.properties.contains(.read)), notify=\(c.properties.contains(.notify)), indicate=\(c.properties.contains(.indicate)), subscribed=\(c.isNotifying)")
             if sid == "FFE0" && cid == BluetoothPolicy.customMeasurementUUID {
                 measurementCharacteristic = c

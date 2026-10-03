@@ -941,7 +941,7 @@ struct SleepClock: Equatable {
 
     func face(at time: Date) -> (title: String, duration: String, detail: String) {
         if lastSample == nil {
-            return ("WAITING", "—", "Waiting for the band")
+            return ("WAITING", "—", "Waiting for a stillness signal")
         }
         if docked { return ("CHARGING", "—", "On the charger") }
         if asleep, let start = stillSince {
