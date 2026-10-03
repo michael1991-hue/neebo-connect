@@ -78,7 +78,7 @@ final class ChargerSetup: NSObject, ObservableObject, CBCentralManagerDelegate, 
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         status = "Connected. Reading the saved network."
-        peripheral.discoverServices([CBUUID(uuidString: "FFB0")])
+        peripheral.discoverServices([CBUUID(string: "FFB0")])
     }
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
@@ -159,7 +159,10 @@ final class ChargerSetup: NSObject, ObservableObject, CBCentralManagerDelegate, 
     private func isCharger(_ name: String, _ services: [CBUUID]) -> Bool {
         let upper = name.uppercased()
         if upper == "NCO" || upper == "NC0" || upper.contains("CHARGER") { return true }
-        return services.contains { BluetoothPolicy.normalized($0.uuid.uuidString) == "FFB0" }
+        for service in services where BluetoothPolicy.normalized(service.uuid.uuidString) == "FFB0" {
+            return true
+        }
+        return false
     }
 }
 
