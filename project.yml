@@ -7,7 +7,7 @@ settings:
     SWIFT_VERSION: '5.0'
     PRODUCT_BUNDLE_IDENTIFIER: com.michael1991.nivvi
     MARKETING_VERSION: '1.0'
-    CURRENT_PROJECT_VERSION: '171'
+    CURRENT_PROJECT_VERSION: '172'
     CODE_SIGN_STYLE: Automatic
 targets:
   Nivvi:
@@ -19,6 +19,7 @@ targets:
       - path: FamilySharing.swift
       - path: PulseOximetry.swift
       - path: WiFiShare.swift
+      - path: ChargerWiFi.swift
       - path: Atmosphere.swift
       - path: NivviLiveActivity.swift
       - path: LiveActivityPush.swift

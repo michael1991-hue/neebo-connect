@@ -2559,6 +2559,7 @@ struct ContentView: View {
     @State private var skyOffset: CGFloat = 0
     @AppStorage("nivvi.favorite.device.ids") private var favoriteDeviceIDs = ""
     @State private var showFamily = false
+    @State private var showCharger = false
     @State private var lockScreenNote = "Starts a new 8 hours. The card blinks off, then comes back."
     @State private var showProfile = false
     @State private var showSettings = false
@@ -4171,6 +4172,13 @@ struct ContentView: View {
                     }
             }
         }
+        panel {
+            Button { showCharger = true } label: { Label("Charger Wi‑Fi", systemImage: "wifi") }
+            Text("The Neebo charger appears as NCO. Send it your home Wi‑Fi from here.")
+                .font(.caption)
+                .foregroundStyle(muted)
+        }
+        .sheet(isPresented: $showCharger) { ChargerWiFiView() }
         panel { DisclosureGroup("Second iPhone on this Wi‑Fi") {
             VStack(alignment: .leading, spacing: 10) {
                 Toggle("Share from this iPhone", isOn: Binding(get: { wifi.hosting }, set: { wifi.setHosting($0) })).tint(switchOn)
