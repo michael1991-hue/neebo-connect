@@ -3131,10 +3131,10 @@ struct ContentView: View {
                         HStack(spacing: 6) {
                             Text("\(displayName) is asleep")
                                 .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(accentMint)
+                                .foregroundStyle(lavender)
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.7)
-                            sleepZzz
+                            sleepZzz(color: lavender)
                         }
                     } else if let remoteSleep = family.remote?.snapshot?.sleep, !remoteSleep.isEmpty, watchingFamily {
                         Text(remoteSleep)
@@ -3568,13 +3568,17 @@ struct ContentView: View {
                         .font(.headline)
                         .foregroundStyle(ink)
                     Spacer(minLength: 8)
-                    sleepStatusChip(face.title, stage: stage)
                     Toggle("Sleep timer", isOn: $sleepTimer)
                         .labelsHidden()
-                        .tint(lavender)
+                        .tint(stage == 0 ? accentMint : lavender)
                         .accessibilityLabel("Sleep timer")
                 }
                 if sleepTimer {
+                    HStack(spacing: 8) {
+                        sleepTonePill("Active", on: stage == 0, tint: accentMint)
+                        sleepTonePill("Settling", on: stage == 1, tint: Color(red: 0.73, green: 0.78, blue: 0.96))
+                        sleepTonePill("Sleep", on: stage == 2, tint: lavender, zzz: stage == 2)
+                    }
                     Text(sleepAmount(tonight))
                         .font(.system(size: 40, weight: .bold, design: .rounded))
                         .monospacedDigit()
@@ -3623,25 +3627,29 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 LinearGradient(
-                    colors: [lavender.opacity(0.28), lavender.opacity(0.10)],
+                    colors: stage == 0
+                        ? [accentMint.opacity(0.22), accentMint.opacity(0.06)]
+                        : (stage == 1
+                            ? [Color(red: 0.73, green: 0.78, blue: 0.96).opacity(0.28), lavender.opacity(0.08)]
+                            : [lavender.opacity(0.30), lavender.opacity(0.10)]),
                     startPoint: .topLeading,
                     endPoint: .bottomTrailing
                 )
             )
             .clipShape(RoundedRectangle(cornerRadius: 22))
-            .overlay(RoundedRectangle(cornerRadius: 22).stroke(lavender.opacity(0.55), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 22).stroke((stage == 0 ? accentMint : lavender).opacity(0.55), lineWidth: 1))
         }
     }
-    private func sleepStatusChip(_ title: String, stage: Int) -> some View {
+    private func sleepTonePill(_ title: String, on: Bool, tint: Color, zzz: Bool = false) -> some View {
         HStack(spacing: 4) {
-            Text(title == "CHARGING" ? "Charging" : (stage == 2 ? "Sleep" : (stage == 1 ? "Settling" : "Active")))
-            if stage == 2 { sleepZzz(color: Color(red: 0.16, green: 0.12, blue: 0.28)) }
+            Text(title)
+            if zzz { sleepZzz(color: Color(red: 0.16, green: 0.12, blue: 0.28)) }
         }
         .font(.caption.weight(.bold))
-        .foregroundStyle(stage == 2 ? Color(red: 0.16, green: 0.12, blue: 0.28) : ink)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(stage == 2 ? lavender : (stage == 1 ? lavender.opacity(0.45) : Color.white.opacity(0.08)))
+        .foregroundStyle(on ? Color(red: 0.08, green: 0.14, blue: 0.16) : muted)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity)
+        .background(on ? tint : Color.white.opacity(0.06))
         .clipShape(Capsule())
     }
     private func sleepFact(_ title: String, _ value: String) -> some View {
@@ -3662,7 +3670,7 @@ struct ContentView: View {
                 } else {
                     ForEach(Array(spans.enumerated()), id: \.offset) { _, span in
                         Capsule()
-                            .fill(span.kind == .asleep ? lavender : (span.kind == .settling ? lavender.opacity(0.45) : Color.white.opacity(0.16)))
+                            .fill(span.kind == .asleep ? lavender : (span.kind == .settling ? Color(red: 0.73, green: 0.78, blue: 0.96) : accentMint.opacity(0.7)))
                             .frame(width: max(4, geo.size.width * span.length / total))
                     }
                 }
