@@ -2586,6 +2586,7 @@ struct ContentView: View {
     @State private var lastSharedAck = false
     @State private var manualMode: NivviMode?
     @State private var showSleepLog = false
+    @State private var showSleepDetail = false
     @FocusState private var editingLimit: Bool
     private let coral = Color(red: 1, green: 0.56, blue: 0.53)
     private let lavender = Color(red: 0.85, green: 0.82, blue: 1.0)
@@ -3562,101 +3563,125 @@ struct ContentView: View {
             let tonight = monitor.sleep.sleptTonight(at: context.date)
             let spans = monitor.sleep.timeline(at: context.date)
             let awake = spans.filter { $0.kind == .awake }.reduce(0) { $0 + $1.length }
+            let night = monitor.sleep.nightStart(at: context.date)
+            let since = monitor.sleep.naps.filter { ($0.ended ?? context.date) > night }.map(\.started).min()
+            let tone = stage == 0 ? accentMint : lavender
             VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .center, spacing: 8) {
-                    Text("Tonight’s sleep")
-                        .font(.headline)
-                        .foregroundStyle(ink)
-                    Spacer(minLength: 8)
-                    Toggle("Sleep timer", isOn: $sleepTimer)
-                        .labelsHidden()
-                        .tint(stage == 0 ? accentMint : lavender)
-                        .accessibilityLabel("Sleep timer")
-                }
-                if sleepTimer {
-                    HStack(spacing: 8) {
-                        sleepTonePill("Active", on: stage == 0, tint: accentMint)
-                        sleepTonePill("Settling", on: stage == 1, tint: Color(red: 0.73, green: 0.78, blue: 0.96))
-                        sleepTonePill("Sleep", on: stage == 2, tint: lavender, zzz: stage == 2)
-                    }
-                    Text(sleepAmount(tonight))
-                        .font(.system(size: 40, weight: .bold, design: .rounded))
-                        .monospacedDigit()
-                        .foregroundStyle(ink)
-                    if let start = monitor.sleep.sessionStart() {
-                        Text(stage == 1 ? "Settling since \(start.formatted(date: .omitted, time: .shortened))" : "Started \(start.formatted(date: .omitted, time: .shortened))")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(lavender)
-                    }
-                    sleepTimeline(spans)
-                    HStack(spacing: 16) {
-                        if monitor.sleep.lastSample != nil {
-                            sleepFact("Awake", sleepAmount(awake))
-                        }
-                        if let stretch = monitor.sleep.stretch(at: context.date) {
-                            sleepFact("This stretch", sleepAmount(stretch))
-                        }
-                    }
-                    Divider().overlay(lavender.opacity(0.35))
-                    HStack {
-                        Text("Today \(sleepAmount(monitor.sleep.slept(on: context.date, at: context.date)))")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(ink)
-                        Spacer()
-                        Button {
-                            showSleepLog.toggle()
-                        } label: {
-                            HStack(spacing: 4) {
-                                Text("Sleep log")
-                                Image(systemName: showSleepLog ? "chevron.up" : "chevron.right")
-                                    .font(.caption.weight(.bold))
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) { showSleepDetail.toggle() }
+                } label: {
+                    HStack(alignment: .center, spacing: 10) {
+                        Image(systemName: stage == 2 ? "moon.fill" : "moon")
+                            .foregroundStyle(tone)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Tonight’s sleep")
+                                .font(.headline)
+                                .foregroundStyle(ink)
+                            if sleepTimer {
+                                Text(sleepStatus(face.title, stage: stage))
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(tone)
                             }
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(lavender)
                         }
-                        .buttonStyle(.plain)
+                        Spacer(minLength: 8)
+                        if sleepTimer {
+                            Text(sleepAmount(tonight))
+                                .font(.title2.weight(.bold))
+                                .monospacedDigit()
+                                .foregroundStyle(ink)
+                        } else {
+                            Text("Off").font(.subheadline.weight(.semibold)).foregroundStyle(muted)
+                        }
+                        Image(systemName: showSleepDetail ? "chevron.up" : "chevron.down")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(muted)
                     }
-                    if showSleepLog { sleepLog(at: context.date) }
-                } else {
-                    Text("Off. Turn it on to time stillness from the band.")
+                }
+                .buttonStyle(.plain)
+                if showSleepDetail {
+                    if sleepTimer {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(sleepAmount(tonight))
+                                .font(.system(size: 40, weight: .bold, design: .rounded))
+                                .monospacedDigit()
+                                .foregroundStyle(ink)
+                            Spacer()
+                            if let since {
+                                VStack(alignment: .trailing, spacing: 0) {
+                                    Text("Estimated").font(.caption).foregroundStyle(muted)
+                                    Text("since \(since.formatted(date: .omitted, time: .shortened))")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(tone)
+                                }
+                            } else if stage == 1 {
+                                Text("Still. Sleep starts after 10 minutes.")
+                                    .font(.caption)
+                                    .foregroundStyle(muted)
+                                    .multilineTextAlignment(.trailing)
+                            }
+                        }
+                        sleepTimeline(spans)
+                        if let first = spans.first?.start {
+                            HStack {
+                                Text(first.formatted(date: .omitted, time: .shortened))
+                                Spacer()
+                                Text(context.date.formatted(date: .omitted, time: .shortened))
+                            }
+                            .font(.caption)
+                            .foregroundStyle(muted)
+                        }
+                        HStack {
+                            if monitor.sleep.lastSample != nil {
+                                HStack(spacing: 6) {
+                                    Circle().fill(Color(red: 0.86, green: 0.72, blue: 0.45)).frame(width: 8, height: 8)
+                                    Text("\(sleepAmount(awake)) awake").font(.caption).foregroundStyle(muted)
+                                }
+                            }
+                            Spacer()
+                            if let stretch = monitor.sleep.stretch(at: context.date) {
+                                Text("Current stretch \(sleepAmount(stretch))")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(ink)
+                            }
+                        }
+                        Divider().overlay(tone.opacity(0.35))
+                        HStack {
+                            Text("Today \(sleepAmount(monitor.sleep.slept(on: context.date, at: context.date)))")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(ink)
+                            Spacer()
+                            Button {
+                                showSleepLog.toggle()
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Text("Sleep log")
+                                    Image(systemName: showSleepLog ? "chevron.up" : "chevron.right")
+                                        .font(.caption.weight(.bold))
+                                }
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(tone)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        if showSleepLog { sleepLog(at: context.date) }
+                    }
+                    Toggle("Sleep timer", isOn: $sleepTimer)
                         .font(.subheadline)
-                        .foregroundStyle(muted)
+                        .tint(tone)
                 }
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                LinearGradient(
-                    colors: stage == 0
-                        ? [accentMint.opacity(0.22), accentMint.opacity(0.06)]
-                        : (stage == 1
-                            ? [Color(red: 0.73, green: 0.78, blue: 0.96).opacity(0.28), lavender.opacity(0.08)]
-                            : [lavender.opacity(0.30), lavender.opacity(0.10)]),
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-            )
+            .background(showSleepDetail && stage == 2 ? lavender.opacity(0.16) : cardFill)
             .clipShape(RoundedRectangle(cornerRadius: 22))
-            .overlay(RoundedRectangle(cornerRadius: 22).stroke((stage == 0 ? accentMint : lavender).opacity(0.55), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 22).stroke(showSleepDetail && stage != 0 ? lavender.opacity(0.45) : cardStroke, lineWidth: 1))
         }
     }
-    private func sleepTonePill(_ title: String, on: Bool, tint: Color, zzz: Bool = false) -> some View {
-        HStack(spacing: 4) {
-            Text(title)
-            if zzz { sleepZzz(color: Color(red: 0.16, green: 0.12, blue: 0.28)) }
-        }
-        .font(.caption.weight(.bold))
-        .foregroundStyle(on ? Color(red: 0.08, green: 0.14, blue: 0.16) : muted)
-        .padding(.vertical, 7)
-        .frame(maxWidth: .infinity)
-        .background(on ? tint : Color.white.opacity(0.06))
-        .clipShape(Capsule())
-    }
-    private func sleepFact(_ title: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title).font(.caption).foregroundStyle(muted)
-            Text(value).font(.subheadline.weight(.semibold)).foregroundStyle(ink)
-        }
+    private func sleepStatus(_ title: String, stage: Int) -> String {
+        if title == "CHARGING" { return "Charging" }
+        if stage == 2 { return "Asleep now" }
+        if stage == 1 { return "Settling" }
+        return "Active"
     }
     private func sleepAmount(_ interval: TimeInterval) -> String {
         interval < 60 ? "0m" : SleepClock.clock(interval)
@@ -3670,7 +3695,7 @@ struct ContentView: View {
                 } else {
                     ForEach(Array(spans.enumerated()), id: \.offset) { _, span in
                         Capsule()
-                            .fill(span.kind == .asleep ? lavender : (span.kind == .settling ? Color(red: 0.73, green: 0.78, blue: 0.96) : accentMint.opacity(0.7)))
+                            .fill(span.kind == .asleep ? lavender : (span.kind == .settling ? lavender.opacity(0.45) : Color(red: 0.86, green: 0.72, blue: 0.45)))
                             .frame(width: max(4, geo.size.width * span.length / total))
                     }
                 }
