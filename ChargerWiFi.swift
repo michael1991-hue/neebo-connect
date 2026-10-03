@@ -164,7 +164,8 @@ final class ChargerSetup: NSObject, ObservableObject, CBCentralManagerDelegate, 
 struct ChargerWiFiView: View {
     @StateObject private var charger = ChargerSetup()
     @Environment(\.dismiss) private var dismiss
-    @State private var name = ""
+    @State private var typed = ""
+    @State private var chosen = ""
     @State private var password = ""
 
     var body: some View {
@@ -172,17 +173,31 @@ struct ChargerWiFiView: View {
             Form {
                 Section("Charger") {
                     Text(charger.status)
-                    if !charger.network.isEmpty {
-                        Text("Saved on the charger: \(charger.network)")
-                    }
                 }
-                Section("Home Wi‑Fi") {
-                    TextField("Network name", text: $name)
+                Section {
+                    if !charger.network.isEmpty {
+                        Button {
+                            choose(charger.network)
+                        } label: {
+                            Label(charger.network, systemImage: chosen == charger.network ? "wifi" : "wifi")
+                        }
+                    }
+                    TextField("Other network name", text: $typed)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                    SecureField("Password", text: $password)
-                    Button("Send to charger") { charger.send(network: name, password: password) }
-                        .disabled(!charger.ready || name.trimmingCharacters(in: .whitespaces).isEmpty || password.isEmpty)
+                    Button("Use this name") { choose(typed) }
+                        .disabled(typed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                } header: {
+                    Text("Choose a network")
+                } footer: {
+                    Text("The iPhone is not allowed to list nearby Wi‑Fi. Choose the network already on the charger, or type the name. The password is asked next.")
+                }
+                if !chosen.isEmpty {
+                    Section("Password for \(chosen)") {
+                        SecureField("Password", text: $password)
+                        Button("Send to charger") { charger.send(network: chosen, password: password) }
+                            .disabled(!charger.ready || password.isEmpty)
+                    }
                 }
                 Section {
                     Text("The charger appears as NCO. The password is sent to the charger and is not kept in Nivvi. Readings are not sent to the charger’s cloud.")
@@ -199,9 +214,13 @@ struct ChargerWiFiView: View {
             }
             .onAppear { charger.start() }
             .onDisappear { charger.stop() }
-            .onChange(of: charger.network) { value in
-                if name.isEmpty { name = value }
-            }
         }
+    }
+
+    private func choose(_ value: String) {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        chosen = trimmed
+        password = ""
     }
 }
