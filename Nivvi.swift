@@ -3960,16 +3960,10 @@ struct ContentView: View {
                     }
                     Text(monitor.profile.readingSummary).font(.subheadline)
                     if connected {
-                        Toggle(isOn: Binding(get: { monitor.bandPowerOn }, set: { monitor.setBandPower(on: $0) })) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Band power").font(.subheadline.weight(.semibold))
-                                Text(monitor.powerReady ? monitor.powerNote : "Waiting for the power command.")
-                                    .font(.caption)
-                                    .foregroundStyle(muted)
-                            }
-                        }
-                        .tint(switchOn)
-                        .disabled(!monitor.powerReady)
+                        Toggle("Band on/off", isOn: Binding(get: { monitor.bandPowerOn }, set: { monitor.setBandPower(on: $0) }))
+                            .font(.subheadline.weight(.semibold))
+                            .tint(switchOn)
+                            .disabled(!monitor.powerReady)
                     }
                 }
             }
