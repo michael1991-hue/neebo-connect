@@ -3568,7 +3568,8 @@ struct ContentView: View {
                 if sleepTimer {
                     TimelineView(.periodic(from: .now, by: 30)) { context in
                         let face = monitor.sleep.face(at: context.date)
-                        if face.title == "ASLEEP" {
+                        let stage = sleepStage(face.title)
+                        if stage == 2 {
                             HStack(spacing: 6) {
                                 Text("\(displayName) is asleep")
                                     .font(.subheadline.weight(.semibold))
@@ -3578,17 +3579,25 @@ struct ContentView: View {
                                 sleepZzz
                             }
                         }
-                        Text(face.title == "ASLEEP" ? "ASLEEP" : (face.title == "SETTLING" ? "SETTLING" : (face.title == "AWAKE" ? "AWAKE" : (face.title == "CHARGING" ? "CHARGING" : "SLEEP"))))
-                            .font(.caption.weight(.bold))
-                            .tracking(1.1)
-                            .foregroundStyle(accentMint)
-                        Text(face.title == "ASLEEP" ? face.duration : (face.title == "AWAKE" ? "Awake" : (face.title == "SETTLING" ? "Settling" : (face.title == "CHARGING" ? "Charging" : "—"))))
-                            .font(.system(size: 40, weight: .bold, design: .rounded))
-                            .monospacedDigit()
-                            .foregroundStyle(ink)
-                        Text(face.detail)
-                            .font(.subheadline)
-                            .foregroundStyle(muted)
+                        HStack(spacing: 8) {
+                            sleepStagePill("Active", on: stage == 0)
+                            sleepStagePill("Settling", on: stage == 1)
+                            sleepStagePill("Sleep", on: stage == 2, zzz: stage == 2)
+                        }
+                        if stage == 2 {
+                            Text(face.duration)
+                                .font(.system(size: 40, weight: .bold, design: .rounded))
+                                .monospacedDigit()
+                                .foregroundStyle(ink)
+                        } else if face.title == "CHARGING" {
+                            Text("Charging")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.orange)
+                        } else if stage == 1 {
+                            Text("Still. Sleep starts after 10 minutes.")
+                                .font(.caption)
+                                .foregroundStyle(muted)
+                        }
                         sleepLog(at: context.date)
                     }
                 } else {
@@ -3599,23 +3608,44 @@ struct ContentView: View {
             }
         }
     }
-    private var sleepZzz: some View {
+    private func sleepStage(_ title: String) -> Int {
+        switch title {
+        case "SETTLING": return 1
+        case "ASLEEP": return 2
+        case "CHARGING": return -1
+        default: return 0
+        }
+    }
+    private func sleepStagePill(_ title: String, on: Bool, zzz: Bool = false) -> some View {
+        HStack(spacing: 4) {
+            Text(title)
+            if zzz { sleepZzz(color: Color(red: 0.08, green: 0.14, blue: 0.16)) }
+        }
+        .font(.caption.weight(.bold))
+        .foregroundStyle(on ? Color(red: 0.08, green: 0.14, blue: 0.16) : muted)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity)
+        .background(on ? accentMint : Color.white.opacity(0.06))
+        .clipShape(Capsule())
+    }
+    private var sleepZzz: some View { sleepZzz(color: accentMint) }
+    private func sleepZzz(color: Color) -> some View {
         TimelineView(.animation(minimumInterval: 1.0 / 15, paused: reduceMotion)) { context in
             HStack(alignment: .lastTextBaseline, spacing: 0) {
-                zLetter("z", at: context.date, delay: 0, size: 15)
-                zLetter("z", at: context.date, delay: 0.45, size: 19)
-                zLetter("Z", at: context.date, delay: 0.9, size: 24)
+                zLetter("z", at: context.date, delay: 0, size: 15, color: color)
+                zLetter("z", at: context.date, delay: 0.45, size: 19, color: color)
+                zLetter("Z", at: context.date, delay: 0.9, size: 24, color: color)
             }
             .accessibilityHidden(true)
         }
     }
-    private func zLetter(_ text: String, at time: Date, delay: TimeInterval, size: CGFloat) -> some View {
+    private func zLetter(_ text: String, at time: Date, delay: TimeInterval, size: CGFloat, color: Color) -> some View {
         let cycle = reduceMotion ? 0 : (time.timeIntervalSinceReferenceDate + delay).truncatingRemainder(dividingBy: 2.4)
         let rise = min(1, cycle / 1.5)
         let fade = cycle < 1.5 ? 0.35 + 0.65 * rise : max(0.2, 1 - (cycle - 1.5) / 0.9)
         return Text(text)
             .font(.system(size: size, weight: .bold, design: .rounded))
-            .foregroundStyle(accentMint)
+            .foregroundStyle(color)
             .opacity(reduceMotion ? 1 : fade)
             .offset(y: reduceMotion ? 0 : -8 * rise)
     }
