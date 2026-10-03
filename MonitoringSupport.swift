@@ -969,7 +969,7 @@ struct SleepClock: Equatable {
         switch shown.title {
         case "ASLEEP": return "Asleep  \(shown.duration)"
         case "SETTLING": return "Settling"
-        case "AWAKE": return "Awake"
+        case "AWAKE": return "Active"
         default: return ""
         }
     }

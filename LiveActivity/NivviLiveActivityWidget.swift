@@ -31,7 +31,7 @@ struct NivviLiveActivityWidget: Widget {
                     if !context.state.sleep.isEmpty {
                         Text(context.state.sleep)
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(Color(red: 0.45, green: 0.86, blue: 0.74))
+                            .foregroundStyle(sleepTint(context.state.sleep))
                     }
                     Text(lockCaption(context))
                         .font(.caption)
@@ -84,12 +84,12 @@ struct NivviLiveActivityWidget: Widget {
             }
             if !context.state.sleep.isEmpty {
                 HStack(spacing: 8) {
-                    Image(systemName: "moon.fill")
+                    Image(systemName: sleepIcon(context.state.sleep))
                         .font(.subheadline)
-                        .foregroundStyle(Color(red: 0.45, green: 0.86, blue: 0.74))
+                        .foregroundStyle(sleepTint(context.state.sleep))
                     Text(context.state.sleep)
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(Color(red: 0.45, green: 0.86, blue: 0.74))
+                        .foregroundStyle(sleepTint(context.state.sleep))
                         .lineLimit(1)
                     Spacer(minLength: 0)
                 }
@@ -102,6 +102,14 @@ struct NivviLiveActivityWidget: Widget {
         .activitySystemActionForegroundColor(.white)
     }
 
+    private func sleepTint(_ line: String) -> Color {
+        if line.hasPrefix("Asleep") { return Color(red: 0.85, green: 0.82, blue: 1) }
+        if line.hasPrefix("Settling") { return Color(red: 0.73, green: 0.78, blue: 0.96) }
+        return Color(red: 0.45, green: 0.86, blue: 0.74)
+    }
+    private func sleepIcon(_ line: String) -> String {
+        line.hasPrefix("Asleep") || line.hasPrefix("Settling") ? "moon.fill" : "figure.walk"
+    }
     private func readingColumn(icon: String, tint: Color, value: String, unit: String, caption: String, alert: Bool) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
