@@ -983,6 +983,73 @@ struct SleepClock: Equatable {
         return "Just now"
     }
 
+    struct Span: Equatable {
+        enum Kind { case awake, settling, asleep }
+        var start: Date
+        var end: Date
+        var kind: Kind
+        var length: TimeInterval { max(0, end.timeIntervalSince(start)) }
+    }
+
+    func nightStart(at time: Date) -> Date {
+        let calendar = Calendar.current
+        let day = calendar.startOfDay(for: time)
+        let hour = calendar.component(.hour, from: time)
+        let base = hour >= 19 ? day : (calendar.date(byAdding: .day, value: -1, to: day) ?? day)
+        return calendar.date(bySettingHour: 19, minute: 0, second: 0, of: base) ?? base
+    }
+
+    func sleptTonight(at time: Date) -> TimeInterval {
+        let start = nightStart(at: time)
+        return naps.reduce(0) { sum, nap in
+            let end = min(time, nap.ended ?? time)
+            let from = max(start, nap.started)
+            return sum + max(0, end.timeIntervalSince(from))
+        }
+    }
+
+    func sessionStart() -> Date? {
+        if asleep { return naps.last(where: { $0.ended == nil })?.started ?? stillSince }
+        return stillSince
+    }
+
+    func stretch(at time: Date) -> TimeInterval? {
+        guard asleep, let start = sessionStart() else { return nil }
+        return max(0, time.timeIntervalSince(start))
+    }
+
+    func timeline(at time: Date) -> [Span] {
+        guard let lastSample else { return [] }
+        let window = nightStart(at: time)
+        var marks = [lastSample, window]
+        if let stillSince { marks.append(stillSince) }
+        if let first = naps.map(\.started).min() { marks.append(first) }
+        let origin = max(window, marks.filter { $0 <= time }.min() ?? window)
+        guard time > origin else { return [] }
+        var cursor = origin
+        var spans: [Span] = []
+        let sleeps = naps.compactMap { nap -> (Date, Date)? in
+            let end = min(time, nap.ended ?? time)
+            let start = max(origin, nap.started)
+            guard end > start else { return nil }
+            return (start, end)
+        }.sorted { $0.0 < $1.0 }
+        for (start, end) in sleeps {
+            if start > cursor { spans.append(Span(start: cursor, end: start, kind: .awake)) }
+            let from = max(cursor, start)
+            if end > from { spans.append(Span(start: from, end: end, kind: .asleep)) }
+            cursor = max(cursor, end)
+        }
+        if !asleep, let still = stillSince, still < time {
+            let from = max(cursor, still)
+            if from > cursor { spans.append(Span(start: cursor, end: from, kind: .awake)) }
+            if time > from { spans.append(Span(start: from, end: time, kind: .settling)) }
+            cursor = time
+        }
+        if cursor < time { spans.append(Span(start: cursor, end: time, kind: .awake)) }
+        return spans.filter { $0.length > 0 }
+    }
+
     private mutating func begin(at start: Date) {
         if let last = naps.last, last.ended == nil, abs(last.started.timeIntervalSince(start)) < 2 { return }
         if naps.last?.ended == nil, let index = naps.indices.last { naps[index].ended = start }
