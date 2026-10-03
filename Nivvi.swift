@@ -514,7 +514,8 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         let alarm = alarmKind.map { $0 == .high ? "high" : "low" } ?? (bandRemoved ? "removed" : (staleHeartRateDetected ? "sensor" : "none"))
         let hrKey = hr.map { MetricText.number($0) } ?? "-"
         let oxKey = ox.map { MetricText.number($0) } ?? "-"
-        let key = "\(alarm)|\(connection.rawValue)|\(hrKey)|\(oxKey)"
+        let sleepLine = sleepShareLine
+        let key = "\(alarm)|\(connection.rawValue)|\(hrKey)|\(oxKey)|\(sleepLine)"
         if key == lastFamilyUploadKey, let last = lastFamilyUploadAt, now.timeIntervalSince(last) < 1 {
             return
         }
@@ -537,6 +538,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             battery: battery,
             charging: wearableCharging,
             skin: skinCelsius,
+            sleep: sleepLine.isEmpty ? nil : sleepLine,
             alerts: heartAlertsToShare()
         )
         Task { @MainActor in FamilyRelay.shared.capture(snapshot) }
@@ -878,6 +880,15 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     var sleepLockLine: String {
         let enabled = UserDefaults.standard.object(forKey: "nivvi.sleep.enabled") as? Bool ?? true
         return enabled ? sleep.lockLine : ""
+    }
+    var sleepShareLine: String {
+        let enabled = UserDefaults.standard.object(forKey: "nivvi.sleep.enabled") as? Bool ?? true
+        guard enabled else { return "" }
+        switch sleep.face(at: Date()).title {
+        case "ASLEEP": return sleep.lockLine
+        case "SETTLING": return "Settling"
+        default: return ""
+        }
     }
     private func expireMeasurements() {
         defer { publishFamilySnapshot() }
@@ -3112,6 +3123,12 @@ struct ContentView: View {
                                 .minimumScaleFactor(0.7)
                             sleepZzz
                         }
+                    } else if let remoteSleep = family.remote?.snapshot?.sleep, !remoteSleep.isEmpty, watchingFamily {
+                        Text(remoteSleep)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(accentMint)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
                     }
                 }
                 Spacer()

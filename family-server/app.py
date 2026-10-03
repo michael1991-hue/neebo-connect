@@ -382,6 +382,7 @@ class Snapshot(BaseModel):
     battery: str | None = Field(default=None, max_length=20)
     charging: bool | None = None
     skin: float | None = None
+    sleep: str = Field(default="", max_length=40)
     alerts: list[FamilyAlertPoint] = Field(default_factory=list, max_length=40)
 
 
