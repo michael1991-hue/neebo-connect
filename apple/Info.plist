@@ -19,7 +19,7 @@
 		<string>iPhoneOS</string>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>173</string>
+	<string>174</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>NSSupportsLiveActivitiesFrequentUpdates</key>
@@ -32,6 +32,8 @@
 	<string>16.0</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Nivvi uses location only to read the name of the Wi-Fi this iPhone is already joined to, so it can be offered to the charger. It is not used to track where you are.</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Connect to a compatible Bluetooth device to receive readings, save history and check enabled alerts, including while you use another app or lock your iPhone.</string>
 	<key>NSLocalNetworkUsageDescription</key>

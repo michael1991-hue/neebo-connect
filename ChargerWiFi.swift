@@ -1,5 +1,7 @@
 import SwiftUI
 import CoreBluetooth
+import CoreLocation
+import NetworkExtension
 
 /// The Neebo charger advertises as NCO and keeps the home network on FFB0.
 /// FFB1 is the network name, FFB2 is the write-only password, FFB3 is its reply.
@@ -163,6 +165,7 @@ final class ChargerSetup: NSObject, ObservableObject, CBCentralManagerDelegate, 
 
 struct ChargerWiFiView: View {
     @StateObject private var charger = ChargerSetup()
+    @StateObject private var phone = PhoneNetwork()
     @Environment(\.dismiss) private var dismiss
     @State private var typed = ""
     @State private var chosen = ""
@@ -175,11 +178,16 @@ struct ChargerWiFiView: View {
                     Text(charger.status)
                 }
                 Section {
+                    if !phone.name.isEmpty {
+                        Button { choose(phone.name) } label: {
+                            Label("This iPhone is on \(phone.name)", systemImage: "iphone")
+                        }
+                    } else if !phone.note.isEmpty {
+                        Text(phone.note).font(.footnote).foregroundStyle(.secondary)
+                    }
                     if !charger.network.isEmpty {
-                        Button {
-                            choose(charger.network)
-                        } label: {
-                            Label(charger.network, systemImage: chosen == charger.network ? "wifi" : "wifi")
+                        Button { choose(charger.network) } label: {
+                            Label("Saved on the charger: \(charger.network)", systemImage: "wifi")
                         }
                     }
                     TextField("Other network name", text: $typed)
@@ -190,7 +198,7 @@ struct ChargerWiFiView: View {
                 } header: {
                     Text("Choose a network")
                 } footer: {
-                    Text("The iPhone is not allowed to list nearby Wi‑Fi. Choose the network already on the charger, or type the name. The password is asked next.")
+                    Text("The password is asked after you choose. It is sent to the charger and is not kept in Nivvi.")
                 }
                 if !chosen.isEmpty {
                     Section("Password for \(chosen)") {
@@ -198,11 +206,6 @@ struct ChargerWiFiView: View {
                         Button("Send to charger") { charger.send(network: chosen, password: password) }
                             .disabled(!charger.ready || password.isEmpty)
                     }
-                }
-                Section {
-                    Text("The charger appears as NCO. The password is sent to the charger and is not kept in Nivvi. Readings are not sent to the charger’s cloud.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
                 }
             }
             .navigationTitle("Charger Wi‑Fi")
@@ -212,7 +215,10 @@ struct ChargerWiFiView: View {
                     Button("Done") { charger.stop(); dismiss() }
                 }
             }
-            .onAppear { charger.start() }
+            .onAppear {
+                charger.start()
+                phone.look()
+            }
             .onDisappear { charger.stop() }
         }
     }
@@ -222,5 +228,44 @@ struct ChargerWiFiView: View {
         guard !trimmed.isEmpty else { return }
         chosen = trimmed
         password = ""
+    }
+}
+
+private final class PhoneNetwork: NSObject, ObservableObject, CLLocationManagerDelegate {
+    @Published var name = ""
+    @Published var note = ""
+    private let location = CLLocationManager()
+
+    func look() {
+        location.delegate = self
+        switch location.authorizationStatus {
+        case .authorizedAlways, .authorizedWhenInUse:
+            read()
+        case .notDetermined:
+            location.requestWhenInUseAuthorization()
+        default:
+            note = "Allow Location for Nivvi so it can see the Wi‑Fi this iPhone is on."
+        }
+    }
+
+    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        switch manager.authorizationStatus {
+        case .authorizedAlways, .authorizedWhenInUse:
+            read()
+        case .denied, .restricted:
+            note = "Allow Location for Nivvi so it can see the Wi‑Fi this iPhone is on."
+        default:
+            break
+        }
+    }
+
+    private func read() {
+        NEHotspotNetwork.fetchCurrent { [weak self] network in
+            DispatchQueue.main.async {
+                let ssid = network?.ssid ?? ""
+                self?.name = ssid
+                self?.note = ssid.isEmpty ? "This iPhone did not share the Wi‑Fi name. You can still type it." : ""
+            }
+        }
     }
 }
