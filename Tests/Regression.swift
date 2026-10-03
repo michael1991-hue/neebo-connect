@@ -97,6 +97,7 @@ check(invalid.heartRate == nil && invalid.oxygen == nil, "clear candidates when 
 let partial = BluetoothPolicy.customFrame(Data([0,0,0,0,0,99,0,0,1]))
 check(partial.heartRate == nil && partial.oxygen == 99, "validate each field independently")
 check(BluetoothPolicy.stillness(Data([0x01])) == true, "FFE4 01 is still")
+check(BluetoothPolicy.stillness(Data([0x02])) == true, "FFE4 02 is still")
 check(BluetoothPolicy.stillness(Data([0x00])) == false, "FFE4 00 is movement")
 check(BluetoothPolicy.stillness(Data([0x04])) == nil, "FFE4 04 is not stillness")
 check(BluetoothPolicy.bandFlag(Data([0x04])) == .charging, "FFE4 04 is charging")
