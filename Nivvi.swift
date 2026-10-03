@@ -181,7 +181,7 @@ enum BluetoothPolicy {
         default: return nil
         }
     }
-    /// FFE4 on the band: 0x02 is still, 0x01 is also still, 0x00 is movement, 0x04 is charging.
+    /// FFE4 on the band: 0x02 is still, 0x00 and 0x01 are movement, 0x04 is charging.
     static func stillness(_ data: Data) -> Bool? {
         switch bandFlag(data) {
         case .still: return true
@@ -193,8 +193,8 @@ enum BluetoothPolicy {
     static func bandFlag(_ data: Data) -> BandFlag? {
         guard data.count == 1 else { return nil }
         switch data[0] {
-        case 0: return .moving
-        case 1, 2: return .still
+        case 0, 1: return .moving
+        case 2: return .still
         case 4: return .charging
         default: return nil
         }
