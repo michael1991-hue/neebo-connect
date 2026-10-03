@@ -887,7 +887,7 @@ struct SleepClock: Equatable {
     static let fresh: TimeInterval = 180
 
     mutating func observe(still: Bool, at time: Date) {
-        if let last = lastSample, time.timeIntervalSince(last) > Self.fresh {
+        if let last = lastSample, time.timeIntervalSince(last) > Self.fresh, !still {
             if asleep, let start = stillSince { finish(start: start, end: last) }
             stillSince = nil
             movingSince = nil
@@ -940,8 +940,8 @@ struct SleepClock: Equatable {
     }
 
     func face(at time: Date) -> (title: String, duration: String, detail: String) {
-        if lastSample == nil || (lastSample.map { time.timeIntervalSince($0) > Self.fresh } ?? true) {
-            return ("WAITING", "—", lastSample == nil ? "Waiting for the band" : "No stillness update from the band")
+        if lastSample == nil {
+            return ("WAITING", "—", "Waiting for the band")
         }
         if docked { return ("CHARGING", "—", "On the charger") }
         if asleep, let start = stillSince {
