@@ -3088,14 +3088,21 @@ struct ContentView: View {
     }
 
     private var liveHeader: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                avatarBadge(size: 52, symbolSize: .title2)
-                VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 10) {
+                avatarBadge(size: 44, symbolSize: .title3)
+                VStack(alignment: .leading, spacing: 0) {
                     TimelineView(.periodic(from: .now, by: 60)) { context in
-                        Text(timeGreeting(at: context.date)).font(.subheadline.weight(.semibold)).foregroundStyle(muted)
+                        Text(timeGreeting(at: context.date)).font(.caption.weight(.semibold)).foregroundStyle(muted)
                     }
-                    Text(displayName).font(.system(size: 34, weight: .bold, design: .rounded)).foregroundStyle(ink)
+                    Text(displayName).font(.system(size: 28, weight: .bold, design: .rounded)).foregroundStyle(ink)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                    if !ageText.isEmpty {
+                        Text(childGender == "Prefer not to say" ? ageText : "\(ageText) · \(childGender)")
+                            .font(.caption2)
+                            .foregroundStyle(muted)
+                    }
                     if sleepTimer && monitor.sleep.asleep {
                         HStack(spacing: 6) {
                             Text("\(displayName) is asleep")
@@ -3110,18 +3117,18 @@ struct ContentView: View {
                 Spacer()
                 headerButtons
             }
-            HStack(alignment: .top, spacing: 10) {
-                Circle().fill(situationColor).frame(width: 11, height: 11).padding(.top, 4)
+            HStack(alignment: .center, spacing: 8) {
+                Circle().fill(situationColor).frame(width: 8, height: 8)
                 Text(situationLine).font(.subheadline.weight(.bold)).foregroundStyle(ink)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                Spacer(minLength: 6)
                 Text(mode == .day ? "Day" : "Night").font(.caption.weight(.semibold))
                     .foregroundStyle(mode == .day ? ink : .white)
                     .padding(.horizontal, 10).padding(.vertical, 5)
                     .background(mode == .day ? Color.white.opacity(0.78) : Color.white.opacity(0.16))
                     .clipShape(Capsule())
             }
-            if !ageText.isEmpty { Text(childGender == "Prefer not to say" ? ageText : "\(ageText) · \(childGender)").font(.caption).foregroundStyle(muted) }
             if watchingFamily, !frequentLockScreenUpdates {
                 Text("Turn on Settings → Nivvi → Live Activities → More Frequent Updates. Notifications being on is not enough, and the lock screen will lag without it.")
                     .font(.caption.weight(.semibold)).foregroundStyle(coral)
@@ -3129,10 +3136,10 @@ struct ContentView: View {
             hostPicker
             if family.signedIn { familySendBanner }
             if monitor.lowPowerMode {
-                Text("Low Power Mode is on. Turn it off so Nivvi can keep reading overnight.")
+                Text("Turn off Low Power Mode so readings keep coming.")
                     .font(.caption.weight(.semibold)).foregroundStyle(coral)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
             }
             if localHeartLive || watchingFamily || watchingWifi || NivviLiveActivityBridge.cardRunning {
                 Button { refreshLockScreen() } label: {
@@ -3140,7 +3147,7 @@ struct ContentView: View {
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(Color(red: 0.08, green: 0.14, blue: 0.16))
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
+                        .padding(.vertical, 8)
                         .background(accentMint)
                         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 }
@@ -3175,10 +3182,11 @@ struct ContentView: View {
                 }
             }
         } else if localHeartLive {
-            Text("Band is live here. Family won’t see it until you tap I’m with \(displayName) — start monitoring.")
+            Text("Tap I'm with \(displayName) to share.")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(coral)
-                .fixedSize(horizontal: false, vertical: true)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
@@ -3306,7 +3314,7 @@ struct ContentView: View {
                 let who = FamilyRelation.display(hostRelation) ?? "You"
                 return who == "You" ? "You are monitoring." : "\(who) is monitoring."
             }
-            if family.signedIn { return "The band is connected here. Family cannot see it yet." }
+            if family.signedIn { return "Connected. Not shared yet." }
             return "You are monitoring."
         }
         if watchingFamily {
@@ -3416,15 +3424,15 @@ struct ContentView: View {
                 hostDraft = FamilyRelation.display(hostRelation) ?? ""
                 editingHost = true
             } label: {
-                HStack(spacing: 8) {
+                HStack(spacing: 6) {
                     Image(systemName: "person.fill")
                     Text(FamilyRelation.display(hostRelation) ?? "Type")
-                        .font(.title3.weight(.bold))
-                    Image(systemName: "pencil").font(.caption.weight(.bold))
+                        .font(.subheadline.weight(.bold))
+                    Image(systemName: "pencil").font(.caption2.weight(.bold))
                 }
                 .foregroundStyle(accentMint)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 8)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
                 .background(accentMint.opacity(0.16))
                 .clipShape(Capsule())
             }
