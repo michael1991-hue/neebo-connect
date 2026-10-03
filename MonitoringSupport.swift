@@ -1020,7 +1020,7 @@ struct SleepClock: Equatable {
 
     func timeline(at time: Date) -> [Span] {
         guard let lastSample else { return [] }
-        let window = nightStart(at: time)
+        let window = Calendar.current.startOfDay(for: time)
         var marks = [lastSample, window]
         if let stillSince { marks.append(stillSince) }
         if let first = naps.map(\.started).min() { marks.append(first) }

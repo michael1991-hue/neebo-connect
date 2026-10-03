@@ -3560,11 +3560,11 @@ struct ContentView: View {
         TimelineView(.periodic(from: .now, by: 30)) { context in
             let face = monitor.sleep.face(at: context.date)
             let stage = sleepStage(face.title)
-            let tonight = monitor.sleep.sleptTonight(at: context.date)
+            let today = monitor.sleep.slept(on: context.date, at: context.date)
             let spans = monitor.sleep.timeline(at: context.date)
             let awake = spans.filter { $0.kind == .awake }.reduce(0) { $0 + $1.length }
-            let night = monitor.sleep.nightStart(at: context.date)
-            let since = monitor.sleep.naps.filter { ($0.ended ?? context.date) > night }.map(\.started).min()
+            let day = Calendar.current.startOfDay(for: context.date)
+            let since = monitor.sleep.naps.filter { ($0.ended ?? context.date) > day && $0.started < context.date }.map(\.started).min()
             let tone = stage == 0 ? accentMint : lavender
             VStack(alignment: .leading, spacing: 12) {
                 Button {
@@ -3574,7 +3574,7 @@ struct ContentView: View {
                         Image(systemName: stage == 2 ? "moon.fill" : "moon")
                             .foregroundStyle(tone)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Tonight’s sleep")
+                            Text("Sleep")
                                 .font(.headline)
                                 .foregroundStyle(ink)
                             if sleepTimer {
@@ -3585,7 +3585,7 @@ struct ContentView: View {
                         }
                         Spacer(minLength: 8)
                         if sleepTimer {
-                            Text(sleepAmount(tonight))
+                            Text(sleepAmount(today))
                                 .font(.title2.weight(.bold))
                                 .monospacedDigit()
                                 .foregroundStyle(ink)
@@ -3601,7 +3601,7 @@ struct ContentView: View {
                 if showSleepDetail {
                     if sleepTimer {
                         HStack(alignment: .firstTextBaseline) {
-                            Text(sleepAmount(tonight))
+                            Text(sleepAmount(today))
                                 .font(.system(size: 40, weight: .bold, design: .rounded))
                                 .monospacedDigit()
                                 .foregroundStyle(ink)
@@ -3646,7 +3646,7 @@ struct ContentView: View {
                         }
                         Divider().overlay(tone.opacity(0.35))
                         HStack {
-                            Text("Today \(sleepAmount(monitor.sleep.slept(on: context.date, at: context.date)))")
+                            Text("Today \(sleepAmount(today))")
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(ink)
                             Spacer()
@@ -3702,7 +3702,7 @@ struct ContentView: View {
             }
         }
         .frame(height: 12)
-        .accessibilityLabel("Sleep and waking through tonight")
+        .accessibilityLabel("Sleep and waking today")
     }
     private func sleepStage(_ title: String) -> Int {
         switch title {
