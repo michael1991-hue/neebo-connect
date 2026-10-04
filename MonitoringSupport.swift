@@ -882,6 +882,7 @@ struct SleepClock: Equatable {
     var lastSample: Date?
     var naps: [SleepNap] = []
     var docked = false
+    var offWrist = false
     var sleepRates: [Int] = []
     var learnedPulse: Int?
     var restlessSince: Date?
@@ -907,6 +908,7 @@ struct SleepClock: Equatable {
         }
         lastSample = time
         docked = false
+        offWrist = false
         if still {
             movingSince = nil
             restlessSince = nil
@@ -1006,11 +1008,40 @@ struct SleepClock: Equatable {
         lastSample = time
     }
 
+    /// The band reported it is off the wrist. Close any open sleep without calling it charging.
+    mutating func removed(at time: Date) {
+        if asleep, let start = stillSince { finish(start: start, end: time) }
+        else if let open = naps.last, open.ended == nil { finish(start: open.started, end: time) }
+        stillSince = nil
+        movingSince = nil
+        restlessSince = nil
+        raisedSince = nil
+        asleep = false
+        docked = false
+        offWrist = true
+        lastSample = time
+    }
+
+    /// 01 from the band is active. End sleep immediately. A twitch rule does not apply.
+    mutating func markActive(at time: Date) {
+        if asleep, let start = stillSince { finish(start: start, end: time) }
+        else if let open = naps.last, open.ended == nil { finish(start: open.started, end: time) }
+        stillSince = nil
+        movingSince = time
+        restlessSince = nil
+        raisedSince = nil
+        asleep = false
+        docked = false
+        offWrist = false
+        lastSample = time
+    }
+
     func face(at time: Date) -> (title: String, duration: String, detail: String) {
         if lastSample == nil {
             return ("WAITING", "—", "Waiting for a stillness signal")
         }
         if docked { return ("CHARGING", "—", "On the charger") }
+        if offWrist { return ("REMOVED", "—", "Band off") }
         if asleep, let start = stillSince {
             return ("ASLEEP", Self.clock(time.timeIntervalSince(start)), "Still since \(start.formatted(date: .omitted, time: .shortened))")
         }

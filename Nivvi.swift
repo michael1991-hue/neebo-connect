@@ -181,7 +181,7 @@ enum BluetoothPolicy {
         default: return nil
         }
     }
-    /// FFE4 on the band: 0x02 is still, 0x00 and 0x01 are movement, 0x04 is charging.
+    /// FFE4 on the band: 0x00 is removed, 0x01 is active, 0x02 is still, 0x04 is charging.
     static func stillness(_ data: Data) -> Bool? {
         switch bandFlag(data) {
         case .still: return true
@@ -189,11 +189,12 @@ enum BluetoothPolicy {
         default: return nil
         }
     }
-    enum BandFlag { case still, moving, charging }
+    enum BandFlag: Equatable { case removed, moving, still, charging }
     static func bandFlag(_ data: Data) -> BandFlag? {
         guard data.count == 1 else { return nil }
         switch data[0] {
-        case 0, 1: return .moving
+        case 0: return .removed
+        case 1: return .moving
         case 2: return .still
         case 4: return .charging
         default: return nil
@@ -387,6 +388,8 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     @Published private(set) var bandPowerOn = true
     @Published private(set) var powerReady = false
     @Published private(set) var powerNote = "Off sends 01. On sends 00."
+    @Published private(set) var bandPowerCooldown = false
+    private var bandPowerUnlocked: DispatchWorkItem?
     private var chargePolicy = WearableChargePolicy()
     private var batteryPolicy = WearableBatteryPolicy()
     private var batteryFromStandard = false
@@ -1558,6 +1561,10 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         refreshBackgroundDelivery()
     }
     func setBandPower(on: Bool) {
+        guard !bandPowerCooldown else {
+            powerNote = "Wait 30 seconds before switching again."
+            return
+        }
         guard let p = peripheral, p.state == .connected, let c = powerCharacteristic else {
             powerNote = "Reconnect the band, then try again."
             return
@@ -1568,6 +1575,11 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         bandPowerOn = on
         powerNote = on ? "Sent on (00)." : "Sent off (01)."
         note("Wrote band power \(on ? "on 00" : "off 01")")
+        bandPowerCooldown = true
+        bandPowerUnlocked?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.bandPowerCooldown = false }
+        bandPowerUnlocked = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: work)
     }
     func peripheral(_ p: CBPeripheral, didWriteValueFor c: CBCharacteristic, error: Error?) {
         guard owns(p), c === powerCharacteristic else { return }
@@ -1670,10 +1682,22 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
                 var clock = sleep
                 clock.pause(at: Date())
                 sleep = clock
-            case .still, .moving:
-                if wearableCharging { applyCharging(false) }
+            case .removed:
                 var clock = sleep
-                clock.observe(still: flag == .still, at: Date(), heartRate: freshSleepRate)
+                clock.removed(at: Date())
+                sleep = clock
+                noteBandRemoved()
+            case .moving:
+                if wearableCharging { applyCharging(false) }
+                if bandRemoved { noteBandWorn() }
+                var clock = sleep
+                clock.markActive(at: Date())
+                sleep = clock
+            case .still:
+                if wearableCharging { applyCharging(false) }
+                if bandRemoved { noteBandWorn() }
+                var clock = sleep
+                clock.observe(still: true, at: Date(), heartRate: freshSleepRate)
                 sleep = clock
             }
             pushLockScreen()
@@ -3695,6 +3719,7 @@ struct ContentView: View {
     }
     private func sleepStatus(_ title: String, stage: Int) -> String {
         if title == "CHARGING" { return "Charging" }
+        if title == "REMOVED" { return "Band off" }
         if stage == 2 { return "Asleep now" }
         if stage == 1 { return "Settling" }
         return "Active"
@@ -4120,7 +4145,7 @@ struct ContentView: View {
                         Toggle("Band on/off", isOn: Binding(get: { monitor.bandPowerOn }, set: { monitor.setBandPower(on: $0) }))
                             .font(.subheadline.weight(.semibold))
                             .tint(switchOn)
-                            .disabled(!monitor.powerReady)
+                            .disabled(!monitor.powerReady || monitor.bandPowerCooldown)
                     }
                 }
             }
