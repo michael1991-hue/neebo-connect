@@ -125,7 +125,7 @@ def post(body):
 
 def listen():
     sock = socket.create_connection((MQTT_HOST, MQTT_PORT), timeout=10)
-    sock.settimeout(None)
+    sock.settimeout(20)
     sock.sendall(connect_packet())
     kind, _ = read_packet(sock)
     if kind != 0x20:
@@ -133,7 +133,11 @@ def listen():
     sock.sendall(subscribe_packet())
     print(f"Listening on {MQTT_HOST}:{MQTT_PORT}", flush=True)
     while True:
-        kind, packet = read_packet(sock)
+        try:
+            kind, packet = read_packet(sock)
+        except socket.timeout:
+            sock.sendall(b"\xc0\x00")
+            continue
         if kind & 0xF0 != 0x30:
             continue
         raw = payload_of(packet)
