@@ -994,6 +994,79 @@ def publish(family: str, body: Snapshot, user=Depends(require_user)):
     return {"ok": True, "seq": payload["seq"], "server_received": now}
 
 
+class ChargerReading(BaseModel):
+    serial: str = Field(default="", max_length=40)
+    heart_rate: float | None = None
+    heart_state: int | None = None
+    oxygen: float | None = None
+    oxygen_state: int | None = None
+    temperature: float | None = None
+    battery: int | None = None
+
+
+@app.post("/internal/charger")
+def charger_reading(body: ChargerReading, request: Request):
+    """The home charger posts here. A fresh phone reading is left alone."""
+    secret = os.environ.get("NIVVI_CHARGER_SECRET", "")
+    given = request.headers.get("x-nivvi-charger", "")
+    if not secret or not hmac.compare_digest(given, secret):
+        raise HTTPException(404, "Not found")
+    if body.heart_state not in (None, 0) or body.heart_rate is None or not 1 <= body.heart_rate <= 250:
+        return {"ok": True, "skipped": "no pulse"}
+    oxygen = body.oxygen if body.oxygen_state in (None, 0) and body.oxygen is not None and 1 <= body.oxygen <= 100 else None
+    if oxygen is not None and oxygen > 99:
+        oxygen = 99
+    skin = body.temperature if body.temperature is not None and 10 <= body.temperature <= 45 else None
+    battery = f"{body.battery}%" if body.battery is not None and 0 <= body.battery <= 100 else None
+    now = time.time()
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        wanted = os.environ.get("NIVVI_CHARGER_FAMILY", "")
+        if wanted:
+            family = c.execute("SELECT id FROM families WHERE id=?", (wanted,)).fetchone()
+        else:
+            rows = c.execute("SELECT id FROM families").fetchall()
+            family = rows[0] if len(rows) == 1 else None
+        if family is None:
+            raise HTTPException(409, "Charger is not linked to one family")
+        family_id = family["id"]
+        previous = c.execute("SELECT payload FROM latest WHERE family=?", (family_id,)).fetchone()
+        old = json.loads(previous[0]) if previous else {}
+        stamp = old.get("heart_rate_at") or old.get("captured") or 0
+        if old.get("source") != "charger" and old.get("heart_rate") and stamp and now - float(stamp) < 25:
+            return {"ok": True, "skipped": "phone"}
+        point = {"t": now, "hr": body.heart_rate, "o2": oxygen, "sk": skin}
+        history = [item for item in (old.get("history") or []) if isinstance(item, dict)]
+        history.append(point)
+        payload = {
+            "captured": now,
+            "heart_rate": body.heart_rate,
+            "heart_rate_at": now,
+            "oxygen": oxygen if oxygen is not None else old.get("oxygen"),
+            "oxygen_at": now if oxygen is not None else old.get("oxygen_at"),
+            "source": "charger",
+            "alarm": "none",
+            "connection": "receiving",
+            "history": history[-120:],
+            "stream_id": "charger",
+            "seq": int(old.get("seq") or 0) + 1,
+            "kind": "live",
+            "acknowledged": False,
+            "host_relation": "Charger",
+            "battery": battery or old.get("battery"),
+            "charging": False,
+            "skin": skin if skin is not None else old.get("skin"),
+            "sleep": "",
+            "server_received": now,
+        }
+        c.execute("INSERT OR REPLACE INTO latest VALUES(?,?,?)", (family_id, json.dumps(payload), now))
+    live = {key: value for key, value in payload.items() if key != "history"}
+    live["type"] = "live"
+    live["kind"] = "live"
+    HUB.emit(family_id, live)
+    return {"ok": True, "seq": payload["seq"], "server_received": now}
+
+
 @app.post("/families/{family}/ack")
 def acknowledge_alarm(family: str, user=Depends(require_user)):
     with db() as c:
