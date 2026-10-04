@@ -2582,6 +2582,20 @@ struct HistoryChartsView: View {
     }
 }
 
+private enum SettingsPage: String, Identifiable {
+    case alerts, band, sounds, wifi, help
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .alerts: return "Heart-rate alerts"
+        case .band: return "Band"
+        case .sounds: return "Alert sounds"
+        case .wifi: return "Same Wi‑Fi"
+        case .help: return "Help"
+        }
+    }
+}
+
 struct ContentView: View {
     @ObservedObject var monitor: Monitor
     @StateObject private var wifi = WiFiRelay.shared
@@ -2605,6 +2619,7 @@ struct ContentView: View {
     @State private var lockScreenNote = "Starts a new 8 hours. The card blinks off, then comes back."
     @State private var showProfile = false
     @State private var showSettings = false
+    @State private var settingsPage: SettingsPage?
     @State private var historySpan = 1
     @State private var reportExport: URL?
     @State private var editingNote: SavedEvent?
@@ -2994,6 +3009,15 @@ struct ContentView: View {
                     .background((mode == .night ? Color(red: 0.02, green: 0.13, blue: 0.23) : Color(red: 0.969, green: 0.980, blue: 1.0)).ignoresSafeArea())
                     .navigationTitle("Settings")
                     .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showSettings = false } } }
+            }
+        }
+        .sheet(item: $settingsPage) { page in
+            NavigationStack {
+                ScrollView { settingsDetail(page).padding(20) }
+                    .background((mode == .night ? Color(red: 0.02, green: 0.13, blue: 0.23) : Color(red: 0.969, green: 0.980, blue: 1.0)).ignoresSafeArea())
+                    .navigationTitle(page.title)
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { settingsPage = nil } } }
             }
         }
         .sheet(item: $captureRequest) { request in
@@ -4237,18 +4261,31 @@ struct ContentView: View {
                 settingsLink("Family sharing", "Live numbers on another iPhone", "person.2.fill") { showFamily = true }
                 Divider()
                 settingsLink("Charger", "Home Wi‑Fi for the NCO dock", "wifi") { showCharger = true }
+                Divider()
+                settingsLink("Heart-rate alerts", configuredRangeLabel, "heart.text.square") { settingsPage = .alerts }
+                Divider()
+                settingsLink("Band", monitor.removalAlertEnabled ? "Removed alert on" : "Removed alert off", "applewatch") { settingsPage = .band }
+                Divider()
+                settingsLink("Alert sounds", "Siren and recovery", "speaker.wave.2") { settingsPage = .sounds }
+                Divider()
+                settingsLink("Same Wi‑Fi", "Another iPhone in the house", "wifi.router") { settingsPage = .wifi }
+                Divider()
+                settingsLink("Help", "Family, devices, privacy", "questionmark.circle") { settingsPage = .help }
             }
         }
-        panel { VStack(alignment: .leading, spacing: 10) {
-            Text("Heart-rate alerts").font(.headline)
-            if wifi.following {
-                Text("Change limits on the phone next to the band.")
-                    .font(.caption).foregroundStyle(muted)
-            }
-            HStack { Label("Low", systemImage: "arrow.down.heart"); Spacer(); Text(monitor.alarmSettings.lowEnabled ? monitor.alarmSettings.lowThreshold.map { "Below \($0)" } ?? "Set" : "Off").font(.subheadline.weight(.semibold)) }.foregroundStyle(coral)
-            HStack { Text("In range"); Spacer(); Text(configuredRangeLabel).font(.subheadline.weight(.semibold)) }.foregroundStyle(accentMint)
-            HStack { Label("High", systemImage: "arrow.up.heart"); Spacer(); Text(monitor.alarmSettings.highEnabled ? monitor.alarmSettings.highThreshold.map { "Above \($0)" } ?? "Set" : "Off").font(.subheadline.weight(.semibold)) }.foregroundStyle(coral)
-            DisclosureGroup("Adjust limits") { VStack(alignment: .leading, spacing: 12) {
+        Text("Nivvi \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—") · \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")")
+            .font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity)
+    } }
+    @ViewBuilder private func settingsDetail(_ page: SettingsPage) -> some View {
+        switch page {
+        case .alerts:
+            panel { VStack(alignment: .leading, spacing: 12) {
+                if wifi.following {
+                    Text("Change limits on the phone next to the band.").font(.caption).foregroundStyle(muted)
+                }
+                HStack { Label("Low", systemImage: "arrow.down.heart"); Spacer(); Text(monitor.alarmSettings.lowEnabled ? monitor.alarmSettings.lowThreshold.map { "Below \($0)" } ?? "Set" : "Off").font(.subheadline.weight(.semibold)) }.foregroundStyle(coral)
+                HStack { Text("In range"); Spacer(); Text(configuredRangeLabel).font(.subheadline.weight(.semibold)) }.foregroundStyle(accentMint)
+                HStack { Label("High", systemImage: "arrow.up.heart"); Spacer(); Text(monitor.alarmSettings.highEnabled ? monitor.alarmSettings.highThreshold.map { "Above \($0)" } ?? "Set" : "Off").font(.subheadline.weight(.semibold)) }.foregroundStyle(coral)
                 if monitor.profile == .custom {
                     Text("Mapped readings need checking before alarms.").font(.caption)
                     Toggle("Alarms for mapped readings", isOn: $monitor.experimentalCustomAlarms).tint(switchOn)
@@ -4271,67 +4308,60 @@ struct ContentView: View {
                 Stepper("Hold for \(monitor.alarmSettings.durationSeconds) seconds", value: $monitor.alarmSettings.durationSeconds, in: 5...120, step: 5)
                 if let message = monitor.alarmSettings.validationMessage { Text(message).font(.caption).foregroundStyle(coral) }
                 Text("It must stay past the limit for that long. A gap starts the timer again.").font(.caption).foregroundStyle(muted)
-            }.padding(.top, 8) }
-        } }
-        panel { VStack(alignment: .leading, spacing: 12) {
-            Text("Band").font(.headline)
-            Toggle("Band removed alert", isOn: $monitor.removalAlertEnabled).tint(switchOn)
-                .onChange(of: monitor.removalAlertEnabled) { enabled in if enabled { monitor.requestNotificationPermission() } }
-            TextField("Message", text: $monitor.removalMessage, axis: .vertical)
-                .lineLimit(2...3)
-            Picker("Warning sound", selection: $monitor.removalSound) {
-                ForEach(NivviRelief.allCases) { Text($0.title).tag($0) }
-            }
-            Button("Preview warning") { monitor.previewRemovalSound() }
-                .buttonStyle(.bordered)
-            Text("Sounds once if the band leaves the skin, or the pulse stops for 20 seconds. It stays quiet until the band is worn again.")
-                .font(.caption).foregroundStyle(muted)
-            Divider()
-            Toggle("Temperature in Fahrenheit", isOn: $skinFahrenheit).tint(switchOn)
-        } }
-        panel { DisclosureGroup("Alert sounds") { VStack(alignment: .leading, spacing: 12) {
-            Text("The siren plays in the app on Silent. A lock-screen banner can still be quiet.")
-                .font(.caption).foregroundStyle(muted)
-            Picker("Siren", selection: $monitor.selectedSiren) {
-                ForEach(NivviSiren.allCases) { Text($0.title).tag($0) }
-            }
-            Picker("Recovery", selection: $monitor.selectedRelief) {
-                ForEach(NivviRelief.allCases) { Text($0.title).tag($0) }
-            }
-            Button(monitor.testingSiren ? "Stop test" : "Test siren") { monitor.testSiren() }
-                .buttonStyle(.borderedProminent).tint(coral).disabled(monitor.criticalAlertActive)
-            Button("Preview recovery") { monitor.testRecoverySound() }
-                .buttonStyle(.bordered).disabled(monitor.criticalAlertActive)
-            Button("Test notification") { monitor.testNotification() }.buttonStyle(.bordered)
-            Text(monitor.soundStatus).font(.caption)
-            Text(monitor.notificationStatus).font(.caption)
-        }.padding(.top, 8) } }
-        panel { DisclosureGroup("Same Wi‑Fi") { VStack(alignment: .leading, spacing: 10) {
-            Toggle("Share from this iPhone", isOn: Binding(get: { wifi.hosting }, set: { wifi.setHosting($0) })).tint(switchOn)
-            if wifi.hosting {
-                Text(wifi.pin).font(.system(size: 28, weight: .bold, design: .rounded)).monospacedDigit()
-                Button("Copy code") { UIPasteboard.general.string = wifi.pin }
-            }
-            TextField("Code from the other phone", text: Binding(get: { wifi.joinPin }, set: { wifi.setJoinPin($0) }))
-                .keyboardType(.numberPad)
-                .font(.title3.monospacedDigit())
-            Toggle("Follow that phone", isOn: Binding(get: { wifi.following }, set: { wifi.setFollowing($0) })).tint(switchOn)
-            Toggle("Play its alerts here", isOn: $wifi.playAlerts).tint(switchOn)
-            Text(wifi.status).font(.caption).foregroundStyle(muted)
-            Text("Same house only. Another house uses Family sharing.")
-                .font(.caption).foregroundStyle(muted)
-        }.padding(.top, 8) } }
-        panel { DisclosureGroup("Help") { VStack(alignment: .leading, spacing: 14) {
-            helpBlock("Family", "The phone next to the band taps Start a family and shows a 6-letter code. Everyone else types that code, then Follow. Whoever is with them taps I’m with them.")
-            helpBlock("Devices", "Standard Bluetooth heart-rate bands work, including some pulse oximeters and original Neebo bands. Apple Watch and Fitbit usually will not appear.")
-            helpBlock("Waiting", "Bluetooth is linked, but no heart-rate packet has arrived. The band needs to be on the skin and not connected to another app.")
-            helpBlock("History", "About one reading every 30 seconds, kept on this iPhone for 30 days.")
-            helpBlock("Privacy", "No account is needed. Family sharing sends the live numbers to family.nivvi.app. Notes stay on this iPhone. nivvi.app/privacy")
-            helpBlock("Terms", "A family test, not a medical monitor. hello.nivvi@outlook.com. nivvi.app/terms")
-        }.padding(.top, 8) } }
-        Text("Nivvi \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—") · \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")")
-            .font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity)
-    } }
+            } }
+        case .band:
+            panel { VStack(alignment: .leading, spacing: 12) {
+                Toggle("Band removed alert", isOn: $monitor.removalAlertEnabled).tint(switchOn)
+                    .onChange(of: monitor.removalAlertEnabled) { enabled in if enabled { monitor.requestNotificationPermission() } }
+                TextField("Message", text: $monitor.removalMessage, axis: .vertical).lineLimit(2...3)
+                Picker("Warning sound", selection: $monitor.removalSound) {
+                    ForEach(NivviRelief.allCases) { Text($0.title).tag($0) }
+                }
+                Button("Preview warning") { monitor.previewRemovalSound() }.buttonStyle(.bordered)
+                Text("Sounds once if the band leaves the skin, or the pulse stops for 20 seconds. It stays quiet until the band is worn again.")
+                    .font(.caption).foregroundStyle(muted)
+                Divider()
+                Toggle("Temperature in Fahrenheit", isOn: $skinFahrenheit).tint(switchOn)
+            } }
+        case .sounds:
+            panel { VStack(alignment: .leading, spacing: 12) {
+                Text("The siren plays in the app on Silent. A lock-screen banner can still be quiet.")
+                    .font(.caption).foregroundStyle(muted)
+                Picker("Siren", selection: $monitor.selectedSiren) { ForEach(NivviSiren.allCases) { Text($0.title).tag($0) } }
+                Picker("Recovery", selection: $monitor.selectedRelief) { ForEach(NivviRelief.allCases) { Text($0.title).tag($0) } }
+                Button(monitor.testingSiren ? "Stop test" : "Test siren") { monitor.testSiren() }
+                    .buttonStyle(.borderedProminent).tint(coral).disabled(monitor.criticalAlertActive)
+                Button("Preview recovery") { monitor.testRecoverySound() }.buttonStyle(.bordered).disabled(monitor.criticalAlertActive)
+                Button("Test notification") { monitor.testNotification() }.buttonStyle(.bordered)
+                Text(monitor.soundStatus).font(.caption)
+                Text(monitor.notificationStatus).font(.caption)
+            } }
+        case .wifi:
+            panel { VStack(alignment: .leading, spacing: 12) {
+                Toggle("Share from this iPhone", isOn: Binding(get: { wifi.hosting }, set: { wifi.setHosting($0) })).tint(switchOn)
+                if wifi.hosting {
+                    Text(wifi.pin).font(.system(size: 28, weight: .bold, design: .rounded)).monospacedDigit()
+                    Button("Copy code") { UIPasteboard.general.string = wifi.pin }
+                }
+                TextField("Code from the other phone", text: Binding(get: { wifi.joinPin }, set: { wifi.setJoinPin($0) }))
+                    .keyboardType(.numberPad)
+                    .font(.title3.monospacedDigit())
+                Toggle("Follow that phone", isOn: Binding(get: { wifi.following }, set: { wifi.setFollowing($0) })).tint(switchOn)
+                Toggle("Play its alerts here", isOn: $wifi.playAlerts).tint(switchOn)
+                Text(wifi.status).font(.caption).foregroundStyle(muted)
+                Text("Same house only. Another house uses Family sharing.").font(.caption).foregroundStyle(muted)
+            } }
+        case .help:
+            panel { VStack(alignment: .leading, spacing: 14) {
+                helpBlock("Family", "The phone next to the band taps Start a family and shows a 6-letter code. Everyone else types that code, then Follow. Whoever is with them taps I’m with them.")
+                helpBlock("Devices", "Standard Bluetooth heart-rate bands work, including some pulse oximeters and original Neebo bands. Apple Watch and Fitbit usually will not appear.")
+                helpBlock("Waiting", "Bluetooth is linked, but no heart-rate packet has arrived. The band needs to be on the skin and not connected to another app.")
+                helpBlock("History", "About one reading every 30 seconds, kept on this iPhone for 30 days.")
+                helpBlock("Privacy", "No account is needed. Family sharing sends the live numbers to family.nivvi.app. Notes stay on this iPhone. nivvi.app/privacy")
+                helpBlock("Terms", "A family test, not a medical monitor. hello.nivvi@outlook.com. nivvi.app/terms")
+            } }
+        }
+    }
     private func settingsLink(_ title: String, _ detail: String, _ icon: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 12) {
