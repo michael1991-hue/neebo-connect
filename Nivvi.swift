@@ -2684,11 +2684,14 @@ struct ContentView: View {
     }
     private var watchingFamily: Bool { family.viewingRemote && !localHeartLive && !bandHere }
     private var watchingWifi: Bool { wifi.following && !watchingFamily && !localHeartLive && !bandHere }
+    private var feedLive: Bool {
+        localHeartLive || bandHere || (watchingFamily && family.linkState == .live) || (watchingWifi && wifi.remoteFresh)
+    }
     private var heartRateDisplay: String {
         if watchingFamily {
+            guard family.linkState == .live else { return "No reading" }
             if family.remote?.snapshot?.charging == true { return "Charging" }
             if let remote = family.liveHeartRate { return remote }
-            if let value = family.remote?.snapshot?.heart_rate { return "\(Int(value.rounded())) bpm" }
             return "No reading"
         }
         if watchingWifi, wifi.remoteFresh, let remote = wifi.latest {
@@ -2701,6 +2704,7 @@ struct ContentView: View {
     }
     private var batteryLabel: String {
         if watchingFamily {
+            guard family.linkState == .live else { return "Waiting" }
             let remote = family.remote?.snapshot?.battery ?? ""
             if family.remote?.snapshot?.charging == true {
                 return remote.isEmpty || remote == "—" ? "Charging" : "Charging · \(remote)"
@@ -2725,11 +2729,9 @@ struct ContentView: View {
     }
     private var oxygenDisplay: String {
         if watchingFamily {
+            guard family.linkState == .live else { return "No reading" }
             if family.remote?.snapshot?.charging == true { return "Charging" }
             if let remote = family.liveOxygen { return remote }
-            if let value = family.remote?.snapshot?.oxygen, let shown = OxygenReading.clamp(value) {
-                return "\(Int(shown.rounded()))%"
-            }
             return "No reading"
         }
         if watchingWifi, wifi.remoteFresh, let remote = wifi.latest {
@@ -3177,7 +3179,7 @@ struct ContentView: View {
                                 .minimumScaleFactor(0.7)
                             sleepZzz(color: lavender)
                         }
-                    } else if let remoteSleep = family.remote?.snapshot?.sleep, !remoteSleep.isEmpty, watchingFamily {
+                    } else if let remoteSleep = family.remote?.snapshot?.sleep, !remoteSleep.isEmpty, watchingFamily, family.linkState == .live {
                         Text(remoteSleep)
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(accentMint)
@@ -3212,7 +3214,7 @@ struct ContentView: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
             }
-            if localHeartLive || watchingFamily || watchingWifi || NivviLiveActivityBridge.cardRunning {
+            if feedLive || NivviLiveActivityBridge.cardRunning {
                 Button { refreshLockScreen() } label: {
                     Text("Refresh lock screen")
                         .font(.subheadline.weight(.semibold))
@@ -3393,13 +3395,15 @@ struct ContentView: View {
             switch family.linkState {
             case .live: return "\(who) is monitoring."
             case .sensorDisconnected: return "The band is not connected."
-            default: return "Not receiving. Check the phone next to the band."
+            default: return "No phone is connected. Connect the band, or open Family sharing."
             }
         }
         if watchingWifi {
             return wifi.remoteFresh ? "You are watching on this Wi‑Fi." : "The band is not connected."
         }
-        if monitor.connection == .idle || monitor.connection == .bluetoothOff { return "The band is not connected." }
+        if monitor.connection == .idle || monitor.connection == .bluetoothOff {
+            return "Connect the band, or open Family sharing."
+        }
         if monitor.wearableCharging { return "The band is charging." }
         return monitor.connection.label
     }
@@ -3408,7 +3412,7 @@ struct ContentView: View {
         return ActivityAuthorizationInfo().frequentPushesEnabled
     }
     private var situationColor: Color {
-        if situationLine.contains("not connected") || situationLine.contains("Not receiving") || situationLine.contains("cannot see") || situationLine.contains("alarm") {
+        if situationLine.contains("not connected") || situationLine.contains("No phone") || situationLine.contains("Connect the band") || situationLine.contains("cannot see") || situationLine.contains("alarm") {
             return coral
         }
         if situationLine.contains("charging") { return .orange }
@@ -3817,6 +3821,24 @@ struct ContentView: View {
     private var liveHero: some View {
         panel {
             VStack(alignment: .leading, spacing: 8) {
+                if !feedLive {
+                    Text("Nothing is connected").font(.headline).foregroundStyle(ink)
+                    Text("Connect the band on this phone, or open Family sharing on the phone that stays with them.")
+                        .font(.subheadline)
+                        .foregroundStyle(muted)
+                    HStack(spacing: 10) {
+                        Button { tab = 3 } label: {
+                            Text("Connect band").font(.subheadline.weight(.semibold)).frame(maxWidth: .infinity).padding(12)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(coral)
+                        Button { showFamily = true } label: {
+                            Text("Family sharing").font(.subheadline.weight(.semibold)).frame(maxWidth: .infinity).padding(12)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(accentMint)
+                    }
+                } else {
                 Text("Heart rate").font(.caption.weight(.bold)).tracking(1.1).foregroundStyle(muted)
                 HStack(alignment: .center, spacing: 12) {
                     PulsingHeart(
@@ -3890,11 +3912,12 @@ struct ContentView: View {
                     .buttonStyle(.plain)
                     .accessibilityHint("Opens skin temperature history")
                 }
+                }
             }
         }
     }
     private var displayedSkin: Double? {
-        if watchingFamily { return family.remote?.snapshot?.skin }
+        if watchingFamily, family.linkState == .live { return family.remote?.snapshot?.skin }
         if watchingWifi { return wifi.latest?.skinCelsius }
         return monitor.skinCelsius
     }
