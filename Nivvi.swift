@@ -3603,29 +3603,27 @@ struct ContentView: View {
             let today = monitor.sleep.slept(on: context.date, at: context.date)
             let spans = monitor.sleep.timeline(at: context.date)
             let awake = spans.filter { $0.kind == .awake }.reduce(0) { $0 + $1.length }
-            let day = Calendar.current.startOfDay(for: context.date)
-            let since = monitor.sleep.naps.filter { ($0.ended ?? context.date) > day && $0.started < context.date }.map(\.started).min()
             let tone = stage == 0 ? accentMint : lavender
             VStack(alignment: .leading, spacing: 12) {
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) { showSleepDetail.toggle() }
                 } label: {
                     HStack(alignment: .center, spacing: 10) {
-                        Image(systemName: stage == 2 ? "moon.fill" : "moon")
+                        Image(systemName: stage == 2 ? "moon.fill" : (stage == 0 ? "figure.walk" : "moon"))
                             .foregroundStyle(tone)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Sleep")
+                            Text(sleepHeading(face.title))
                                 .font(.headline)
                                 .foregroundStyle(ink)
-                            if sleepTimer {
-                                Text(sleepStatus(face.title, stage: stage))
+                            if sleepTimer, stage != 2 {
+                                Text(stage == 0 ? "Slept today" : sleepStatus(face.title, stage: stage))
                                     .font(.caption.weight(.semibold))
                                     .foregroundStyle(tone)
                             }
                         }
                         Spacer(minLength: 8)
                         if sleepTimer {
-                            Text(sleepAmount(today))
+                            Text(sleepAmount(stage == 2 ? (monitor.sleep.stretch(at: context.date) ?? today) : today))
                                 .font(.title2.weight(.bold))
                                 .monospacedDigit()
                                 .foregroundStyle(ink)
@@ -3641,15 +3639,15 @@ struct ContentView: View {
                 if showSleepDetail {
                     if sleepTimer {
                         HStack(alignment: .firstTextBaseline) {
-                            Text(sleepAmount(today))
+                            Text(sleepAmount(stage == 2 ? (monitor.sleep.stretch(at: context.date) ?? today) : today))
                                 .font(.system(size: 40, weight: .bold, design: .rounded))
                                 .monospacedDigit()
                                 .foregroundStyle(ink)
                             Spacer()
-                            if let since {
+                            if stage == 2, let start = monitor.sleep.sessionStart() {
                                 VStack(alignment: .trailing, spacing: 0) {
-                                    Text("Estimated").font(.caption).foregroundStyle(muted)
-                                    Text("since \(since.formatted(date: .omitted, time: .shortened))")
+                                    Text("Asleep").font(.caption).foregroundStyle(muted)
+                                    Text("since \(start.formatted(date: .omitted, time: .shortened))")
                                         .font(.caption.weight(.semibold))
                                         .foregroundStyle(tone)
                                 }
@@ -3658,6 +3656,10 @@ struct ContentView: View {
                                     .font(.caption)
                                     .foregroundStyle(muted)
                                     .multilineTextAlignment(.trailing)
+                            } else if stage == 0 {
+                                Text("Awake now")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(tone)
                             }
                         }
                         sleepTimeline(spans)
@@ -3715,6 +3717,16 @@ struct ContentView: View {
             .background(showSleepDetail && stage == 2 ? lavender.opacity(0.16) : cardFill)
             .clipShape(RoundedRectangle(cornerRadius: 22))
             .overlay(RoundedRectangle(cornerRadius: 22).stroke(showSleepDetail && stage != 0 ? lavender.opacity(0.45) : cardStroke, lineWidth: 1))
+        }
+    }
+    private func sleepHeading(_ title: String) -> String {
+        switch title {
+        case "ASLEEP": return "Asleep"
+        case "SETTLING": return "Settling"
+        case "CHARGING": return "Charging"
+        case "REMOVED": return "Band off"
+        case "WAITING": return "Sleep"
+        default: return "Awake"
         }
     }
     private func sleepStatus(_ title: String, stage: Int) -> String {
