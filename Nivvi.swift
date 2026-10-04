@@ -3109,6 +3109,7 @@ struct ContentView: View {
                     }
             }
         }
+        .sheet(isPresented: $showCharger) { ChargerWiFiView() }
         .sheet(isPresented: $showParentNote) {
             NavigationStack {
                 Form {
@@ -4228,171 +4229,130 @@ struct ContentView: View {
         return "Not configured"
     }
 
-    private var settings: some View { VStack(alignment: .leading, spacing: 16) {
+    private var settings: some View { VStack(alignment: .leading, spacing: 14) {
+        panel {
+            VStack(spacing: 4) {
+                settingsLink("Child profile", "\(displayName)\(ageText.isEmpty ? "" : " · \(ageText)")", "person.crop.circle") { showProfile = true }
+                Divider()
+                settingsLink("Family sharing", "Live numbers on another iPhone", "person.2.fill") { showFamily = true }
+                Divider()
+                settingsLink("Charger", "Home Wi‑Fi for the NCO dock", "wifi") { showCharger = true }
+            }
+        }
         panel { VStack(alignment: .leading, spacing: 10) {
-            HStack { Label("Child profile", systemImage: "person.crop.circle"); Spacer(); Button("Edit") { showProfile = true }.buttonStyle(.bordered) }
-            Text("\(displayName)\(ageText.isEmpty ? "" : " · \(ageText)")").font(.headline)
-            Text("Stored on this iPhone by default.").font(.caption).foregroundStyle(muted)
-        } }
-        panel {
-            Button { showFamily = true } label: { Label("Family sharing", systemImage: "person.2.fill") }
-            Text("Watch live readings on another iPhone — at home, Nan’s, or when you’re out.")
-                .font(.caption)
-                .foregroundStyle(muted)
-        }
-        panel {
-            Button { showCharger = true } label: { Label("Charger", systemImage: "wifi") }
-            Text("The Neebo charger appears as NCO. Send it your home Wi‑Fi from here.")
-                .font(.caption)
-                .foregroundStyle(muted)
-        }
-        .sheet(isPresented: $showCharger) { ChargerWiFiView() }
-        panel { DisclosureGroup("Second iPhone on this Wi‑Fi") {
-            VStack(alignment: .leading, spacing: 10) {
-                Toggle("Share from this iPhone", isOn: Binding(get: { wifi.hosting }, set: { wifi.setHosting($0) })).tint(switchOn)
-                if wifi.hosting {
-                    Text(wifi.pin).font(.system(size: 34, weight: .bold, design: .rounded)).monospacedDigit()
-                    Button("Copy code") { UIPasteboard.general.string = wifi.pin }
-                }
-                TextField("Downstairs code", text: Binding(get: { wifi.joinPin }, set: { wifi.setJoinPin($0) }))
-                    .keyboardType(.numberPad)
-                    .font(.title3.monospacedDigit())
-                Toggle("Follow the phone next to the band", isOn: Binding(get: { wifi.following }, set: { wifi.setFollowing($0) })).tint(switchOn)
-                Toggle("Play those alerts here", isOn: $wifi.playAlerts).tint(switchOn)
-                Text(wifi.status).font(.caption).foregroundStyle(muted)
-                Text("Same house only — 4-digit PIN on this Wi‑Fi. Nan in another house uses Family sharing above, not this.")
-                    .font(.caption).foregroundStyle(muted)
-            }.padding(.top, 8)
-        } }
-        panel { VStack(alignment: .leading, spacing: 12) {
             Text("Heart-rate alerts").font(.headline)
             if wifi.following {
-                Text("You are following the phone next to the band. Change Low / High limits on that phone, not here.")
+                Text("Change limits on the phone next to the band.")
                     .font(.caption).foregroundStyle(muted)
             }
-            HStack { Label("Low", systemImage: "arrow.down.heart"); Spacer(); Text(monitor.alarmSettings.lowEnabled ? monitor.alarmSettings.lowThreshold.map { "Below \($0) bpm" } ?? "Set a limit" : "Off") }.foregroundStyle(coral)
-            Divider()
-            HStack { Text("Within limits"); Spacer(); Text(configuredRangeLabel) }.foregroundStyle(accentMint)
-            Divider()
-            HStack { Label("High", systemImage: "arrow.up.heart"); Spacer(); Text(monitor.alarmSettings.highEnabled ? monitor.alarmSettings.highThreshold.map { "Above \($0) bpm" } ?? "Set a limit" : "Off") }.foregroundStyle(coral)
-            Text("Use the limits from your care plan.").font(.caption)
+            HStack { Label("Low", systemImage: "arrow.down.heart"); Spacer(); Text(monitor.alarmSettings.lowEnabled ? monitor.alarmSettings.lowThreshold.map { "Below \($0)" } ?? "Set" : "Off").font(.subheadline.weight(.semibold)) }.foregroundStyle(coral)
+            HStack { Text("In range"); Spacer(); Text(configuredRangeLabel).font(.subheadline.weight(.semibold)) }.foregroundStyle(accentMint)
+            HStack { Label("High", systemImage: "arrow.up.heart"); Spacer(); Text(monitor.alarmSettings.highEnabled ? monitor.alarmSettings.highThreshold.map { "Above \($0)" } ?? "Set" : "Off").font(.subheadline.weight(.semibold)) }.foregroundStyle(coral)
             DisclosureGroup("Adjust limits") { VStack(alignment: .leading, spacing: 12) {
-            if monitor.profile == .custom {
-                Text("Mapped readings require independent checking before enabling alarms.").font(.caption)
-                Toggle("Enable alarms for mapped readings", isOn: $monitor.experimentalCustomAlarms).tint(switchOn)
-            }
-            Toggle("High limit alarm", isOn: $monitor.alarmSettings.highEnabled).tint(switchOn)
-                .onChange(of: monitor.alarmSettings.highEnabled) { enabled in if enabled { monitor.requestNotificationPermission() } }
-            HStack {
-                Text("High limit (bpm)")
-                TextField("Enter limit", value: $monitor.alarmSettings.highThreshold, format: .number)
-                    .keyboardType(.numberPad).multilineTextAlignment(.trailing).focused($editingLimit)
-            }
-            Toggle("Low limit alarm", isOn: $monitor.alarmSettings.lowEnabled).tint(switchOn)
-                .onChange(of: monitor.alarmSettings.lowEnabled) { enabled in if enabled { monitor.requestNotificationPermission() } }
-            HStack {
-                Text("Low limit (bpm)")
-                TextField("Enter limit", value: $monitor.alarmSettings.lowThreshold, format: .number)
-                    .keyboardType(.numberPad).multilineTextAlignment(.trailing).focused($editingLimit)
-            }
-            if editingLimit { Button("Done entering limits") { editingLimit = false } }
-            Stepper("Duration: \(monitor.alarmSettings.durationSeconds) seconds", value: $monitor.alarmSettings.durationSeconds, in: 5...120, step: 5)
-            if let message = monitor.alarmSettings.validationMessage { Text(message).font(.caption).foregroundStyle(coral) }
-            Text("A limit must stay crossed for this duration. Gaps restart the timer.").font(.caption)
-                Text("Changes save automatically.").font(.caption).foregroundStyle(.secondary)
-            }.padding(.top, 12) }
+                if monitor.profile == .custom {
+                    Text("Mapped readings need checking before alarms.").font(.caption)
+                    Toggle("Alarms for mapped readings", isOn: $monitor.experimentalCustomAlarms).tint(switchOn)
+                }
+                Toggle("High limit alarm", isOn: $monitor.alarmSettings.highEnabled).tint(switchOn)
+                    .onChange(of: monitor.alarmSettings.highEnabled) { enabled in if enabled { monitor.requestNotificationPermission() } }
+                HStack {
+                    Text("High limit")
+                    TextField("bpm", value: $monitor.alarmSettings.highThreshold, format: .number)
+                        .keyboardType(.numberPad).multilineTextAlignment(.trailing).focused($editingLimit)
+                }
+                Toggle("Low limit alarm", isOn: $monitor.alarmSettings.lowEnabled).tint(switchOn)
+                    .onChange(of: monitor.alarmSettings.lowEnabled) { enabled in if enabled { monitor.requestNotificationPermission() } }
+                HStack {
+                    Text("Low limit")
+                    TextField("bpm", value: $monitor.alarmSettings.lowThreshold, format: .number)
+                        .keyboardType(.numberPad).multilineTextAlignment(.trailing).focused($editingLimit)
+                }
+                if editingLimit { Button("Done") { editingLimit = false } }
+                Stepper("Hold for \(monitor.alarmSettings.durationSeconds) seconds", value: $monitor.alarmSettings.durationSeconds, in: 5...120, step: 5)
+                if let message = monitor.alarmSettings.validationMessage { Text(message).font(.caption).foregroundStyle(coral) }
+                Text("It must stay past the limit for that long. A gap starts the timer again.").font(.caption).foregroundStyle(muted)
+            }.padding(.top, 8) }
         } }
         panel { VStack(alignment: .leading, spacing: 12) {
-            Text("Band removed").font(.headline)
+            Text("Band").font(.headline)
             Toggle("Band removed alert", isOn: $monitor.removalAlertEnabled).tint(switchOn)
                 .onChange(of: monitor.removalAlertEnabled) { enabled in if enabled { monitor.requestNotificationPermission() } }
             TextField("Message", text: $monitor.removalMessage, axis: .vertical)
-                .lineLimit(2...4)
+                .lineLimit(2...3)
             Picker("Warning sound", selection: $monitor.removalSound) {
                 ForEach(NivviRelief.allCases) { Text($0.title).tag($0) }
             }
             Button("Preview warning") { monitor.previewRemovalSound() }
                 .buttonStyle(.bordered)
-            Text("Notifies once, then stays quiet until the band is worn again. It does not keep alarming. It sounds if the band leaves the skin, or the pulse stops for 20 seconds while Bluetooth is still connected. A reading of no pulse notifies once as well. A disconnect stays Connection lost.")
+            Text("Sounds once if the band leaves the skin, or the pulse stops for 20 seconds. It stays quiet until the band is worn again.")
                 .font(.caption).foregroundStyle(muted)
+            Divider()
+            Toggle("Temperature in Fahrenheit", isOn: $skinFahrenheit).tint(switchOn)
         } }
-        panel { VStack(alignment: .leading, spacing: 12) {
-            Text("Skin temperature").font(.headline)
-            Toggle("Show Fahrenheit", isOn: $skinFahrenheit).tint(switchOn)
-            Text("The band reading stays a wrist temperature. 32.1°C is about 89.8°F. Green, amber and red use the same limits either way.")
+        panel { DisclosureGroup("Alert sounds") { VStack(alignment: .leading, spacing: 12) {
+            Text("The siren plays in the app on Silent. A lock-screen banner can still be quiet.")
                 .font(.caption).foregroundStyle(muted)
-        } }
-        panel { VStack(alignment: .leading, spacing: 12) {
-            Text("Sounds and notifications").font(.headline)
-            Text("Siren plays in the app even on Silent. Lock-screen banners can still be quiet in Silent or Focus. Allow Time Sensitive for Nivvi.")
-                .font(.caption).foregroundStyle(muted)
-            Picker("Alert siren", selection: $monitor.selectedSiren) {
+            Picker("Siren", selection: $monitor.selectedSiren) {
                 ForEach(NivviSiren.allCases) { Text($0.title).tag($0) }
             }
-            Picker("Recovery chime", selection: $monitor.selectedRelief) {
+            Picker("Recovery", selection: $monitor.selectedRelief) {
                 ForEach(NivviRelief.allCases) { Text($0.title).tag($0) }
             }
-            Button(monitor.testingSiren ? "Stop test siren" : "Test siren for 5 seconds") { monitor.testSiren() }
+            Button(monitor.testingSiren ? "Stop test" : "Test siren") { monitor.testSiren() }
                 .buttonStyle(.borderedProminent).tint(coral).disabled(monitor.criticalAlertActive)
-            Button("Preview recovery chime") { monitor.testRecoverySound() }
+            Button("Preview recovery") { monitor.testRecoverySound() }
                 .buttonStyle(.bordered).disabled(monitor.criticalAlertActive)
-            Button("Test notification in 10 seconds") { monitor.testNotification() }.buttonStyle(.bordered)
+            Button("Test notification") { monitor.testNotification() }.buttonStyle(.bordered)
             Text(monitor.soundStatus).font(.caption)
             Text(monitor.notificationStatus).font(.caption)
-            DisclosureGroup("How alerts work") {
-                Text("Low alarms fire strictly below the low limit; high alarms fire strictly above the high limit after the dwell time you set. The alarm self-clears after a fresh in-range reading. The looping siren plays as media audio so the Silent switch does not mute it while Nivvi can play sound. Lock-screen notification sounds still follow Silent and Focus — Apple does not let this app override those without Critical Alerts (not granted). Turn media volume up. In iPhone Settings → Notifications → Nivvi, allow Time Sensitive.")
-                    .font(.caption).foregroundStyle(muted).padding(.top, 8)
+        }.padding(.top, 8) } }
+        panel { DisclosureGroup("Same Wi‑Fi") { VStack(alignment: .leading, spacing: 10) {
+            Toggle("Share from this iPhone", isOn: Binding(get: { wifi.hosting }, set: { wifi.setHosting($0) })).tint(switchOn)
+            if wifi.hosting {
+                Text(wifi.pin).font(.system(size: 28, weight: .bold, design: .rounded)).monospacedDigit()
+                Button("Copy code") { UIPasteboard.general.string = wifi.pin }
             }
-        } }
-        Group {
-        panel { DisclosureGroup("FAQ") { VStack(alignment: .leading, spacing: 12) {
-            DisclosureGroup("How do I share with family?") {
-                Text("The phone next to the band taps Start a family. No email. It shows a 6-letter code. Everyone else types that code and who they are, then Follow. Whoever is with them taps I’m with their name. The next person does the same on their phone to take over.")
-                    .font(.caption).padding(.top, 6)
-            }
-            DisclosureGroup("Which devices work?") {
-                Text("Any Bluetooth heart-rate band that uses the standard Heart Rate Service (180D), plus some pulse oximeters (1822) and original Neebo bands. Polar H10, Coospo, Magene and generic 180D straps usually work. Apple Watch, Fitbit Air, Owlet and similar app-locked wearables usually will not appear.")
-                    .font(.caption).padding(.top, 6)
-            }
-            DisclosureGroup("Why connected but waiting?") {
-                Text("Bluetooth is linked, but no valid heart-rate packet has arrived yet. Check the band is on the skin, charged, and not connected to another app. A battery number is not a heart-rate reading.")
-                    .font(.caption).padding(.top, 6)
-            }
-            DisclosureGroup("Where is History?") {
-                Text("History keeps about one reading every 30 seconds for 30 calendar days on this iPhone. Change the date at the top, or use the arrows. Charts and the list always follow that calendar day — the chart opens on the full day.")
-                    .font(.caption).padding(.top, 6)
-            }
-            DisclosureGroup("Will alarms always sound?") {
-                Text("The siren can play in the open app even on Silent. Lock-screen banners can still be quiet in Silent, Focus or Sleep. This is not a medical monitor and not a substitute for being with someone.")
-                    .font(.caption).padding(.top, 6)
-            }
-        }.padding(.top, 12) } }
-        panel { DisclosureGroup("Privacy") { VStack(alignment: .leading, spacing: 12) {
-            Text("Local use needs no account. Readings, notes and the profile stay on this iPhone for 30 days. Family sharing is optional: a 6-letter family code and the latest live numbers — including band battery — on the Nivvi server in London (family.nivvi.app). No email is required. Birth dates, avatars and notes are not uploaded. No ads or analytics.")
-                .font(.caption)
-            Text("Anyone with the family code can join that family. Stop sharing with everyone ends the code. Delete account removes the online login, not this phone’s history. Full notice: nivvi.app/privacy")
+            TextField("Code from the other phone", text: Binding(get: { wifi.joinPin }, set: { wifi.setJoinPin($0) }))
+                .keyboardType(.numberPad)
+                .font(.title3.monospacedDigit())
+            Toggle("Follow that phone", isOn: Binding(get: { wifi.following }, set: { wifi.setFollowing($0) })).tint(switchOn)
+            Toggle("Play its alerts here", isOn: $wifi.playAlerts).tint(switchOn)
+            Text(wifi.status).font(.caption).foregroundStyle(muted)
+            Text("Same house only. Another house uses Family sharing.")
                 .font(.caption).foregroundStyle(muted)
-        }.padding(.top, 12) } }
-        panel { DisclosureGroup("Terms") { VStack(alignment: .leading, spacing: 12) {
-            Text("Nivvi is a TestFlight family test from Michael Waters, trading as Nivvi, United Kingdom. It shows Bluetooth heart-rate readings for babies, children, teens and adults. It does not diagnose, treat, or replace being with someone or emergency care.")
-                .font(.caption)
-            Text("Bluetooth, Wi‑Fi, 4G and notifications can fail. You are responsible for how you use the app. English law of England and Wales. Support: hello.nivvi@outlook.com. Full terms: nivvi.app/terms")
-                .font(.caption).foregroundStyle(muted)
-        }.padding(.top, 12) } }
-        panel { DisclosureGroup("Connection and support") { VStack(alignment: .leading, spacing: 12) {
-            Text("Keeps the Bluetooth session active and attempts reconnection after signal loss. Tap Disconnect to end the session.").font(.caption)
-            Text("Background readings require device notifications. Keep Nivvi open if the wearable only responds to reads. Force-quitting the app, Bluetooth being off, an empty battery or iOS restrictions can interrupt monitoring.").font(.caption).foregroundStyle(muted)
-
-        }.padding(.top, 12) } }
-        panel { DisclosureGroup("About Nivvi") { VStack(alignment: .leading, spacing: 12) {
-            Text("Nivvi \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—") · Build \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")").font(.headline)
-            Text("Bluetooth: \(monitor.connection.label) · Profile: \(monitor.profile.rawValue) · Battery: \(monitor.battery)").font(.caption)
-            Text("Readings, events and notes are retained locally for 30 calendar days. The iPhone controls Bluetooth and notifications; Nivvi cannot activate cellular service or update proprietary device firmware.").font(.caption).foregroundStyle(muted)
-
-        }.padding(.top, 12) } }
-        }
-        Text("Nivvi " + (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")).font(.caption).foregroundStyle(.secondary)
+        }.padding(.top, 8) } }
+        panel { DisclosureGroup("Help") { VStack(alignment: .leading, spacing: 14) {
+            helpBlock("Family", "The phone next to the band taps Start a family and shows a 6-letter code. Everyone else types that code, then Follow. Whoever is with them taps I’m with them.")
+            helpBlock("Devices", "Standard Bluetooth heart-rate bands work, including some pulse oximeters and original Neebo bands. Apple Watch and Fitbit usually will not appear.")
+            helpBlock("Waiting", "Bluetooth is linked, but no heart-rate packet has arrived. The band needs to be on the skin and not connected to another app.")
+            helpBlock("History", "About one reading every 30 seconds, kept on this iPhone for 30 days.")
+            helpBlock("Privacy", "No account is needed. Family sharing sends the live numbers to family.nivvi.app. Notes stay on this iPhone. nivvi.app/privacy")
+            helpBlock("Terms", "A family test, not a medical monitor. hello.nivvi@outlook.com. nivvi.app/terms")
+        }.padding(.top, 8) } }
+        Text("Nivvi \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—") · \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")")
+            .font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity)
     } }
+    private func settingsLink(_ title: String, _ detail: String, _ icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: icon).font(.body.weight(.semibold)).foregroundStyle(accentMint).frame(width: 28)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(ink)
+                    Text(detail).font(.caption).foregroundStyle(muted).lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.right").font(.caption.weight(.bold)).foregroundStyle(muted)
+            }
+            .padding(.vertical, 8)
+        }
+        .buttonStyle(.plain)
+    }
+    private func helpBlock(_ title: String, _ body: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.subheadline.weight(.semibold))
+            Text(body).font(.caption).foregroundStyle(muted)
+        }
+    }
 
     private var bottomBar: some View { HStack { nav("heart.fill", "Live", 0); nav("chart.xyaxis.line", "History", 1); nav("bell.fill", "Alerts", 2); nav("wave.3.right", "Device", 3) }.padding(8).background(mode == .night ? cardFill : Color.white.opacity(0.94)).clipShape(Capsule()).shadow(color: mode == .night ? .clear : Color(red: 0.09, green: 0.17, blue: 0.26).opacity(0.10), radius: 8, y: 2).padding(.horizontal, 18).padding(.bottom, 10) }
     private func nav(_ icon: String, _ title: String, _ index: Int) -> some View { Button { withAnimation(.easeInOut(duration: 0.2)) { tab = index } } label: { VStack(spacing: 4) { Image(systemName: icon); Text(title).font(.caption.weight(.semibold)) }.foregroundStyle(tab == index ? ink : muted).frame(maxWidth: .infinity).padding(.vertical, 8).background(tab == index ? navSelected : .clear).clipShape(Capsule()) } }
