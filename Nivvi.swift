@@ -3086,6 +3086,16 @@ struct ContentView: View {
             syncLiveActivity()
         }
         .onChange(of: wifi.pin) { value in UserDefaults.standard.set(value, forKey: "nivvi.wifi.pin") }
+        .sheet(isPresented: $showFamily) {
+            NavigationStack {
+                FamilySharingView()
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { showFamily = false }
+                        }
+                    }
+            }
+        }
         .sheet(isPresented: $showParentNote) {
             NavigationStack {
                 Form {
@@ -4211,15 +4221,6 @@ struct ContentView: View {
             Text("Watch live readings on another iPhone — at home, Nan’s, or when you’re out.")
                 .font(.caption)
                 .foregroundStyle(muted)
-        }.sheet(isPresented: $showFamily) {
-            NavigationStack {
-                FamilySharingView()
-                    .toolbar {
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("Done") { showFamily = false }
-                        }
-                    }
-            }
         }
         panel {
             Button { showCharger = true } label: { Label("Charger", systemImage: "wifi") }
