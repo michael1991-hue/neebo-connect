@@ -4222,7 +4222,7 @@ struct ContentView: View {
             }
         }
         panel {
-            Button { showCharger = true } label: { Label("Charger Wi‑Fi", systemImage: "wifi") }
+            Button { showCharger = true } label: { Label("Charger", systemImage: "wifi") }
             Text("The Neebo charger appears as NCO. Send it your home Wi‑Fi from here.")
                 .font(.caption)
                 .foregroundStyle(muted)

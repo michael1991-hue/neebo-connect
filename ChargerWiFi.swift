@@ -8,14 +8,19 @@ import NetworkExtension
 final class ChargerSetup: NSObject, ObservableObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     @Published var status = "Looking for a charger named NCO."
     @Published var network = ""
+    @Published var server = ""
     @Published var ready = false
+    @Published var serverReady = false
     private var manager: CBCentralManager?
     private var peripheral: CBPeripheral?
     private var nameChar: CBCharacteristic?
     private var passwordChar: CBCharacteristic?
     private var replyChar: CBCharacteristic?
+    private var serverChar: CBCharacteristic?
     private var pendingPassword: Data?
+    private var pendingServices = 0
     private var scan: Timer?
+    private let nivviServer = "mqtt.nivvi.app"
 
     func start() {
         ready = false
@@ -33,6 +38,16 @@ final class ChargerSetup: NSObject, ObservableObject, CBCentralManagerDelegate, 
         peripheral = nil
         ready = false
         pendingPassword = nil
+        serverReady = false
+    }
+
+    func useNivviServer() {
+        guard serverReady, let peripheral, let serverChar else {
+            status = "The charger is not ready."
+            return
+        }
+        status = "Sending the Nivvi server."
+        write(Data(nivviServer.utf8), to: serverChar, on: peripheral)
     }
 
     func send(network: String, password: String) {
@@ -77,8 +92,8 @@ final class ChargerSetup: NSObject, ObservableObject, CBCentralManagerDelegate, 
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        status = "Connected. Reading the saved network."
-        peripheral.discoverServices([CBUUID(string: "FFB0")])
+        status = "Connected. Reading the charger."
+        peripheral.discoverServices([CBUUID(string: "FFB0"), CBUUID(string: "FFC0")])
     }
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
@@ -93,11 +108,16 @@ final class ChargerSetup: NSObject, ObservableObject, CBCentralManagerDelegate, 
     }
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
-        guard let service = peripheral.services?.first(where: { BluetoothPolicy.normalized($0.uuid.uuidString) == "FFB0" }) else {
-            status = "Connected, but this is not the charger service."
+        let services = (peripheral.services ?? []).filter {
+            let id = BluetoothPolicy.normalized($0.uuid.uuidString)
+            return id == "FFB0" || id == "FFC0"
+        }
+        guard !services.isEmpty else {
+            status = "Connected, but this is not the charger."
             return
         }
-        peripheral.discoverCharacteristics(nil, for: service)
+        pendingServices = services.count
+        for service in services { peripheral.discoverCharacteristics(nil, for: service) }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
@@ -106,16 +126,22 @@ final class ChargerSetup: NSObject, ObservableObject, CBCentralManagerDelegate, 
             case "FFB1": nameChar = characteristic
             case "FFB2": passwordChar = characteristic
             case "FFB3": replyChar = characteristic
+            case "FFC1": serverChar = characteristic
             default: break
             }
         }
+        pendingServices = max(0, pendingServices - 1)
+        guard pendingServices == 0 else { return }
         ready = nameChar != nil && passwordChar != nil
+        serverReady = serverChar != nil
         if let nameChar { peripheral.readValue(for: nameChar) }
+        if let serverChar { peripheral.readValue(for: serverChar) }
         if let replyChar {
             if replyChar.properties.contains(.notify) { peripheral.setNotifyValue(true, for: replyChar) }
             peripheral.readValue(for: replyChar)
         }
-        if !ready { status = "Connected, but the Wi‑Fi settings were not found." }
+        if serverReady { status = "Connected to NCO." }
+        else if !ready { status = "Connected, but the charger settings were not found." }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
@@ -124,7 +150,11 @@ final class ChargerSetup: NSObject, ObservableObject, CBCentralManagerDelegate, 
         if id == "FFB1" {
             let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .controlCharacters) ?? ""
             if !text.isEmpty { network = text }
-            if ready && pendingPassword == nil { status = network.isEmpty ? "Charger ready." : "Charger is saved as \(network)." }
+            if ready && pendingPassword == nil && !status.hasPrefix("Sending") { status = network.isEmpty ? "Charger ready." : "Charger is saved as \(network)." }
+        } else if id == "FFC1" {
+            let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .controlCharacters) ?? ""
+            server = text
+            status = text == nivviServer ? "This charger uses the Nivvi server." : "Server is \(text.isEmpty ? "not set" : text)."
         } else if id == "FFB3" {
             let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .controlCharacters) ?? ""
             if !text.isEmpty { status = "Charger says \(text)." }
@@ -144,6 +174,8 @@ final class ChargerSetup: NSObject, ObservableObject, CBCentralManagerDelegate, 
         } else if BluetoothPolicy.normalized(characteristic.uuid.uuidString) == "FFB2" {
             status = "Sent. The charger is joining the network."
             if let replyChar { peripheral.readValue(for: replyChar) }
+        } else if characteristic === serverChar {
+            peripheral.readValue(for: characteristic)
         }
     }
 
@@ -153,6 +185,9 @@ final class ChargerSetup: NSObject, ObservableObject, CBCentralManagerDelegate, 
         if type == .withoutResponse, characteristic === passwordChar {
             pendingPassword = nil
             status = "Sent. The charger is joining the network."
+        } else if type == .withoutResponse, characteristic === serverChar {
+            status = "Sent. Reading it back."
+            peripheral.readValue(for: characteristic)
         }
     }
 
@@ -177,8 +212,11 @@ struct ChargerWiFiView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Charger") {
+                Section("Nivvi server") {
                     Text(charger.status)
+                    Text(charger.server.isEmpty ? "Not read yet." : charger.server)
+                    Button("Use Nivvi server") { charger.useNivviServer() }
+                        .disabled(!charger.serverReady)
                 }
                 Section {
                     if !phone.name.isEmpty {
@@ -211,7 +249,7 @@ struct ChargerWiFiView: View {
                     }
                 }
             }
-            .navigationTitle("Charger Wi‑Fi")
+            .navigationTitle("Charger")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
