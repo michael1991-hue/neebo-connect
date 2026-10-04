@@ -884,19 +884,8 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             sleep: sleepLockLine
         )
     }
-    var sleepLockLine: String {
-        let enabled = UserDefaults.standard.object(forKey: "nivvi.sleep.enabled") as? Bool ?? true
-        return enabled ? sleep.lockLine : ""
-    }
-    var sleepShareLine: String {
-        let enabled = UserDefaults.standard.object(forKey: "nivvi.sleep.enabled") as? Bool ?? true
-        guard enabled else { return "" }
-        switch sleep.face(at: Date()).title {
-        case "ASLEEP": return sleep.lockLine
-        case "SETTLING": return "Settling"
-        default: return ""
-        }
-    }
+    var sleepLockLine: String { "" }
+    var sleepShareLine: String { "" }
     private func expireMeasurements() {
         defer { publishFamilySnapshot() }
         if let time = oxygenTime, Date().timeIntervalSince(time) > 30 || Date() < time {
@@ -2593,6 +2582,7 @@ struct ContentView: View {
     @AppStorage("nivvi.profile.avatarColor") private var avatarColor = "teal"
     @AppStorage("nivvi.skin.fahrenheit") private var skinFahrenheit = false
     @AppStorage("nivvi.sleep.enabled") private var sleepTimer = true
+    private let showSleep = false
     @AppStorage("nivvi.host.relation") private var hostRelation = ""
     @AppStorage("nivvi.nursery.acknowledged") private var nurseryAcknowledged = false
     @State private var skyOffset: CGFloat = 0
@@ -3170,22 +3160,6 @@ struct ContentView: View {
                             .font(.caption2)
                             .foregroundStyle(muted)
                     }
-                    if sleepTimer && monitor.sleep.asleep {
-                        HStack(spacing: 6) {
-                            Text("\(displayName) is asleep")
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(lavender)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.7)
-                            sleepZzz(color: lavender)
-                        }
-                    } else if let remoteSleep = family.remote?.snapshot?.sleep, !remoteSleep.isEmpty, watchingFamily, family.linkState == .live {
-                        Text(remoteSleep)
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(accentMint)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.7)
-                    }
                 }
                 Spacer()
                 headerButtons
@@ -3449,7 +3423,7 @@ struct ContentView: View {
     private var home: some View {
         VStack(alignment: .leading, spacing: 16) {
             liveHero
-            if !mirroringNursery { sleepCard }
+            if showSleep, !mirroringNursery { sleepCard }
             if monitor.batteryWarning != .ok && !monitor.wearableCharging {
                 HStack(spacing: 10) {
                     Image(systemName: "battery.25percent")
@@ -4321,12 +4295,6 @@ struct ContentView: View {
             Button("Preview warning") { monitor.previewRemovalSound() }
                 .buttonStyle(.bordered)
             Text("Notifies once, then stays quiet until the band is worn again. It does not keep alarming. It sounds if the band leaves the skin, or the pulse stops for 20 seconds while Bluetooth is still connected. A reading of no pulse notifies once as well. A disconnect stays Connection lost.")
-                .font(.caption).foregroundStyle(muted)
-        } }
-        panel { VStack(alignment: .leading, spacing: 12) {
-            Text("Sleep timer").font(.headline)
-            Toggle("Show sleep on Live and the lock screen", isOn: $sleepTimer).tint(switchOn)
-            Text("Still for 10 minutes starts the time. One movement does not end it. This is stillness, not a medical sleep stage.")
                 .font(.caption).foregroundStyle(muted)
         } }
         panel { VStack(alignment: .leading, spacing: 12) {
