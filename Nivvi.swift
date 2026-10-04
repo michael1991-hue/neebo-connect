@@ -2619,7 +2619,6 @@ struct ContentView: View {
     @State private var lockScreenNote = "Starts a new 8 hours. The card blinks off, then comes back."
     @State private var showProfile = false
     @State private var showSettings = false
-    @State private var settingsPage: SettingsPage?
     @State private var historySpan = 1
     @State private var reportExport: URL?
     @State private var editingNote: SavedEvent?
@@ -3009,15 +3008,6 @@ struct ContentView: View {
                     .background((mode == .night ? Color(red: 0.02, green: 0.13, blue: 0.23) : Color(red: 0.969, green: 0.980, blue: 1.0)).ignoresSafeArea())
                     .navigationTitle("Settings")
                     .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showSettings = false } } }
-            }
-        }
-        .sheet(item: $settingsPage) { page in
-            NavigationStack {
-                ScrollView { settingsDetail(page).padding(20) }
-                    .background((mode == .night ? Color(red: 0.02, green: 0.13, blue: 0.23) : Color(red: 0.969, green: 0.980, blue: 1.0)).ignoresSafeArea())
-                    .navigationTitle(page.title)
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { settingsPage = nil } } }
             }
         }
         .sheet(item: $captureRequest) { request in
@@ -4256,21 +4246,33 @@ struct ContentView: View {
     private var settings: some View { VStack(alignment: .leading, spacing: 14) {
         panel {
             VStack(spacing: 4) {
-                settingsLink("Child profile", "\(displayName)\(ageText.isEmpty ? "" : " · \(ageText)")", "person.crop.circle") { showProfile = true }
+                settingsPush("Child profile", "\(displayName)\(ageText.isEmpty ? "" : " · \(ageText)")", "person.crop.circle") {
+                    ProfileSetupView(name: childName, birthDate: birthDate, gender: childGender, avatarSymbol: avatarSymbol, avatarColor: avatarColor) { name, date, gender, symbol, color in
+                        childName = name
+                        childBirthDate = date.timeIntervalSince1970
+                        childGender = gender
+                        avatarSymbol = symbol
+                        avatarColor = color
+                        if family.isOwner { family.perform { try await family.pushProfile() } }
+                        return true
+                    }
+                }
                 Divider()
-                settingsLink("Family sharing", "Live numbers on another iPhone", "person.2.fill") { showFamily = true }
+                settingsPush("Family sharing", "Live numbers on another iPhone", "person.2.fill") {
+                    FamilySharingView().navigationTitle("Family sharing").navigationBarTitleDisplayMode(.inline)
+                }
                 Divider()
-                settingsLink("Charger", "Home Wi‑Fi for the NCO dock", "wifi") { showCharger = true }
+                settingsPush("Charger", "Home Wi‑Fi for the NCO dock", "wifi") { ChargerWiFiView() }
                 Divider()
-                settingsLink("Heart-rate alerts", configuredRangeLabel, "heart.text.square") { settingsPage = .alerts }
+                settingsPush("Heart-rate alerts", configuredRangeLabel, "heart.text.square") { settingsScreen(.alerts) }
                 Divider()
-                settingsLink("Band", monitor.removalAlertEnabled ? "Removed alert on" : "Removed alert off", "applewatch") { settingsPage = .band }
+                settingsPush("Band", monitor.removalAlertEnabled ? "Removed alert on" : "Removed alert off", "applewatch") { settingsScreen(.band) }
                 Divider()
-                settingsLink("Alert sounds", "Siren and recovery", "speaker.wave.2") { settingsPage = .sounds }
+                settingsPush("Alert sounds", "Siren and recovery", "speaker.wave.2") { settingsScreen(.sounds) }
                 Divider()
-                settingsLink("Same Wi‑Fi", "Another iPhone in the house", "wifi.router") { settingsPage = .wifi }
+                settingsPush("Same Wi‑Fi", "Another iPhone in the house", "wifi.router") { settingsScreen(.wifi) }
                 Divider()
-                settingsLink("Help", "Family, devices, privacy", "questionmark.circle") { settingsPage = .help }
+                settingsPush("Help", "Family, devices, privacy", "questionmark.circle") { settingsScreen(.help) }
             }
         }
         Text("Nivvi \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—") · \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")")
@@ -4362,8 +4364,14 @@ struct ContentView: View {
             } }
         }
     }
-    private func settingsLink(_ title: String, _ detail: String, _ icon: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+    private func settingsScreen(_ page: SettingsPage) -> some View {
+        ScrollView { settingsDetail(page).padding(20) }
+            .background((mode == .night ? Color(red: 0.02, green: 0.13, blue: 0.23) : Color(red: 0.969, green: 0.980, blue: 1.0)).ignoresSafeArea())
+            .navigationTitle(page.title)
+            .navigationBarTitleDisplayMode(.inline)
+    }
+    private func settingsPush<Destination: View>(_ title: String, _ detail: String, _ icon: String, @ViewBuilder destination: () -> Destination) -> some View {
+        NavigationLink(destination: destination) {
             HStack(spacing: 12) {
                 Image(systemName: icon).font(.body.weight(.semibold)).foregroundStyle(accentMint).frame(width: 28)
                 VStack(alignment: .leading, spacing: 2) {
@@ -4374,6 +4382,7 @@ struct ContentView: View {
                 Image(systemName: "chevron.right").font(.caption.weight(.bold)).foregroundStyle(muted)
             }
             .padding(.vertical, 8)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
