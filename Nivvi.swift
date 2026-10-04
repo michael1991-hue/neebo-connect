@@ -365,9 +365,11 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     @Published private(set) var skinCelsius: Double?
     @Published var sleep = SleepClock() {
         didSet {
-            guard oldValue.naps != sleep.naps else { return }
-            if let data = try? JSONEncoder().encode(sleep.naps) {
+            if oldValue.naps != sleep.naps, let data = try? JSONEncoder().encode(sleep.naps) {
                 UserDefaults.standard.set(data, forKey: "nivvi.sleep.log")
+            }
+            if oldValue.learnedPulse != sleep.learnedPulse, let learned = sleep.learnedPulse {
+                UserDefaults.standard.set(learned, forKey: "nivvi.sleep.pulse")
             }
         }
     }
@@ -941,6 +943,13 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         if let data = UserDefaults.standard.data(forKey: "nivvi.sleep.log"), let saved = try? JSONDecoder().decode([SleepNap].self, from: data) {
             var clock = sleep
             clock.naps = saved
+            if let learned = UserDefaults.standard.object(forKey: "nivvi.sleep.pulse") as? Int {
+                clock.learnedPulse = learned
+            }
+            sleep = clock
+        } else if let learned = UserDefaults.standard.object(forKey: "nivvi.sleep.pulse") as? Int {
+            var clock = sleep
+            clock.learnedPulse = learned
             sleep = clock
         }
         session.deviceID = UserDefaults.standard.string(forKey: "nivvi.session.device").flatMap(UUID.init(uuidString:))

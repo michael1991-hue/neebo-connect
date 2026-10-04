@@ -883,6 +883,7 @@ struct SleepClock: Equatable {
     var naps: [SleepNap] = []
     var docked = false
     var sleepRates: [Int] = []
+    var learnedPulse: Int?
     var restlessSince: Date?
     var raisedSince: Date?
 
@@ -890,6 +891,7 @@ struct SleepClock: Equatable {
     static let wake: TimeInterval = 60
     static let fresh: TimeInterval = 180
     static let restlessLimit: TimeInterval = 600
+    static let pulseMargin = 12
 
     mutating func observe(still: Bool, at time: Date, heartRate: Int? = nil) {
         if let last = lastSample, time.timeIntervalSince(last) > Self.fresh, !still {
@@ -965,19 +967,29 @@ struct SleepClock: Equatable {
         guard let heartRate, (30...240).contains(heartRate) else { return }
         sleepRates.append(heartRate)
         if sleepRates.count > 12 { sleepRates.removeFirst(sleepRates.count - 12) }
+        guard asleep else { return }
+        if let learned = learnedPulse {
+            learnedPulse = (learned * 7 + heartRate) / 8
+        } else if sleepRates.count >= 3 {
+            learnedPulse = sleepRates.sorted()[sleepRates.count / 2]
+        }
     }
 
-    /// A pulse within 20 bpm of the recent still rate is treated as sleep, not waking.
+    private func sleepBaseline() -> Int? {
+        if let learnedPulse { return learnedPulse }
+        guard sleepRates.count >= 3 else { return nil }
+        return sleepRates.sorted()[sleepRates.count / 2]
+    }
+
+    /// A pulse within 12 bpm of the learned sleeping rate is treated as sleep, not waking.
     private func sleepingPulse(_ heartRate: Int?) -> Bool {
-        guard let heartRate, sleepRates.count >= 3 else { return false }
-        let sorted = sleepRates.sorted()
-        return heartRate <= sorted[sorted.count / 2] + 20
+        guard let heartRate, let baseline = sleepBaseline() else { return false }
+        return heartRate <= baseline + Self.pulseMargin
     }
 
     private func raisedPulse(_ heartRate: Int?) -> Bool {
-        guard let heartRate, sleepRates.count >= 3 else { return false }
-        let sorted = sleepRates.sorted()
-        return heartRate > sorted[sorted.count / 2] + 20
+        guard let heartRate, let baseline = sleepBaseline() else { return false }
+        return heartRate > baseline + Self.pulseMargin
     }
 
     /// Charging is not sleep and not movement. Close an open nap where the dock started.
