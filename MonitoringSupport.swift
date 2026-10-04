@@ -884,6 +884,7 @@ struct SleepClock: Equatable {
     var docked = false
     var sleepRates: [Int] = []
     var restlessSince: Date?
+    var raisedSince: Date?
 
     static let settle: TimeInterval = 600
     static let wake: TimeInterval = 60
@@ -896,6 +897,7 @@ struct SleepClock: Equatable {
             stillSince = nil
             movingSince = nil
             restlessSince = nil
+            raisedSince = nil
             asleep = false
         }
         if let open = naps.last, open.ended == nil, time.timeIntervalSince(open.started) > 14 * 3600 {
@@ -906,6 +908,17 @@ struct SleepClock: Equatable {
         if still {
             movingSince = nil
             restlessSince = nil
+            if raisedPulse(heartRate) {
+                if raisedSince == nil { raisedSince = time }
+                if let raised = raisedSince, time.timeIntervalSince(raised) >= Self.wake {
+                    if asleep, let start = stillSince { finish(start: start, end: raised) }
+                    asleep = false
+                    stillSince = nil
+                    raisedSince = nil
+                }
+                return
+            }
+            raisedSince = nil
             noteSleepRate(heartRate)
             if stillSince == nil {
                 if let open = naps.last, open.ended == nil {
@@ -961,6 +974,12 @@ struct SleepClock: Equatable {
         return heartRate <= sorted[sorted.count / 2] + 20
     }
 
+    private func raisedPulse(_ heartRate: Int?) -> Bool {
+        guard let heartRate, sleepRates.count >= 3 else { return false }
+        let sorted = sleepRates.sorted()
+        return heartRate > sorted[sorted.count / 2] + 20
+    }
+
     /// Charging is not sleep and not movement. Close an open nap where the dock started.
     mutating func pause(at time: Date) {
         if asleep, let start = stillSince { finish(start: start, end: time) }
@@ -968,6 +987,7 @@ struct SleepClock: Equatable {
         stillSince = nil
         movingSince = nil
         restlessSince = nil
+        raisedSince = nil
         sleepRates.removeAll()
         asleep = false
         docked = true
