@@ -863,7 +863,8 @@ struct BackgroundDataReminderPolicy {
     mutating func reset() { self = Self() }
 }
 
-/// Stillness from the band. Sleep is counted only after 10 minutes still, and one twitch does not end it.
+/// Stillness from the band. Sleep starts after 10 minutes still. A twitch does not end it,
+/// and movement while the pulse stays near the sleeping rate does not end it either.
 struct SleepNap: Codable, Equatable, Identifiable {
     var id: UUID
     var started: Date
@@ -881,16 +882,20 @@ struct SleepClock: Equatable {
     var lastSample: Date?
     var naps: [SleepNap] = []
     var docked = false
+    var sleepRates: [Int] = []
+    var restlessSince: Date?
 
     static let settle: TimeInterval = 600
     static let wake: TimeInterval = 60
     static let fresh: TimeInterval = 180
+    static let restlessLimit: TimeInterval = 600
 
-    mutating func observe(still: Bool, at time: Date) {
+    mutating func observe(still: Bool, at time: Date, heartRate: Int? = nil) {
         if let last = lastSample, time.timeIntervalSince(last) > Self.fresh, !still {
             if asleep, let start = stillSince { finish(start: start, end: last) }
             stillSince = nil
             movingSince = nil
+            restlessSince = nil
             asleep = false
         }
         if let open = naps.last, open.ended == nil, time.timeIntervalSince(open.started) > 14 * 3600 {
@@ -900,6 +905,8 @@ struct SleepClock: Equatable {
         docked = false
         if still {
             movingSince = nil
+            restlessSince = nil
+            noteSleepRate(heartRate)
             if stillSince == nil {
                 if let open = naps.last, open.ended == nil {
                     stillSince = open.started
@@ -914,6 +921,19 @@ struct SleepClock: Equatable {
             }
             return
         }
+        if stillSince != nil, sleepingPulse(heartRate) {
+            movingSince = nil
+            if restlessSince == nil { restlessSince = time }
+            if asleep, let restless = restlessSince, time.timeIntervalSince(restless) >= Self.restlessLimit {
+                if let start = stillSince { finish(start: start, end: restless) }
+                asleep = false
+                stillSince = nil
+                restlessSince = nil
+                movingSince = time
+            }
+            return
+        }
+        restlessSince = nil
         guard stillSince != nil else {
             movingSince = time
             asleep = false
@@ -928,12 +948,27 @@ struct SleepClock: Equatable {
         }
     }
 
+    private mutating func noteSleepRate(_ heartRate: Int?) {
+        guard let heartRate, (30...240).contains(heartRate) else { return }
+        sleepRates.append(heartRate)
+        if sleepRates.count > 12 { sleepRates.removeFirst(sleepRates.count - 12) }
+    }
+
+    /// A pulse within 20 bpm of the recent still rate is treated as sleep, not waking.
+    private func sleepingPulse(_ heartRate: Int?) -> Bool {
+        guard let heartRate, sleepRates.count >= 3 else { return false }
+        let sorted = sleepRates.sorted()
+        return heartRate <= sorted[sorted.count / 2] + 20
+    }
+
     /// Charging is not sleep and not movement. Close an open nap where the dock started.
     mutating func pause(at time: Date) {
         if asleep, let start = stillSince { finish(start: start, end: time) }
         else if let open = naps.last, open.ended == nil { finish(start: open.started, end: time) }
         stillSince = nil
         movingSince = nil
+        restlessSince = nil
+        sleepRates.removeAll()
         asleep = false
         docked = true
         lastSample = time

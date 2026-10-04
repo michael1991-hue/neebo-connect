@@ -1664,11 +1664,17 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             case .still, .moving:
                 if wearableCharging { applyCharging(false) }
                 var clock = sleep
-                clock.observe(still: flag == .still, at: Date())
+                clock.observe(still: flag == .still, at: Date(), heartRate: freshSleepRate)
                 sleep = clock
             }
             pushLockScreen()
         }
+    }
+    private var freshSleepRate: Int? {
+        guard lastHeartRateUpdate.map({ Date().timeIntervalSince($0) <= 30 }) == true else { return nil }
+        if let verifiedHeartRate { return verifiedHeartRate }
+        if let pulseOximeterRate { return Int(pulseOximeterRate.rounded()) }
+        return customHeartRateCandidate
     }
     private func receivePulseOximetry(_ data: Data, characteristic: String) {
         guard profile.hasPulseOximeter else { return }
