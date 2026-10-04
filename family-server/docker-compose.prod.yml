@@ -8,6 +8,8 @@ services:
       - ./AuthKey_8AFZ636P58.p8:/data/AuthKey_8AFZ636P58.p8:ro
     expose:
       - "8000"
+    ports:
+      - "127.0.0.1:8000:8000"
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
