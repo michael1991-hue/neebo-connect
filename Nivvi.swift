@@ -389,7 +389,9 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     @Published private(set) var powerReady = false
     @Published private(set) var powerNote = "Off sends 01. On sends 00."
     @Published private(set) var bandPowerCooldown = false
+    @Published private(set) var bandPowerWait = 0
     private var bandPowerUnlocked: DispatchWorkItem?
+    private var bandPowerTicker: Timer?
     private var chargePolicy = WearableChargePolicy()
     private var batteryPolicy = WearableBatteryPolicy()
     private var batteryFromStandard = false
@@ -1550,10 +1552,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         refreshBackgroundDelivery()
     }
     func setBandPower(on: Bool) {
-        guard !bandPowerCooldown else {
-            powerNote = "Wait 30 seconds before switching again."
-            return
-        }
+        guard bandPowerWait == 0 else { return }
         guard let p = peripheral, p.state == .connected, let c = powerCharacteristic else {
             powerNote = "Reconnect the band, then try again."
             return
@@ -1562,13 +1561,27 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         let type: CBCharacteristicWriteType = c.properties.contains(.write) ? .withResponse : .withoutResponse
         p.writeValue(Data([byte]), for: c, type: type)
         bandPowerOn = on
-        powerNote = on ? "Sent on (00)." : "Sent off (01)."
-        note("Wrote band power \(on ? "on 00" : "off 01")")
+        powerNote = ""
+        note("Wrote band power \(on ? "on" : "off")")
         bandPowerCooldown = true
+        bandPowerWait = 20
         bandPowerUnlocked?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.bandPowerCooldown = false }
+        bandPowerTicker?.invalidate()
+        let work = DispatchWorkItem { [weak self] in
+            self?.bandPowerTicker?.invalidate()
+            self?.bandPowerWait = 0
+            self?.bandPowerCooldown = false
+        }
         bandPowerUnlocked = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: work)
+        bandPowerTicker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] timer in
+            guard let self else { timer.invalidate(); return }
+            if self.bandPowerWait > 1 {
+                self.bandPowerWait -= 1
+            } else {
+                timer.invalidate()
+            }
+        }
     }
     func peripheral(_ p: CBPeripheral, didWriteValueFor c: CBCharacteristic, error: Error?) {
         guard owns(p), c === powerCharacteristic else { return }
@@ -4164,7 +4177,12 @@ struct ContentView: View {
                         Toggle("Band on/off", isOn: Binding(get: { monitor.bandPowerOn }, set: { monitor.setBandPower(on: $0) }))
                             .font(.subheadline.weight(.semibold))
                             .tint(switchOn)
-                            .disabled(!monitor.powerReady || monitor.bandPowerCooldown)
+                            .disabled(!monitor.powerReady || monitor.bandPowerWait > 0)
+                        if monitor.bandPowerWait > 0 {
+                            Text(monitor.bandPowerOn ? "\(monitor.bandPowerWait) seconds before switching again" : "\(monitor.bandPowerWait) seconds before turning back on")
+                                .font(.caption)
+                                .foregroundStyle(muted)
+                        }
                     }
                 }
             }
