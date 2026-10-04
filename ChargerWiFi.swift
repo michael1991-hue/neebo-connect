@@ -19,6 +19,7 @@ final class ChargerSetup: NSObject, ObservableObject, CBCentralManagerDelegate, 
     private var serverChar: CBCharacteristic?
     private var pendingPassword: Data?
     private var pendingServices = 0
+    private var claimWhenConfirmed = false
     private var scan: Timer?
     private let nivviServer = "mqtt.nivvi.app"
 
@@ -47,6 +48,7 @@ final class ChargerSetup: NSObject, ObservableObject, CBCentralManagerDelegate, 
             return
         }
         status = "Sending the Nivvi server."
+        claimWhenConfirmed = true
         write(Data(nivviServer.utf8), to: serverChar, on: peripheral)
     }
 
@@ -155,6 +157,10 @@ final class ChargerSetup: NSObject, ObservableObject, CBCentralManagerDelegate, 
             let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .controlCharacters) ?? ""
             server = text
             status = text == nivviServer ? "This charger uses the Nivvi server." : "Server is \(text.isEmpty ? "not set" : text)."
+            if claimWhenConfirmed && text == nivviServer {
+                claimWhenConfirmed = false
+                Task { await self.linkToFamily() }
+            }
         } else if id == "FFB3" {
             let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .controlCharacters) ?? ""
             if !text.isEmpty { status = "Charger says \(text)." }
@@ -198,6 +204,15 @@ final class ChargerSetup: NSObject, ObservableObject, CBCentralManagerDelegate, 
             return true
         }
         return false
+    }
+
+    private func linkToFamily() async {
+        do {
+            try await FamilyRelay.shared.claimCharger()
+            status = "This charger is linked to your family."
+        } catch {
+            status = error.localizedDescription
+        }
     }
 }
 

@@ -122,6 +122,8 @@ def initialize():
         CREATE TABLE IF NOT EXISTS pushes(id TEXT PRIMARY KEY,family TEXT REFERENCES families ON DELETE CASCADE,kind TEXT,created REAL,attempts INTEGER DEFAULT 0);
         CREATE TABLE IF NOT EXISTS activity_tokens(token TEXT PRIMARY KEY, secret TEXT NOT NULL, updated REAL NOT NULL, kind TEXT NOT NULL DEFAULT 'watcher');
         CREATE TABLE IF NOT EXISTS activity_latest(secret TEXT PRIMARY KEY, seq INTEGER NOT NULL, measured REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS chargers(serial TEXT PRIMARY KEY, family TEXT NOT NULL REFERENCES families ON DELETE CASCADE, claimed REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS charger_claims(family TEXT PRIMARY KEY REFERENCES families ON DELETE CASCADE, expires REAL NOT NULL);
         """)
         for stmt in (
             "ALTER TABLE members ADD COLUMN role TEXT NOT NULL DEFAULT 'watcher'",
@@ -1019,17 +1021,23 @@ def charger_reading(body: ChargerReading, request: Request):
     skin = body.temperature if body.temperature is not None and 10 <= body.temperature <= 45 else None
     battery = f"{body.battery}%" if body.battery is not None and 0 <= body.battery <= 100 else None
     now = time.time()
+    serial = "".join(ch for ch in str(body.serial) if ch.isdigit())[:20]
+    if not serial:
+        return {"ok": True, "skipped": "no serial"}
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
-        wanted = os.environ.get("NIVVI_CHARGER_FAMILY", "")
-        if wanted:
-            family = c.execute("SELECT id FROM families WHERE id=?", (wanted,)).fetchone()
+        mapped = c.execute("SELECT family FROM chargers WHERE serial=?", (serial,)).fetchone()
+        if mapped:
+            family_id = mapped["family"]
         else:
-            rows = c.execute("SELECT id FROM families").fetchall()
-            family = rows[0] if len(rows) == 1 else None
-        if family is None:
-            raise HTTPException(409, "Charger is not linked to one family")
-        family_id = family["id"]
+            pending = c.execute("SELECT family FROM charger_claims WHERE expires>?", (now,)).fetchall()
+            if len(pending) != 1:
+                return {"ok": True, "skipped": "unclaimed" if not pending else "ambiguous"}
+            family_id = pending[0]["family"]
+            c.execute("INSERT OR REPLACE INTO chargers VALUES(?,?,?)", (serial, family_id, now))
+            c.execute("DELETE FROM charger_claims WHERE family=?", (family_id,))
+        if not c.execute("SELECT 1 FROM families WHERE id=?", (family_id,)).fetchone():
+            return {"ok": True, "skipped": "unclaimed"}
         previous = c.execute("SELECT payload FROM latest WHERE family=?", (family_id,)).fetchone()
         old = json.loads(previous[0]) if previous else {}
         stamp = old.get("heart_rate_at") or old.get("captured") or 0
@@ -1065,6 +1073,15 @@ def charger_reading(body: ChargerReading, request: Request):
     live["kind"] = "live"
     HUB.emit(family_id, live)
     return {"ok": True, "seq": payload["seq"], "server_received": now}
+
+
+@app.post("/families/{family}/charger-claim")
+def claim_charger(family: str, user=Depends(require_user)):
+    """This phone's family is waiting for its own charger. Another family's charger is never taken."""
+    with db() as c:
+        member(c, family, user)
+        c.execute("INSERT OR REPLACE INTO charger_claims VALUES(?,?)", (family, time.time() + 180))
+    return {"ok": True}
 
 
 @app.post("/families/{family}/ack")

@@ -1,6 +1,5 @@
 import importlib.util
 import os
-import time
 from pathlib import Path
 
 import pytest
@@ -30,23 +29,26 @@ def account(client, email):
     return {"Authorization": "Bearer " + result["token"]}
 
 
-def test_charger_replaces_a_stale_phone_and_skips_a_fresh_one(client):
+def test_charger_stays_inside_the_family_that_claimed_it(client):
     owner = account(client, "charger-owner@example.com")
+    other = account(client, "other-parent@example.com")
     family = client.post("/families", headers=owner, json={"label": "Home"}).json()["id"]
+    stranger = client.post("/families", headers=other, json={"label": "Other"}).json()["id"]
     headers = {"X-Nivvi-Charger": "test-charger-secret"}
-    stale = {"captured": time.time() - 40, "heart_rate": 90, "heart_rate_at": time.time() - 40, "oxygen": 98, "source": "phone", "alarm": "none", "connection": "receiving", "stream_id": "phone", "seq": 1}
-    assert client.put(f"/families/{family}/latest", headers=owner, json=stale).status_code == 200
     reading = {"serial": "11298", "heart_rate": 83, "heart_state": 0, "oxygen": 97, "oxygen_state": 0, "temperature": 25.8, "battery": 81}
+    assert client.post("/internal/charger", headers=headers, json=reading).json()["skipped"] == "unclaimed"
+    assert client.post(f"/families/{family}/charger-claim", headers=owner).status_code == 200
+    assert client.post(f"/families/{stranger}/charger-claim", headers=other).status_code == 200
+    assert client.post("/internal/charger", headers=headers, json=reading).json()["skipped"] == "ambiguous"
+    relay_db = __import__("sqlite3").connect(relay.DB)
+    relay_db.execute("DELETE FROM charger_claims WHERE family=?", (stranger,))
+    relay_db.commit()
     posted = client.post("/internal/charger", headers=headers, json=reading)
     assert posted.status_code == 200 and posted.json()["ok"] is True
     snap = client.get(f"/families/{family}/latest", headers=owner).json()["snapshot"]
-    assert snap["source"] == "charger"
-    assert snap["heart_rate"] == 83
-    assert snap["oxygen"] == 97
-    assert snap["host_relation"] == "Charger"
-    assert snap["alarm"] == "none"
-    fresh = {"captured": time.time(), "heart_rate": 82, "heart_rate_at": time.time(), "oxygen": 96, "source": "phone", "alarm": "none", "connection": "receiving", "stream_id": "phone", "seq": snap["seq"] + 1}
-    assert client.put(f"/families/{family}/latest", headers=owner, json=fresh).status_code == 200
-    assert client.post("/internal/charger", headers=headers, json=reading).json()["skipped"] == "phone"
-    assert client.post("/internal/charger", json=reading).status_code == 404
-    assert client.post("/internal/charger", headers=headers, json={"serial": "11298", "heart_rate": 0, "heart_state": 0}).json()["skipped"] == "no pulse"
+    assert snap["source"] == "charger" and snap["heart_rate"] == 83 and snap["host_relation"] == "Charger"
+    assert client.get(f"/families/{stranger}/latest", headers=other).json()["snapshot"] is None
+    assert client.post("/internal/charger", headers=headers, json={"serial": "99999", "heart_rate": 80, "heart_state": 0}).json()["skipped"] == "unclaimed"
+    again = client.post("/internal/charger", headers=headers, json=reading)
+    assert again.json().get("skipped") != "unclaimed"
+    assert client.get(f"/families/{stranger}/latest", headers=other).json()["snapshot"] is None

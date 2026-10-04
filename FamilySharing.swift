@@ -458,6 +458,14 @@ final class FamilyRelay: ObservableObject {
         try await pushProfile()
         try await refreshFamilies()
     }
+    func claimCharger() async throws {
+        if families.isEmpty { try await refreshFamilies() }
+        guard let familyID = ownFamily?.id ?? selected else {
+            throw FamilyError.message("Join your child’s family first.")
+        }
+        let _: FamilyReply = try await request("families/\(familyID)/charger-claim", method: "POST")
+        message = "This charger will belong to this family."
+    }
     func refreshShareLink() async throws {
         guard let familyID = ownFamily?.id else { return }
         let reply: FamilyReply = try await request("families/\(familyID)/share-link", method: "POST")

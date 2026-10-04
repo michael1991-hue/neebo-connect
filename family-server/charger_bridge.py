@@ -7,6 +7,8 @@ Run on the Droplet, after NIVVI_CHARGER_SECRET is set and the family service is 
 import json
 import os
 import socket
+import time
+import urllib.error
 import urllib.request
 
 MQTT_HOST = os.environ.get("NIVVI_MQTT_HOST", "127.0.0.1")
@@ -114,8 +116,11 @@ def post(body):
         headers={"Content-Type": "application/json", "X-Nivvi-Charger": SECRET},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=5) as reply:
-        print(reply.read().decode()[:160], flush=True)
+    try:
+        with urllib.request.urlopen(req, timeout=5) as reply:
+            print(reply.read().decode()[:160], flush=True)
+    except urllib.error.HTTPError as error:
+        print(f"Post failed: {error.code} {error.read().decode()[:180]}", flush=True)
 
 
 def listen():
@@ -144,4 +149,9 @@ def listen():
 
 
 if __name__ == "__main__":
-    listen()
+    while True:
+        try:
+            listen()
+        except ConnectionError as error:
+            print(f"MQTT closed: {error}. Retrying.", flush=True)
+            time.sleep(2)
