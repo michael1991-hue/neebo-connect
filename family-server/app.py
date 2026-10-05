@@ -386,6 +386,8 @@ class Snapshot(BaseModel):
     skin: float | None = None
     sleep: str = Field(default="", max_length=40)
     alerts: list[FamilyAlertPoint] = Field(default_factory=list, max_length=40)
+    # Off keeps a real high/low return quiet. Omitted means on, so an older app still chimes.
+    recovery_chime: bool = True
 
 
 class Device(BaseModel):
@@ -953,6 +955,21 @@ def merge_snapshot(old, body: Snapshot, received):
     return payload
 
 
+def recent_shared_history(points, now, seconds=3600, limit=120):
+    """The monitoring phone's saved hour, so a follower can fill cards it missed."""
+    kept = []
+    for point in points or []:
+        if not isinstance(point, dict):
+            continue
+        try:
+            stamp = float(point.get("t") or 0)
+        except (TypeError, ValueError):
+            continue
+        if now - seconds <= stamp <= now + 15:
+            kept.append(point)
+    return kept[-limit:]
+
+
 @app.put("/families/{family}/latest")
 def publish(family: str, body: Snapshot, user=Depends(require_user)):
     now = time.time()
@@ -981,15 +998,19 @@ def publish(family: str, body: Snapshot, user=Depends(require_user)):
         payload["alarm"] = body.alarm
         c.execute("INSERT OR REPLACE INTO latest VALUES(?,?,?)", (family, json.dumps(payload), now))
         if body.alarm != old.get("alarm", "none"):
-            recovery = body.alarm == "none" and body.heart_rate is not None and old.get("alarm") in ("high", "low")
-            restored = body.alarm == "none" and body.heart_rate is not None and old.get("alarm") in ("sensor", "removed")
-            kind = "recovery" if recovery else "sensor-restored" if restored else "removed" if body.alarm == "removed" else "sensor" if body.alarm == "sensor" else "attention"
-            if recovery or restored or body.alarm != "none":
+            # A new reading, a sensor check, or the band coming back on must not
+            # banner anyone. Sound only for a high or low, the band leaving the
+            # skin, and a high or low that has returned while the chime is on.
+            recovery = body.alarm == "none" and body.heart_rate is not None and old.get("alarm") in ("high", "low") and body.recovery_chime
+            if recovery or body.alarm in ("high", "low", "removed"):
+                kind = "recovery" if recovery else "removed" if body.alarm == "removed" else "attention"
                 c.execute("DELETE FROM pushes WHERE family=?", (family,))
                 c.execute("INSERT INTO pushes(id,family,kind,created) VALUES(?,?,?,?)", (secrets.token_hex(16), family, kind, now))
     live = {key: value for key, value in payload.items() if key != "history"}
     live["type"] = "live"
     live["kind"] = "live"
+    if body.history:
+        live["history"] = recent_shared_history(payload.get("history"), now)
     HUB.emit(family, live)
     if payload.get("activity_secret"):
         queue_activity(payload["activity_secret"], activity_state(payload, payload.get("activity_secret")), paced=True)
@@ -1385,6 +1406,10 @@ async def deliver_pushes():
         pending = [dict(r) for r in c.execute("SELECT * FROM pushes WHERE created>? AND attempts<5", (time.time()-120,))]
     async with httpx.AsyncClient(http2=True, timeout=10) as client:
         for event in pending:
+            if event["kind"] in ("sensor", "sensor-restored"):
+                with db() as c:
+                    c.execute("DELETE FROM pushes WHERE id=?", (event["id"],))
+                continue
             with db() as c:
                 # Fetch membership at send time; never use a cached invitation recipient list.
                 tokens = [r[0] for r in c.execute(

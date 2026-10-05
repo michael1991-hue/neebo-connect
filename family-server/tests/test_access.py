@@ -93,7 +93,7 @@ def test_stale_ordering_and_recovery(client):
     assert client.get(path, headers=owner).json()["fresh"] is False
     assert client.put(path, headers=owner, json=snapshot("sensor")).status_code == 200
     with relay.db() as c:
-        assert c.execute("SELECT kind FROM pushes").fetchone()[0] == "sensor"
+        assert c.execute("SELECT kind FROM pushes").fetchone()[0] == "attention"
 
 
 def test_expired_invites_and_account_delete(client):
@@ -149,13 +149,19 @@ def test_sensor_recovery_is_not_a_heart_rate_recovery(client):
     assert client.put(path, headers=owner, json=snapshot("sensor")).status_code == 200
     assert client.put(path, headers=owner, json=snapshot("none")).status_code == 200
     with relay.db() as c:
-        assert c.execute("SELECT kind FROM pushes").fetchone()[0] == "sensor-restored"
+        assert c.execute("SELECT count(*) FROM pushes").fetchone()[0] == 0
     assert client.put(path, headers=owner, json=snapshot("high")).status_code == 200
     assert client.put(path, headers=owner, json=snapshot("none", hr=None)).status_code == 200
     assert client.get(path, headers=owner).json()["snapshot"]["alarm"] == "high"
     assert client.put(path, headers=owner, json=snapshot("none")).status_code == 200
     with relay.db() as c:
         assert c.execute("SELECT kind FROM pushes").fetchone()[0] == "recovery"
+    assert client.put(path, headers=owner, json=snapshot("high")).status_code == 200
+    quiet = snapshot("none")
+    quiet["recovery_chime"] = False
+    assert client.put(path, headers=owner, json=quiet).status_code == 200
+    with relay.db() as c:
+        assert c.execute("SELECT kind FROM pushes").fetchone()[0] == "attention"
 
 
 def test_invite_stores_family_relation(client):

@@ -119,12 +119,13 @@ struct FamilySnapshot: Codable {
     var skin: Double?
     var sleep: String?
     var alerts: [FamilyAlert] = []
+    var recovery_chime: Bool = true
 
     enum CodingKeys: String, CodingKey {
-        case captured, heart_rate, oxygen, heart_rate_at, oxygen_at, source, alarm, connection, history, stream_id, seq, kind, server_received, acknowledged, activity_secret, place, host_relation, acknowledged_by, battery, charging, skin, sleep, alerts
+        case captured, heart_rate, oxygen, heart_rate_at, oxygen_at, source, alarm, connection, history, stream_id, seq, kind, server_received, acknowledged, activity_secret, place, host_relation, acknowledged_by, battery, charging, skin, sleep, alerts, recovery_chime
     }
 
-    init(captured: Double, heart_rate: Double?, oxygen: Double?, source: String, alarm: String, connection: String, history: [FamilySample] = [], heart_rate_at: Double? = nil, oxygen_at: Double? = nil, stream_id: String? = nil, seq: Int? = nil, kind: String? = "live", acknowledged: Bool = false, activity_secret: String? = nil, place: String? = nil, host_relation: String? = nil, battery: String? = nil, charging: Bool? = nil, skin: Double? = nil, sleep: String? = nil, alerts: [FamilyAlert] = []) {
+    init(captured: Double, heart_rate: Double?, oxygen: Double?, source: String, alarm: String, connection: String, history: [FamilySample] = [], heart_rate_at: Double? = nil, oxygen_at: Double? = nil, stream_id: String? = nil, seq: Int? = nil, kind: String? = "live", acknowledged: Bool = false, activity_secret: String? = nil, place: String? = nil, host_relation: String? = nil, battery: String? = nil, charging: Bool? = nil, skin: Double? = nil, sleep: String? = nil, alerts: [FamilyAlert] = [], recovery_chime: Bool = true) {
         self.captured = captured
         self.heart_rate = heart_rate
         self.oxygen = oxygen
@@ -147,6 +148,7 @@ struct FamilySnapshot: Codable {
         self.skin = skin
         self.sleep = sleep
         self.alerts = alerts
+        self.recovery_chime = recovery_chime
     }
 
     init(from decoder: Decoder) throws {
@@ -174,6 +176,7 @@ struct FamilySnapshot: Codable {
         skin = try box.decodeIfPresent(Double.self, forKey: .skin)
         sleep = try box.decodeIfPresent(String.self, forKey: .sleep)
         alerts = try box.decodeIfPresent([FamilyAlert].self, forKey: .alerts) ?? []
+        recovery_chime = try box.decodeIfPresent(Bool.self, forKey: .recovery_chime) ?? true
     }
 
     func encode(to encoder: Encoder) throws {
@@ -201,6 +204,7 @@ struct FamilySnapshot: Codable {
         try box.encodeIfPresent(skin, forKey: .skin)
         try box.encodeIfPresent(sleep, forKey: .sleep)
         try box.encode(alerts, forKey: .alerts)
+        try box.encode(recovery_chime, forKey: .recovery_chime)
     }
 }
 struct RemoteReading: Codable {

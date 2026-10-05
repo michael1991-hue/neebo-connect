@@ -409,13 +409,39 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         didSet { UserDefaults.standard.set(selectedRelief.rawValue, forKey: "nivvi.sound.relief") }
     }
     @Published var removalAlertEnabled = UserDefaults.standard.object(forKey: "nivvi.removal.enabled") as? Bool ?? true {
-        didSet { UserDefaults.standard.set(removalAlertEnabled, forKey: "nivvi.removal.enabled") }
+        didSet {
+            UserDefaults.standard.set(removalAlertEnabled, forKey: "nivvi.removal.enabled")
+            if !removalAlertEnabled { cancelScheduledRemoval() }
+        }
     }
     @Published var removalMessage = UserDefaults.standard.string(forKey: "nivvi.removal.message") ?? "The band may have been taken off. Check it is still worn." {
         didSet { UserDefaults.standard.set(String(removalMessage.prefix(140)), forKey: "nivvi.removal.message") }
     }
     @Published var removalSound: NivviRelief = NivviRelief(rawValue: UserDefaults.standard.string(forKey: "nivvi.removal.sound") ?? "") ?? .warm {
         didSet { UserDefaults.standard.set(removalSound.rawValue, forKey: "nivvi.removal.sound") }
+    }
+    @Published var removalDelaySeconds: Int = {
+        let stored = UserDefaults.standard.object(forKey: "nivvi.removal.delay") as? Int ?? 30
+        return [15, 30, 60, 120, 300].contains(stored) ? stored : 30
+    }() {
+        didSet {
+            let allowed = [15, 30, 60, 120, 300]
+            let next = allowed.contains(removalDelaySeconds) ? removalDelaySeconds : 30
+            if next != removalDelaySeconds { removalDelaySeconds = next; return }
+            UserDefaults.standard.set(next, forKey: "nivvi.removal.delay")
+        }
+    }
+    var removalDelayLabel: String {
+        switch removalDelaySeconds {
+        case 15: return "15 seconds"
+        case 60: return "1 minute"
+        case 120: return "2 minutes"
+        case 300: return "5 minutes"
+        default: return "30 seconds"
+        }
+    }
+    @Published var recoverySoundEnabled = UserDefaults.standard.object(forKey: "nivvi.recovery.sound") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(recoverySoundEnabled, forKey: "nivvi.recovery.sound") }
     }
     @Published private(set) var bandRemoved = false
     @Published private(set) var removalAcknowledged = false
@@ -548,7 +574,8 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             charging: wearableCharging,
             skin: skinCelsius,
             sleep: sleepLine.isEmpty ? nil : sleepLine,
-            alerts: heartAlertsToShare()
+            alerts: heartAlertsToShare(),
+            recovery_chime: recoverySoundEnabled
         )
         Task { @MainActor in FamilyRelay.shared.capture(snapshot) }
         pushLocalShare()
@@ -899,7 +926,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             pauseHeartRate("No usable heart-rate reading received for over \(Int(HeartRateFreshness.timeout)) seconds. Check the wearable and connection; the cause is unknown.")
         }
         if removalAlertEnabled, connection.isConnected, !wearableCharging, hadLivePulse, !bandRemoved,
-           let last = lastHeartRateUpdate, Date().timeIntervalSince(last) >= 20 {
+           let last = lastHeartRateUpdate, Date().timeIntervalSince(last) >= TimeInterval(removalDelaySeconds) {
             noteBandRemoved()
         }
         if criticalAlertActive, !alarmAcknowledged, !bandRemoved, !shareAlertSensor, siren?.isPlaying != true, !testingSiren {
@@ -1060,6 +1087,10 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         try audio.setActive(true)
     }
     private func playReliefSound() {
+        guard recoverySoundEnabled else { return }
+        playReliefPreview()
+    }
+    private func playReliefPreview() {
         guard foreground else { return }
         do {
             guard let url = Bundle.main.url(forResource: selectedRelief.resource, withExtension: "wav") else { throw CocoaError(.fileNoSuchFile) }
@@ -1148,7 +1179,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     func testRecoverySound() {
         guard !criticalAlertActive else { return }
         stopSiren()
-        playReliefSound()
+        playReliefPreview()
     }
     func testSiren() {
         guard !criticalAlertActive else { return }
@@ -1249,6 +1280,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         UserDefaults.standard.set(session.deviceID?.uuidString, forKey: "nivvi.session.device")
     }
     private func resetTransport(clearBattery: Bool = false) {
+        cancelScheduledRemoval()
         pollTimer?.invalidate(); pollTimer = nil; noDataTimer?.invalidate()
         retryTimer?.invalidate(); retryTimer = nil; rssiTimer?.invalidate(); rssiTimer = nil
         transportPolicy.reset()
@@ -1626,7 +1658,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         let key = (c.service?.uuid.uuidString ?? "?") + "/" + uuid
         if uuid == "2A37", serviceID == "180D" {
             if BluetoothPolicy.reportsNoContact(data) {
-                noteBandRemoved()
+                scheduleBandRemoved()
                 pauseHeartRate("The band reports it is not on the skin.")
                 return
             }
@@ -1688,7 +1720,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
                 var clock = sleep
                 clock.removed(at: Date())
                 sleep = clock
-                noteBandRemoved()
+                scheduleBandRemoved()
             case .moving:
                 if wearableCharging { applyCharging(false) }
                 if bandRemoved { noteBandWorn() }
@@ -1781,6 +1813,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["nivvi-wifi-share-alarm", "nivvi-wifi-share-alarm-reminder"])
         UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["nivvi-wifi-share-alarm", "nivvi-wifi-share-alarm-reminder"])
         if !testingSiren { stopSiren() }
+        cancelScheduledRemoval()
         publishFamilySnapshot()
     }
     private func applyBatteryPercent(_ percent: Int, fromStandard: Bool) {
@@ -1834,7 +1867,6 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
                 recordEvent(kind: "measurement", title: "Fresh heart-rate reading restored", detail: "A changed \(source) value replaced the repeated reading. This does not establish sensor accuracy or a medical all-clear.", heartRate: Int(bpm.rounded()))
                 clearAlarmNotifications()
                 if !testingSiren { stopSiren() }
-                playReliefSound()
             }
         }
     }
@@ -1935,6 +1967,24 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         stopSiren()
         clearAlarmNotifications()
     }
+    private var removalWork: DispatchWorkItem?
+    private func scheduleBandRemoved() {
+        guard removalAlertEnabled, !wearableCharging, !bandRemoved, hadLivePulse else { return }
+        guard connection.isConnected || connection == .waiting else { return }
+        guard removalWork == nil else { return }
+        let delay = TimeInterval(removalDelaySeconds)
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.removalWork = nil
+            self.noteBandRemoved()
+        }
+        removalWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+    private func cancelScheduledRemoval() {
+        removalWork?.cancel()
+        removalWork = nil
+    }
     private func noteBandRemoved() {
         guard removalAlertEnabled, !wearableCharging, !bandRemoved, hadLivePulse else { return }
         guard connection.isConnected || connection == .waiting else { return }
@@ -1952,6 +2002,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     private func noteBandWorn() {
         hadLivePulse = true
         noPulseNotified = false
+        cancelScheduledRemoval()
         guard bandRemoved else { return }
         bandRemoved = false
         removalAcknowledged = false
@@ -4006,7 +4057,7 @@ struct ContentView: View {
                     .accessibilityLabel("Add note")
             }
             if displayedHistory.contains(where: { $0.source == "family-share" || $0.source == "wifi-share" }) {
-                Text("Includes readings this iPhone received while following. About one card every 30 seconds, same as that phone’s History. They stay here for 30 days.")
+                Text("This hour comes from the monitoring phone’s saved readings, about one card every 30 seconds. A gap means that phone had nothing for a minute or more. They stay here for 30 days.")
                     .font(.caption).foregroundStyle(muted)
             }
             if displayedHistory.isEmpty {
@@ -4266,7 +4317,7 @@ struct ContentView: View {
                 Divider()
                 settingsPush("Heart-rate alerts", configuredRangeLabel, "heart.text.square") { settingsScreen(.alerts) }
                 Divider()
-                settingsPush("Band", monitor.removalAlertEnabled ? "Removed alert on" : "Removed alert off", "applewatch") { settingsScreen(.band) }
+                settingsPush("Band", monitor.removalAlertEnabled ? "Removed alert after \(monitor.removalDelayLabel)" : "Removed alert off", "applewatch") { settingsScreen(.band) }
                 Divider()
                 settingsPush("Alert sounds", "Siren and recovery", "speaker.wave.2") { settingsScreen(.sounds) }
                 Divider()
@@ -4315,12 +4366,19 @@ struct ContentView: View {
             panel { VStack(alignment: .leading, spacing: 12) {
                 Toggle("Band removed alert", isOn: $monitor.removalAlertEnabled).tint(switchOn)
                     .onChange(of: monitor.removalAlertEnabled) { enabled in if enabled { monitor.requestNotificationPermission() } }
+                Picker("Alert after", selection: $monitor.removalDelaySeconds) {
+                    Text("15 seconds").tag(15)
+                    Text("30 seconds").tag(30)
+                    Text("1 minute").tag(60)
+                    Text("2 minutes").tag(120)
+                    Text("5 minutes").tag(300)
+                }
                 TextField("Message", text: $monitor.removalMessage, axis: .vertical).lineLimit(2...3)
                 Picker("Warning sound", selection: $monitor.removalSound) {
                     ForEach(NivviRelief.allCases) { Text($0.title).tag($0) }
                 }
                 Button("Preview warning") { monitor.previewRemovalSound() }.buttonStyle(.bordered)
-                Text("Sounds once if the band leaves the skin, or the pulse stops for 20 seconds. It stays quiet until the band is worn again.")
+                Text("Starts when the band leaves the skin, or the pulse stops. If it is back before this ends, nothing sounds. Heart-rate alarms stay immediate.")
                     .font(.caption).foregroundStyle(muted)
                 Divider()
                 Toggle("Temperature in Fahrenheit", isOn: $skinFahrenheit).tint(switchOn)
@@ -4328,6 +4386,9 @@ struct ContentView: View {
         case .sounds:
             panel { VStack(alignment: .leading, spacing: 12) {
                 Text("The siren plays in the app on Silent. A lock-screen banner can still be quiet.")
+                    .font(.caption).foregroundStyle(muted)
+                Toggle("Recovery chime", isOn: $monitor.recoverySoundEnabled).tint(switchOn)
+                Text("Only after a high or low comes back into range. Family phones follow this. A dropout, or the band coming back on, stays quiet.")
                     .font(.caption).foregroundStyle(muted)
                 Picker("Siren", selection: $monitor.selectedSiren) { ForEach(NivviSiren.allCases) { Text($0.title).tag($0) } }
                 Picker("Recovery", selection: $monitor.selectedRelief) { ForEach(NivviRelief.allCases) { Text($0.title).tag($0) } }

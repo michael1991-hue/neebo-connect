@@ -115,7 +115,7 @@ enum FamilyLivePolicy {
         !catchup && previous != next && next != "none"
     }
     static func shouldSoundRecovery(catchup: Bool, previous: String, next: String, hasHeartRate: Bool) -> Bool {
-        !catchup && hasHeartRate && previous != "none" && next == "none"
+        !catchup && hasHeartRate && (previous == "high" || previous == "low") && next == "none"
     }
     static func reconnectDelay(attempt: Int) -> TimeInterval {
         guard attempt > 1 else { return 0 }
@@ -330,8 +330,8 @@ struct HistoryChartPoint: Identifiable {
     let series: String
 }
 enum HistoryChartPolicy {
-    // Historical snapshots are normally 30 seconds apart. Older records have no
-    // continuity ID, so a saved interval over 60 seconds also breaks their line.
+    // A line breaks only when the sensor saved nothing for longer than `gap`
+    // (about a minute). A new session id on its own does not open a gap.
     static func points(_ entries: [SavedMeasurement], metric: HistoryMetric, maximum: Int = 600, gap: TimeInterval = 60) -> [HistoryChartPoint] {
         var result: [HistoryChartPoint] = []
         for (source, values) in Dictionary(grouping: entries, by: { $0.source }) {
@@ -349,8 +349,7 @@ enum HistoryChartPolicy {
             }
             for entry in values.sorted(by: { $0.time < $1.time }) {
                 guard metric.value(entry) != nil else { flush(); continue }
-                if let last = segment.last,
-                   entry.time.timeIntervalSince(last.time) > gap || last.continuityID != entry.continuityID { flush() }
+                if let last = segment.last, entry.time.timeIntervalSince(last.time) > gap { flush() }
                 segment.append(entry)
             }
             flush()

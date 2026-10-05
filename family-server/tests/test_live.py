@@ -59,6 +59,20 @@ def test_live_socket_snapshot_then_event_and_seq(client):
         assert event["heart_rate"] == 110
         assert event["oxygen"] == 97
         assert event["heart_rate_at"] >= event["oxygen_at"] - 1
+        hour = now - 30
+        third = snapshot(
+            captured=later + 1,
+            seq=3,
+            history=[{"t": hour, "hr": 90, "o2": 97}, {"t": now - 4000, "hr": 80, "o2": 96}],
+        )
+        assert client.put(f"/families/{family}/latest", headers=owner, json=third).status_code == 200
+        filled = ws.receive_json()
+        if filled.get("type") == "ping":
+            filled = ws.receive_json()
+        assert filled["type"] == "live"
+        assert len(filled["history"]) == 1
+        assert filled["history"][0]["hr"] == 90
+        assert filled["history"][0]["t"] == hour
     stale = snapshot(captured=later + 0.1, seq=2)
     assert client.put(f"/families/{family}/latest", headers=owner, json=stale).status_code == 409
     remote = client.get(f"/families/{family}/latest", headers=reader).json()
