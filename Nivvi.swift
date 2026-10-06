@@ -1117,25 +1117,10 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         refreshBackgroundHold()
     }
     func refreshBackgroundHold() {
-        let need = session.enabled || WiFiRelay.shared.hosting || WiFiRelay.shared.following || FamilyRelay.keepBackgroundHold
-        if !need || testingSiren || (criticalAlertActive && !alarmAcknowledged) {
-            holdPlayer?.stop(); holdPlayer = nil
-            return
-        }
-        startMonitoringHold()
-    }
-    private func startMonitoringHold() {
-        if holdPlayer?.isPlaying == true { return }
-        do {
-            try configureAlarmAudio()
-            guard let url = Bundle.main.url(forResource: "NivviHold", withExtension: "wav") else { return }
-            holdPlayer = try AVAudioPlayer(contentsOf: url)
-            holdPlayer?.numberOfLoops = -1
-            holdPlayer?.volume = 0
-            _ = holdPlayer?.play()
-        } catch {
-            holdPlayer = nil
-        }
+        // Bluetooth wakes the app for a reading. A silent loop kept the
+        // phone awake all day and was the background battery drain.
+        holdPlayer?.stop()
+        holdPlayer = nil
     }
     func beginShareAlert(sensor: Bool) {
         if shareAlertActive && shareAlertSensor == sensor {
@@ -1199,8 +1184,8 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     @objc private func audioInterrupted(_ note: Notification) {
         let type = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
         guard type == AVAudioSession.InterruptionType.ended.rawValue else { return }
-        try? AVAudioSession.sharedInstance().setActive(true)
         if criticalAlertActive, !alarmAcknowledged {
+            try? AVAudioSession.sharedInstance().setActive(true)
             startSiren(loop: true)
         } else {
             refreshBackgroundHold()
