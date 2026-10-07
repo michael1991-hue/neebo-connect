@@ -16,6 +16,7 @@ def client(tmp_path):
     relay.DB = str(tmp_path / "test.sqlite")
     relay.OUTBOX.clear()
     relay.ACTIVITY_PUSHES.clear()
+    relay.ACTIVITY_GATE.clear()
     with TestClient(relay.app) as value:
         yield value
 
@@ -119,7 +120,7 @@ def test_live_activity_seq_and_token(client):
     newer = dict(first)
     newer["seq"] = 2
     newer["heart_rate"] = "106 bpm"
-    newer["measured_at"] = now + 0.3
+    newer["measured_at"] = now + 4.5
     assert client.post("/live-activity/publish", json=newer).status_code == 200
     assert relay.ACTIVITY_PUSHES[-1]["state"]["heartRate"] == "106 bpm"
 
@@ -137,7 +138,7 @@ def test_family_latest_fans_out_activity_push(client):
     assert relay.ACTIVITY_PUSHES[-1]["token"] == token
     assert "112" in relay.ACTIVITY_PUSHES[-1]["state"]["heartRate"]
     relay.ACTIVITY_PUSHES.clear()
-    changed = snapshot(captured=now + 0.2, heart_rate=113, heart_rate_at=now + 0.2, oxygen=97, oxygen_at=now, seq=2)
+    changed = snapshot(captured=now + 5, heart_rate=113, heart_rate_at=now + 5, oxygen=97, oxygen_at=now, seq=2)
     changed["activity_secret"] = secret
     assert client.put(f"/families/{family}/latest", headers=owner, json=changed).status_code == 200
     assert relay.ACTIVITY_PUSHES, "a one-beat change must reach watching phones immediately"

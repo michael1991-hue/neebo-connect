@@ -1254,7 +1254,7 @@ def publish_activity(body: ActivityPublish, request: Request):
         "title": body.title,
         "sleep": body.sleep,
     }
-    queue_activity(body.secret, state)
+    queue_activity(body.secret, state, paced=True)
     return {"ok": True, "seq": body.seq}
 
 
@@ -1325,25 +1325,24 @@ def reading_number(text):
 
 
 def watcher_due(secret, state, now):
-    """A new heart rate or oxygen goes out at once. The same numbers are
-    refreshed about once a second so the lock screen does not sit for minutes."""
+    """Send at once when the number changes, otherwise about every 20 seconds.
+    A push every second is dropped by Apple and the watching lock screen goes stale."""
     alarm = state.get("alarm") or ""
     hr = reading_number(state.get("heartRate"))
     ox = reading_number(state.get("oxygen"))
-    try:
-        measured = float(state.get("measuredAt") or 0)
-    except (TypeError, ValueError):
-        measured = 0
     previous = ACTIVITY_GATE.get(f"{secret}:watcher") or {}
+    try:
+        stamp = float(state.get("measuredAt") or now)
+    except (TypeError, ValueError):
+        stamp = now
     number_changed = (hr is not None and hr != previous.get("hr")) or (ox is not None and ox != previous.get("ox"))
-    if alarm in ("high", "low") and previous.get("alarm") != alarm:
-        number_changed = True
-    new_reading = measured > float(previous.get("measured") or 0) + 0.4
-    if previous and not number_changed and not new_reading and now - previous.get("at", 0) < 15:
+    alarm_changed = alarm in ("high", "low") and previous.get("alarm") != alarm
+    elapsed = stamp - float(previous.get("measured") or 0) if previous else 999
+    if previous and not alarm_changed and elapsed < 4:
         return False
-    if previous and not number_changed and now - previous.get("at", 0) < 1:
+    if previous and not number_changed and not alarm_changed and elapsed < 20:
         return False
-    ACTIVITY_GATE[f"{secret}:watcher"] = {"at": now, "alarm": alarm, "hr": hr, "ox": ox, "measured": measured}
+    ACTIVITY_GATE[f"{secret}:watcher"] = {"at": now, "alarm": alarm, "hr": hr, "ox": ox, "measured": stamp}
     return True
 
 

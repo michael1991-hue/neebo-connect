@@ -1,10 +1,13 @@
 import Foundation
 import ActivityKit
+import UIKit
 
 enum LiveActivityPush {
     private static let secretKey = "nivvi.activity.secret"
     private static let followKey = "nivvi.activity.followSecret"
     private static var lastPublish = Date.distantPast
+    private static var lastSentHeart = ""
+    private static var lastSentOxygen = ""
     private static var uploadSeq = 0
     private static var lastToken = ""
     private static var watching = false
@@ -51,12 +54,22 @@ enum LiveActivityPush {
     }
 
     static func publish(title: String, heartRate: String, oxygen: String, connection: String, measuredAt: Date, session: String, sleep: String = "") {
+        let now = Date()
+        let changed = heartRate != lastSentHeart || oxygen != lastSentOxygen
+        let elapsed = now.timeIntervalSince(lastPublish)
+        // A push every second makes Apple drop them, so the watching lock
+        // screen then sits for minutes even though this phone is live.
+        if changed {
+            if elapsed < 4 { return }
+        } else if elapsed < 20 {
+            return
+        }
+        lastPublish = now
+        lastSentHeart = heartRate
+        lastSentOxygen = oxygen
         uploadSeq += 1
         let seq = uploadSeq
         let measured = measuredAt.timeIntervalSince1970
-        let now = Date()
-        if now.timeIntervalSince(lastPublish) < 1 { return }
-        lastPublish = now
         let body: [String: Any] = [
             "secret": secret,
             "seq": seq,
@@ -68,7 +81,11 @@ enum LiveActivityPush {
             "title": title,
             "sleep": sleep
         ]
-        Task { await post("live-activity/publish", body: body) }
+        let task = UIApplication.shared.beginBackgroundTask(withName: "nivvi.lock-push") {}
+        Task {
+            await post("live-activity/publish", body: body)
+            if task != .invalid { UIApplication.shared.endBackgroundTask(task) }
+        }
     }
 
     @available(iOS 16.1, *)
