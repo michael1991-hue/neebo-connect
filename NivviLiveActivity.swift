@@ -99,6 +99,18 @@ enum NivviLiveActivityBridge {
         return !Activity<NivviActivityAttributes>.activities.isEmpty
     }
 
+    /// The in-app reading is live, but the lock-screen card is old or duplicated.
+    static func lockScreenNeedsRestart() -> Bool {
+        guard #available(iOS 16.2, *) else { return false }
+        let activities = Activity<NivviActivityAttributes>.activities
+        if activities.count > 1 { return true }
+        guard let activity = activities.first else { return false }
+        if activity.activityState == .stale || activity.content.state.stale { return true }
+        if let until = activity.content.staleDate, until <= Date() { return true }
+        let measured = activity.content.state.measuredAt
+        return measured > 0 && Date().timeIntervalSince1970 - measured > 90
+    }
+
     @MainActor
     static func restart() async {
         guard #available(iOS 16.1, *) else { return }

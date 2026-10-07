@@ -2744,6 +2744,7 @@ struct ContentView: View {
     @State private var showFamily = false
     @State private var showCharger = false
     @State private var lockScreenNote = "Starts a new 8 hours. The card blinks off, then comes back."
+    @State private var lastLockScreenHeal = Date.distantPast
     @State private var showProfile = false
     @State private var showSettings = false
     @State private var historySpan = 1
@@ -2927,6 +2928,18 @@ struct ContentView: View {
             lockScreenNote = NivviLiveActivityBridge.cardRunning
                 ? "New lock screen started. That begins another 8 hours."
                 : "The lock screen did not start. Allow Live Activities for Nivvi, then try again."
+        }
+    }
+
+    private func healLockScreenIfStale() {
+        guard Date().timeIntervalSince(lastLockScreenHeal) > 20 else { return }
+        let fresh = remoteStamp ?? monitor.lastHeartRateUpdate
+        guard let fresh, Date().timeIntervalSince(fresh) < 90 else { return }
+        guard NivviLiveActivityBridge.lockScreenNeedsRestart() else { return }
+        lastLockScreenHeal = Date()
+        Task {
+            await NivviLiveActivityBridge.restart()
+            syncLiveActivity(forceNew: true)
         }
     }
 
@@ -3161,7 +3174,10 @@ struct ContentView: View {
         .onChange(of: scenePhase) { phase in
             wifi.revive()
             monitor.refreshBackgroundHold()
-            if phase == .active { family.resumeForeground() }
+            if phase == .active {
+                family.resumeForeground()
+                healLockScreenIfStale()
+            }
         }
         .sheet(isPresented: $showProfile) {
             ProfileSetupView(name: childName, birthDate: birthDate, gender: childGender, avatarSymbol: avatarSymbol, avatarColor: avatarColor) { name, date, gender, symbol, color in
@@ -3232,12 +3248,14 @@ struct ContentView: View {
             applyShareAlert()
             persistSharedHistory()
             syncLiveActivity()
+            healLockScreenIfStale()
             UIApplication.shared.isIdleTimerDisabled = wifi.hosting || wifi.following || monitor.connection.isConnected || family.viewingRemote
         }
         .onChange(of: wifi.latest) { _ in
             applyShareAlert()
             persistSharedHistory()
             syncLiveActivity()
+            healLockScreenIfStale()
         }
         .onChange(of: wifi.pin) { value in UserDefaults.standard.set(value, forKey: "nivvi.wifi.pin") }
         .sheet(isPresented: $showFamily) {
