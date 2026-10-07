@@ -1279,6 +1279,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         cancelScheduledRemoval()
         pollTimer?.invalidate(); pollTimer = nil; noDataTimer?.invalidate()
         retryTimer?.invalidate(); retryTimer = nil; rssiTimer?.invalidate(); rssiTimer = nil
+        reconnectWatchdog?.invalidate(); reconnectWatchdog = nil
         transportPolicy.reset()
         signalRSSI = nil
         measurementNotificationsEnabled = false
@@ -1304,11 +1305,43 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         guard session.enabled, manager.state == .poweredOn else { return }
         retryTimer?.invalidate(); retryTimer = nil
         retryScan = true; connection = .reconnecting
-        // A filtered scan is retained by Core Bluetooth while this process sleeps.
-        manager.scanForPeripherals(
-            withServices: BluetoothPolicy.measurementServices.map { CBUUID(string: $0) },
-            options: [CBCentralManagerScanOptionAllowDuplicatesKey: true]
-        )
+        // In the foreground, look for the saved band even if it hides its
+        // service after a bad drop. A filtered scan is kept for the background.
+        let services: [CBUUID]? = foreground ? nil : BluetoothPolicy.measurementServices.map { CBUUID(string: $0) }
+        manager.scanForPeripherals(withServices: services, options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
+        armReconnectWatchdog()
+    }
+    private var reconnectWatchdog: Timer?
+    private var reconnectSince: Date?
+    private func armReconnectWatchdog() {
+        guard reconnectWatchdog == nil else { return }
+        reconnectSince = Date()
+        let timer = Timer(timeInterval: 15, repeats: true) { [weak self] _ in self?.kickStuckConnection() }
+        RunLoop.main.add(timer, forMode: .common)
+        reconnectWatchdog = timer
+    }
+    private func kickStuckConnection() {
+        guard session.enabled, manager.state == .poweredOn else { return }
+        guard connection == .reconnecting || connection == .connecting else {
+            reconnectWatchdog?.invalidate(); reconnectWatchdog = nil
+            return
+        }
+        let held = manager.retrieveConnectedPeripherals(withServices: BluetoothPolicy.measurementServices.map { CBUUID(string: $0) })
+        if let found = held.first(where: { session.shouldReconnect($0.identifier) }), found.state == .connected {
+            peripheral = found
+            found.delegate = self
+            connection = .discovering
+            configureConnectedServices(found)
+            reconnectWatchdog?.invalidate(); reconnectWatchdog = nil
+            note("Found the band still connected to this iPhone and joined it again.")
+            return
+        }
+        if let p = peripheral, p.state == .connecting || p.state == .disconnecting {
+            note("Cancelled a stuck Bluetooth connection and looked again.")
+            manager.cancelPeripheralConnection(p)
+        }
+        reconnectSince = Date()
+        beginRecoveryScan()
     }
     private func resumeSession() {
         guard session.enabled, let id = session.deviceID, manager.state == .poweredOn else { return }
@@ -1330,7 +1363,14 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
                 if rssiTimer == nil { startSignalMonitoring(p) }
             }
         case .connecting:
-            connection = .reconnecting // Keep the existing OS-managed request.
+            if let since = reconnectSince, Date().timeIntervalSince(since) >= 15 {
+                note("Cancelled a stuck Bluetooth connection and looked again.")
+                manager.cancelPeripheralConnection(p)
+                beginRecoveryScan()
+            } else {
+                connection = .reconnecting
+                armReconnectWatchdog()
+            }
         case .disconnected:
             if retryScan { manager.stopScan(); retryScan = false }
             connection = .reconnecting
@@ -1478,6 +1518,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     func centralManager(_ central: CBCentralManager, didConnect p: CBPeripheral) {
         guard p === peripheral, session.shouldReconnect(p.identifier), connection != .stopping else { central.cancelPeripheralConnection(p); return }
         resetTransport(); retrySeconds = 2; retryScan = false; central.stopScan(); connection = .discovering; p.delegate = self
+        reconnectWatchdog?.invalidate(); reconnectWatchdog = nil
         status = "Connected. Discovering battery and measurement services…"
         note("Bluetooth connection established. Continuous session enabled.")
         let briefGap = connectionGap != nil
@@ -1526,7 +1567,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         }
         connectionGap = gap
         DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: gap)
-        if central.state == .poweredOn { resumeSession() }
+        if central.state == .poweredOn { resumeSession(); armReconnectWatchdog() }
         else { connection = .bluetoothOff }
     }
     func peripheral(_ peripheral: CBPeripheral, didReadRSSI RSSI: NSNumber, error: Error?) {
