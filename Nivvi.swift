@@ -939,6 +939,10 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         if criticalAlertActive, !alarmAcknowledged, !bandRemoved, !shareAlertSensor, siren?.isPlaying != true, !testingSiren {
             startSiren(loop: true)
         }
+        if connection.isConnected, !wearableCharging, hadLivePulse,
+           lastHeartRateUpdate.map({ Date().timeIntervalSince($0) >= 12 }) ?? true {
+            rearmMeasurementStream()
+        }
         if connection.isConnected, let c = stillnessCharacteristic, c.properties.contains(.read),
            lastStillnessRead == nil || Date().timeIntervalSince(lastStillnessRead!) >= 15 {
             lastStillnessRead = Date()
@@ -1278,6 +1282,8 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         transportPolicy.reset()
         signalRSSI = nil
         measurementNotificationsEnabled = false
+        rearmAt = nil
+        rearmWaiting.removeAll()
         readQueue = []; pendingRead = nil; measurementCharacteristic = nil
         powerCharacteristic = nil
         powerReady = false
@@ -1623,6 +1629,9 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         if c === measurementCharacteristic && (error != nil || !c.isNotifying) {
             measurementStatus = "Measurement notifications unavailable. Polling works only when iOS allows execution; background recording is unconfirmed."
         }
+        if !c.isNotifying, rearmWaiting.remove(ObjectIdentifier(c)) != nil {
+            p.setNotifyValue(true, for: c)
+        }
     }
     func peripheral(_ p: CBPeripheral, didUpdateValueFor c: CBCharacteristic, error: Error?) {
         guard owns(p) else { return }
@@ -1715,13 +1724,13 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
                 scheduleBandRemoved()
             case .moving:
                 if wearableCharging { applyCharging(false) }
-                if bandRemoved { noteBandWorn() }
+                if bandRemoved { noteBandWorn(); rearmMeasurementStream() }
                 var clock = sleep
                 clock.markActive(at: Date())
                 sleep = clock
             case .still:
                 if wearableCharging { applyCharging(false) }
-                if bandRemoved { noteBandWorn() }
+                if bandRemoved { noteBandWorn(); rearmMeasurementStream() }
                 var clock = sleep
                 clock.observe(still: true, at: Date(), heartRate: freshSleepRate)
                 sleep = clock
@@ -1958,6 +1967,40 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         notify(title: "No heart rate", body: "The band reported no pulse. This will not repeat until a reading returns.", identifier: "nivvi-no-heart-rate", sirenSound: false, soundName: removalSound.notificationFile, critical: true)
         stopSiren()
         clearAlarmNotifications()
+    }
+    private var rearmAt: Date?
+    private var rearmWaiting = Set<ObjectIdentifier>()
+    private func liveStreamCharacteristics() -> [CBCharacteristic] {
+        guard let p = peripheral else { return [] }
+        var found: [CBCharacteristic] = []
+        for service in p.services ?? [] {
+            let sid = BluetoothPolicy.normalized(service.uuid.uuidString)
+            for c in service.characteristics ?? [] {
+                let cid = BluetoothPolicy.normalized(c.uuid.uuidString)
+                let live = (sid == "FFE0" && cid == BluetoothPolicy.customMeasurementUUID)
+                    || (sid == "180D" && cid == "2A37")
+                    || (sid == "1822" && cid == "2A5F")
+                if live { found.append(c) }
+            }
+        }
+        return found
+    }
+    private func rearmMeasurementStream() {
+        guard let p = peripheral, owns(p) else { return }
+        if let rearmAt, Date().timeIntervalSince(rearmAt) < 12 { return }
+        let targets = liveStreamCharacteristics().filter { $0.properties.contains(.notify) || $0.properties.contains(.indicate) }
+        guard !targets.isEmpty else { return }
+        rearmAt = Date()
+        for c in targets {
+            if c.isNotifying {
+                rearmWaiting.insert(ObjectIdentifier(c))
+                p.setNotifyValue(false, for: c)
+            } else {
+                p.setNotifyValue(true, for: c)
+            }
+            if c.properties.contains(.read) { enqueueRead(c) }
+        }
+        note("Asked the band to send readings again.")
     }
     private var removalWork: DispatchWorkItem?
     private func scheduleBandRemoved() {
