@@ -23,6 +23,18 @@ services:
       - caddy-config:/config
     depends_on:
       - family
+  charger:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    network_mode: host
+    environment:
+      NIVVI_MQTT_HOST: 127.0.0.1
+      NIVVI_MQTT_PORT: "1883"
+      NIVVI_FAMILY_CHARGER_URL: http://127.0.0.1:8000/internal/charger
+    command: ["python3", "charger_bridge.py"]
+    depends_on:
+      - family
 volumes:
   nivvi-data:
   caddy-data:

@@ -988,26 +988,37 @@ def publish(family: str, body: Snapshot, user=Depends(require_user)):
         previous = c.execute("SELECT payload FROM latest WHERE family=?", (family,)).fetchone()
         old = json.loads(previous[0]) if previous else {}
         if charger_is_live(old, now):
-            return {"ok": True, "skipped": "charger", "seq": old.get("seq"), "server_received": now}
-        old_seq = int(old.get("seq") or 0)
-        if body.stream_id and old.get("stream_id") == body.stream_id and body.seq is not None and body.seq <= old_seq:
-            raise HTTPException(409, "An older snapshot cannot replace a newer one")
-        if body.seq is None and old.get("captured", 0) > body.captured:
-            raise HTTPException(409, "An older snapshot cannot replace a newer one")
-        if body.heart_rate is None and body.alarm == "none" and old.get("alarm") in ("high", "low"):
-            body.alarm = old["alarm"]
-        payload = merge_snapshot(old, body, now)
-        payload["alarm"] = body.alarm
-        c.execute("INSERT OR REPLACE INTO latest VALUES(?,?,?)", (family, json.dumps(payload), now))
-        if body.alarm != old.get("alarm", "none"):
-            # A new reading, a sensor check, or the band coming back on must not
-            # banner anyone. Sound only for a high or low, the band leaving the
-            # skin, and a high or low that has returned while the chime is on.
-            recovery = body.alarm == "none" and body.heart_rate is not None and old.get("alarm") in ("high", "low") and body.recovery_chime
-            if recovery or body.alarm in ("high", "low", "removed"):
-                kind = "recovery" if recovery else "removed" if body.alarm == "removed" else "attention"
-                c.execute("DELETE FROM pushes WHERE family=?", (family,))
-                c.execute("INSERT INTO pushes(id,family,kind,created) VALUES(?,?,?,?)", (secrets.token_hex(16), family, kind, now))
+            secret = (body.activity_secret or "").strip()
+            if secret and not old.get("activity_secret"):
+                old["activity_secret"] = secret
+                c.execute("INSERT OR REPLACE INTO latest VALUES(?,?,?)", (family, json.dumps(old), now))
+            held = old
+        else:
+            held = None
+        if held is None:
+            old_seq = int(old.get("seq") or 0)
+            if body.stream_id and old.get("stream_id") == body.stream_id and body.seq is not None and body.seq <= old_seq:
+                raise HTTPException(409, "An older snapshot cannot replace a newer one")
+            if body.seq is None and old.get("captured", 0) > body.captured:
+                raise HTTPException(409, "An older snapshot cannot replace a newer one")
+            if body.heart_rate is None and body.alarm == "none" and old.get("alarm") in ("high", "low"):
+                body.alarm = old["alarm"]
+            payload = merge_snapshot(old, body, now)
+            payload["alarm"] = body.alarm
+            c.execute("INSERT OR REPLACE INTO latest VALUES(?,?,?)", (family, json.dumps(payload), now))
+            if body.alarm != old.get("alarm", "none"):
+                # A new reading, a sensor check, or the band coming back on must not
+                # banner anyone. Sound only for a high or low, the band leaving the
+                # skin, and a high or low that has returned while the chime is on.
+                recovery = body.alarm == "none" and body.heart_rate is not None and old.get("alarm") in ("high", "low") and body.recovery_chime
+                if recovery or body.alarm in ("high", "low", "removed"):
+                    kind = "recovery" if recovery else "removed" if body.alarm == "removed" else "attention"
+                    c.execute("DELETE FROM pushes WHERE family=?", (family,))
+                    c.execute("INSERT INTO pushes(id,family,kind,created) VALUES(?,?,?,?)", (secrets.token_hex(16), family, kind, now))
+    if held is not None:
+        if held.get("activity_secret"):
+            queue_activity(held["activity_secret"], activity_state(held, held["activity_secret"]), paced=True)
+        return {"ok": True, "skipped": "charger", "seq": held.get("seq"), "server_received": now}
     live = {key: value for key, value in payload.items() if key != "history"}
     live["type"] = "live"
     live["kind"] = "live"
