@@ -78,11 +78,12 @@ def test_charger_pushes_the_lock_screen(client):
     relay.ACTIVITY_PUSHES.clear()
     assert client.post(f"/families/{family}/charger-claim", headers=owner).status_code == 200
     headers = {"X-Nivvi-Charger": "test-charger-secret"}
-    reading = {"serial": "11298", "heart_rate": 91, "heart_state": 0, "oxygen": 98, "oxygen_state": 0, "temperature": 31.5, "battery": 66}
+    reading = {"serial": "11298", "heart_rate": 91, "heart_state": 0, "oxygen": 98, "oxygen_state": 0, "temperature": 31.5, "battery": 66, "sleep": True, "sleep_sec": 194}
     posted = client.post("/internal/charger", headers=headers, json=reading)
     assert posted.status_code == 200 and posted.json()["ok"] is True
     assert relay.ACTIVITY_PUSHES, "a charger reading must update the lock screen"
     assert relay.ACTIVITY_PUSHES[-1]["token"] == token
     assert "91" in relay.ACTIVITY_PUSHES[-1]["state"]["heartRate"]
+    assert relay.ACTIVITY_PUSHES[-1]["state"]["sleep"] == "Asleep · 3 min"
     snap = client.get(f"/families/{family}/latest", headers=owner).json()["snapshot"]
-    assert snap["activity_secret"] == secret and snap["source"] == "charger"
+    assert snap["activity_secret"] == secret and snap["source"] == "charger" and snap["sleep"] == "Asleep · 3 min"

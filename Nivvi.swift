@@ -2994,8 +2994,12 @@ struct ContentView: View {
             stale: stale,
             alarm: alarm,
             forceNew: forceNew,
-            sleep: monitor.sleepLockLine
+            sleep: remoteSleepLine
         )
+    }
+    private var remoteSleepLine: String {
+        guard watchingFamily, !monitor.connection.isConnected, family.remote?.snapshot?.source == "charger" else { return "" }
+        return family.remote?.snapshot?.sleep ?? ""
     }
     private func publishWiFiShare() {
         guard wifi.hosting else { return }

@@ -118,6 +118,10 @@ def reading_from(raw):
         body["oxygen_state"] = oxygen.get("state")
     if isinstance(temp, dict):
         body["temperature"] = temp.get("value")
+    if data.get("sleep_flag") is True:
+        body["sleep"] = True
+        if isinstance(data.get("sleep_sec"), (int, float)) and data.get("sleep_sec") >= 0:
+            body["sleep_sec"] = int(data["sleep_sec"])
     return body
 
 

@@ -1025,6 +1025,8 @@ class ChargerReading(BaseModel):
     oxygen_state: int | None = None
     temperature: float | None = None
     battery: int | None = None
+    sleep: bool | None = None
+    sleep_sec: int | None = None
 
 
 @app.post("/internal/charger")
@@ -1085,8 +1087,8 @@ def charger_reading(body: ChargerReading, request: Request):
             "battery": battery or old.get("battery"),
             "charging": False,
             "skin": skin if skin is not None else old.get("skin"),
-            "sleep": "",
             "activity_secret": old.get("activity_secret") or None,
+            "sleep": charger_sleep(body.sleep, body.sleep_sec),
             "server_received": now,
         }
         c.execute("INSERT OR REPLACE INTO latest VALUES(?,?,?)", (family_id, json.dumps(payload), now))
@@ -1327,6 +1329,27 @@ def reading_number(text):
         return None
 
 
+def charger_sleep(flag, seconds):
+    """The charger's own sleep flag and timer. The phone's FFE4 codes are not used."""
+    if flag is not True:
+        return ""
+    try:
+        seconds = int(seconds)
+    except (TypeError, ValueError):
+        return "Asleep"
+    if seconds < 60:
+        return "Asleep"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"Asleep · {minutes} min"
+    hours, mins = divmod(minutes, 60)
+    return f"Asleep · {hours} hr" if mins == 0 else f"Asleep · {hours} hr {mins} min"
+    try:
+        return int(float(str(text).split()[0]))
+    except (TypeError, ValueError):
+        return None
+
+
 def watcher_due(secret, state, now):
     """Send at once when the number changes, otherwise about every 20 seconds.
     A push every second is dropped by Apple and the watching lock screen goes stale."""
@@ -1340,12 +1363,14 @@ def watcher_due(secret, state, now):
         stamp = now
     number_changed = (hr is not None and hr != previous.get("hr")) or (ox is not None and ox != previous.get("ox"))
     alarm_changed = alarm in ("high", "low") and previous.get("alarm") != alarm
+    sleep = state.get("sleep") or ""
+    sleep_changed = sleep != (previous.get("sleep") or "")
     elapsed = stamp - float(previous.get("measured") or 0) if previous else 999
-    if previous and not alarm_changed and elapsed < 4:
+    if previous and not alarm_changed and not sleep_changed and elapsed < 4:
         return False
-    if previous and not number_changed and not alarm_changed and elapsed < 20:
+    if previous and not number_changed and not alarm_changed and not sleep_changed and elapsed < 20:
         return False
-    ACTIVITY_GATE[f"{secret}:watcher"] = {"at": now, "alarm": alarm, "hr": hr, "ox": ox, "measured": stamp}
+    ACTIVITY_GATE[f"{secret}:watcher"] = {"at": now, "alarm": alarm, "hr": hr, "ox": ox, "measured": stamp, "sleep": sleep}
     return True
 
 
