@@ -1031,6 +1031,53 @@ class ChargerReading(BaseModel):
     sleep_sec: int | None = None
 
 
+def charger_alarm(rate, limits, old, now):
+    """The family's own high and low limits. The charger does not bring its own."""
+    if not limits:
+        return "none", None, None, None
+    high_on = bool(limits["high_enabled"])
+    low_on = bool(limits["low_enabled"])
+    high = limits["high_threshold"]
+    low = limits["low_threshold"]
+    try:
+        duration = int(limits["duration_seconds"] or 15)
+    except (TypeError, ValueError):
+        duration = 15
+    if not 5 <= duration <= 120:
+        duration = 15
+    if not high_on and not low_on:
+        return "none", None, None, None
+    direction = None
+    if low_on and low and rate < low:
+        direction = "low"
+    elif high_on and high and rate > high:
+        direction = "high"
+    carried = old.get("source") == "charger"
+    active = old.get("alarm") if carried and old.get("alarm") in ("high", "low") else None
+    pending = old.get("alarm_pending") if carried else None
+    since = old.get("alarm_since") if carried else None
+    clear_since = old.get("alarm_clear_since") if carried else None
+    if direction is None:
+        if active != "high":
+            return "none", None, None, None
+        safely_under = bool(high) and rate <= high - 8
+        if not safely_under:
+            return "high", None, None, None
+        if not clear_since:
+            clear_since = now
+        if now - float(clear_since) >= duration:
+            return "none", None, None, None
+        return "high", None, None, clear_since
+    if pending != direction:
+        pending = direction
+        since = now
+    if active == direction:
+        return direction, pending, since, None
+    if since is not None and now - float(since) >= duration:
+        return direction, direction, since, None
+    return active or "none", pending, since, None
+
+
 @app.post("/internal/charger")
 def charger_reading(body: ChargerReading, request: Request):
     """The charger takes the shared reading as soon as it sees the band.
@@ -1064,8 +1111,14 @@ def charger_reading(body: ChargerReading, request: Request):
             c.execute("DELETE FROM charger_claims WHERE family=?", (family_id,))
         if not c.execute("SELECT 1 FROM families WHERE id=?", (family_id,)).fetchone():
             return {"ok": True, "skipped": "unclaimed"}
+        limits = c.execute(
+            "SELECT high_enabled, low_enabled, high_threshold, low_threshold, duration_seconds FROM families WHERE id=?",
+            (family_id,),
+        ).fetchone()
         previous = c.execute("SELECT payload FROM latest WHERE family=?", (family_id,)).fetchone()
         old = json.loads(previous[0]) if previous else {}
+        alarm, pending, since, clear_since = charger_alarm(body.heart_rate, limits, old, now)
+        previous_alarm = old.get("alarm") if old.get("source") == "charger" else "none"
         point = {"t": now, "hr": body.heart_rate, "o2": oxygen, "sk": skin}
         history = [item for item in (old.get("history") or []) if isinstance(item, dict)]
         history.append(point)
@@ -1076,22 +1129,30 @@ def charger_reading(body: ChargerReading, request: Request):
             "oxygen": oxygen if oxygen is not None else old.get("oxygen"),
             "oxygen_at": now if oxygen is not None else old.get("oxygen_at"),
             "source": "charger",
-            "alarm": "none",
+            "alarm": alarm,
             "connection": "receiving",
             "history": history[-120:],
             "stream_id": "charger",
             "seq": int(old.get("seq") or 0) + 1,
             "kind": "live",
-            "acknowledged": False,
+            "acknowledged": bool(old.get("acknowledged")) if alarm == previous_alarm else False,
             "host_relation": "Charger",
             "battery": battery or old.get("battery"),
             "charging": False,
             "skin": skin if skin is not None else old.get("skin"),
             "activity_secret": old.get("activity_secret") or None,
             "sleep": charger_sleep(body.sleep, body.sleep_sec),
+            "recovery_chime": old.get("recovery_chime") if old.get("recovery_chime") is not None else True,
+            "alarm_pending": pending,
+            "alarm_since": since,
+            "alarm_clear_since": clear_since,
             "server_received": now,
         }
         c.execute("INSERT OR REPLACE INTO latest VALUES(?,?,?)", (family_id, json.dumps(payload), now))
+        if alarm != previous_alarm and (alarm in ("high", "low") or (alarm == "none" and previous_alarm in ("high", "low") and payload["recovery_chime"])):
+            kind = "recovery" if alarm == "none" else "attention"
+            c.execute("DELETE FROM pushes WHERE family=?", (family_id,))
+            c.execute("INSERT INTO pushes(id,family,kind,created) VALUES(?,?,?,?)", (secrets.token_hex(16), family_id, kind, now))
     live = {key: value for key, value in payload.items() if key != "history"}
     live["type"] = "live"
     live["kind"] = "live"

@@ -131,3 +131,53 @@ def test_charger_takes_the_shared_reading_while_the_phone_stays_connected(client
     })
     assert direct.status_code == 200 and direct.json().get("skipped") == "charger"
     assert relay.ACTIVITY_PUSHES == []
+
+
+def test_charger_alarm_uses_the_saved_limits():
+    now = 1_000.0
+    limits = {"high_enabled": 1, "low_enabled": 1, "high_threshold": 100, "low_threshold": 60, "duration_seconds": 15}
+    alarm, pending, since, clear = relay.charger_alarm(130, limits, {}, now)
+    assert alarm == "none" and pending == "high" and since == now and clear is None
+    held = {"source": "charger", "alarm": "none", "alarm_pending": "high", "alarm_since": now - 15}
+    alarm, pending, since, clear = relay.charger_alarm(130, limits, held, now)
+    assert alarm == "high" and clear is None
+    still_high = {"source": "charger", "alarm": "high", "alarm_pending": "high", "alarm_since": now - 30}
+    alarm, *_ = relay.charger_alarm(99, limits, still_high, now)
+    assert alarm == "high"
+    alarm, pending, since, clear = relay.charger_alarm(92, limits, still_high, now)
+    assert alarm == "high" and clear == now
+    cleared = dict(still_high)
+    cleared["alarm_clear_since"] = now - 15
+    alarm, *_ = relay.charger_alarm(92, limits, cleared, now)
+    assert alarm == "none"
+    alarm, pending, since, clear = relay.charger_alarm(50, limits, {"source": "charger"}, now)
+    assert alarm == "none" and pending == "low"
+    alarm, pending, since, clear = relay.charger_alarm(90, {"high_enabled": 0, "low_enabled": 0, "high_threshold": 100, "low_threshold": 60, "duration_seconds": 15}, {}, now)
+    assert alarm == "none" and pending is None
+
+
+def test_charger_reading_alerts_watching_phones(client):
+    owner = account(client, "charger-alarm@example.com")
+    family = client.post("/families", headers=owner, json={"label": "Home"}).json()["id"]
+    assert client.put(f"/families/{family}/profile", headers=owner, json={
+        "child_name": "A", "high_enabled": True, "high_threshold": 100, "duration_seconds": 15,
+    }).status_code == 200
+    assert client.post(f"/families/{family}/charger-claim", headers=owner).status_code == 200
+    headers = {"X-Nivvi-Charger": "test-charger-secret"}
+    reading = {"serial": "11298", "heart_rate": 130, "heart_state": 0, "oxygen": 98, "oxygen_state": 0}
+    first = client.post("/internal/charger", headers=headers, json=reading)
+    assert first.status_code == 200
+    assert client.get(f"/families/{family}/latest", headers=owner).json()["snapshot"]["alarm"] == "none"
+    import sqlite3
+    store = sqlite3.connect(relay.DB)
+    payload = store.execute("SELECT payload FROM latest WHERE family=?", (family,)).fetchone()[0]
+    body = __import__("json").loads(payload)
+    body["alarm_since"] = body["alarm_since"] - 15
+    store.execute("UPDATE latest SET payload=? WHERE family=?", (__import__("json").dumps(body), family))
+    store.commit()
+    second = client.post("/internal/charger", headers=headers, json=reading)
+    assert second.status_code == 200
+    snap = client.get(f"/families/{family}/latest", headers=owner).json()["snapshot"]
+    assert snap["alarm"] == "high" and snap["source"] == "charger"
+    kind = store.execute("SELECT kind FROM pushes WHERE family=?", (family,)).fetchone()[0]
+    assert kind == "attention"
