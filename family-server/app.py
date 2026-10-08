@@ -1086,6 +1086,7 @@ def charger_reading(body: ChargerReading, request: Request):
             "charging": False,
             "skin": skin if skin is not None else old.get("skin"),
             "sleep": "",
+            "activity_secret": old.get("activity_secret") or None,
             "server_received": now,
         }
         c.execute("INSERT OR REPLACE INTO latest VALUES(?,?,?)", (family_id, json.dumps(payload), now))
@@ -1093,6 +1094,8 @@ def charger_reading(body: ChargerReading, request: Request):
     live["type"] = "live"
     live["kind"] = "live"
     HUB.emit(family_id, live)
+    if payload.get("activity_secret"):
+        queue_activity(payload["activity_secret"], activity_state(payload, payload["activity_secret"]), paced=True)
     return {"ok": True, "seq": payload["seq"], "server_received": now}
 
 
