@@ -987,6 +987,8 @@ def publish(family: str, body: Snapshot, user=Depends(require_user)):
             c.execute("UPDATE families SET host_user=?, host_stream=COALESCE(?, host_stream) WHERE id=?", (user["id"], stream, family))
         previous = c.execute("SELECT payload FROM latest WHERE family=?", (family,)).fetchone()
         old = json.loads(previous[0]) if previous else {}
+        if charger_is_live(old, now):
+            return {"ok": True, "skipped": "charger", "seq": old.get("seq"), "server_received": now}
         old_seq = int(old.get("seq") or 0)
         if body.stream_id and old.get("stream_id") == body.stream_id and body.seq is not None and body.seq <= old_seq:
             raise HTTPException(409, "An older snapshot cannot replace a newer one")
@@ -1031,7 +1033,8 @@ class ChargerReading(BaseModel):
 
 @app.post("/internal/charger")
 def charger_reading(body: ChargerReading, request: Request):
-    """The home charger posts here. A fresh phone reading is left alone."""
+    """The charger takes the shared reading as soon as it sees the band.
+    The phone can stay connected. Its own screen is left alone."""
     secret = os.environ.get("NIVVI_CHARGER_SECRET", "")
     given = request.headers.get("x-nivvi-charger", "")
     if not secret or not hmac.compare_digest(given, secret):
@@ -1063,9 +1066,6 @@ def charger_reading(body: ChargerReading, request: Request):
             return {"ok": True, "skipped": "unclaimed"}
         previous = c.execute("SELECT payload FROM latest WHERE family=?", (family_id,)).fetchone()
         old = json.loads(previous[0]) if previous else {}
-        stamp = old.get("heart_rate_at") or old.get("captured") or 0
-        if old.get("source") != "charger" and old.get("heart_rate") and stamp and now - float(stamp) < 25:
-            return {"ok": True, "skipped": "phone"}
         point = {"t": now, "hr": body.heart_rate, "o2": oxygen, "sk": skin}
         history = [item for item in (old.get("history") or []) if isinstance(item, dict)]
         history.append(point)
@@ -1232,10 +1232,39 @@ def remove_activity_token(body: ActivityToken):
     return {"ok": True}
 
 
+def charger_is_live(payload, now, hold=30):
+    """A charger that has seen the band recently owns the shared reading."""
+    if not payload or payload.get("source") != "charger":
+        return False
+    try:
+        stamp = float(payload.get("heart_rate_at") or payload.get("captured") or 0)
+    except (TypeError, ValueError):
+        return False
+    age = now - stamp
+    return stamp > 0 and -5 <= age <= hold
+
+
+def charger_owns_secret(secret, now):
+    if not secret:
+        return False
+    with db() as c:
+        rows = c.execute("SELECT payload FROM latest").fetchall()
+    for row in rows:
+        try:
+            payload = json.loads(row[0])
+        except (TypeError, ValueError):
+            continue
+        if payload.get("activity_secret") == secret and charger_is_live(payload, now):
+            return True
+    return False
+
+
 @app.post("/live-activity/publish")
 def publish_activity(body: ActivityPublish, request: Request):
     throttle("activity:" + body.secret, 60, 60)
     now = time.time()
+    if charger_owns_secret(body.secret, now):
+        return {"ok": True, "skipped": "charger"}
     if not now - 30 <= body.measured_at <= now + 5:
         raise HTTPException(400, "Only fresh readings can update the lock screen")
     with db() as c:
