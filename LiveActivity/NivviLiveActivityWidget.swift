@@ -226,10 +226,13 @@ struct NivviLiveActivityWidget: Widget {
     }
 
     private func activityIsStale(_ context: ActivityViewContext<NivviActivityAttributes>) -> Bool {
-        if #available(iOS 16.2, *) {
-            return context.isStale || context.state.stale
+        if context.state.stale { return true }
+        let measured = context.state.measuredAt
+        if measured > 0 {
+            return Date().timeIntervalSince1970 - measured > 180
         }
-        return context.state.stale
+        if #available(iOS 16.2, *) { return context.isStale }
+        return false
     }
 }
 
