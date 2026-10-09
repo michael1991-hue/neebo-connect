@@ -900,7 +900,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             title: UserDefaults.standard.string(forKey: "nivvi.profile.name").flatMap { $0.isEmpty ? nil : $0 } ?? "Nivvi",
             heartRate: heartText,
             oxygen: oxygenText,
-            connection: connection.label,
+            connection: "Phone receiving",
             signal: BluetoothSignal.label(signalRSSI),
             nurseryHint: "",
             monitoring: true,
@@ -914,7 +914,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             title: title,
             heartRate: heartText,
             oxygen: oxygenText,
-            connection: connection.label,
+            connection: "Phone receiving",
             measuredAt: lastHeartRateUpdate ?? Date(),
             session: title,
             sleep: sleepLockLine
@@ -2966,7 +2966,7 @@ struct ContentView: View {
         let signal: String
         let hint: String
         if ble {
-            connection = monitor.connection.label
+            connection = "Phone receiving"
             signal = BluetoothSignal.label(monitor.signalRSSI)
             hint = nurseryHint
         } else if wifiLive {

@@ -61,7 +61,7 @@ enum LiveActivityPush {
         // screen then sits for minutes even though this phone is live.
         if changed {
             if elapsed < 4 { return }
-        } else if elapsed < 20 {
+        } else if elapsed < 8 {
             return
         }
         lastPublish = now

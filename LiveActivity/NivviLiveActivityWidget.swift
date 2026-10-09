@@ -194,6 +194,9 @@ struct NivviLiveActivityWidget: Widget {
         let caution = Color(red: 1, green: 0.62, blue: 0.28)
         if charging(context.state.heartRate) { return ("Charging", Color(red: 1, green: 0.72, blue: 0.28)) }
         if activityIsStale(context) { return ("Delayed", caution) }
+        let connection = context.state.connection.lowercased()
+        if connection.contains("phone") { return ("Phone", mint) }
+        if connection.contains("charger") { return ("Charger", mint) }
         if context.state.alarm == "removed" { return ("Removed", caution) }
         if metricNumber(context.state.heartRate) == "—" { return ("Waiting", caution) }
         let connection = context.state.connection.lowercased()

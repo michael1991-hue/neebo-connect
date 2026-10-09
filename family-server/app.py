@@ -989,7 +989,7 @@ def publish(family: str, body: Snapshot, user=Depends(require_user)):
             c.execute("UPDATE families SET host_user=?, host_stream=COALESCE(?, host_stream) WHERE id=?", (user["id"], stream, family))
         previous = c.execute("SELECT payload FROM latest WHERE family=?", (family,)).fetchone()
         old = json.loads(previous[0]) if previous else {}
-        if charger_is_live(old, now):
+        if charger_is_live(old, now) and not phone_has_the_band(body, old):
             secret = (body.activity_secret or "").strip()
             if secret and not old.get("activity_secret"):
                 old["activity_secret"] = secret
@@ -1018,8 +1018,6 @@ def publish(family: str, body: Snapshot, user=Depends(require_user)):
                     c.execute("DELETE FROM pushes WHERE family=?", (family,))
                     c.execute("INSERT INTO pushes(id,family,kind,created) VALUES(?,?,?,?)", (secrets.token_hex(16), family, kind, now))
     if held is not None:
-        if held.get("activity_secret"):
-            queue_activity(held["activity_secret"], activity_state(held, held["activity_secret"]), paced=True)
         return {"ok": True, "skipped": "charger", "seq": held.get("seq"), "server_received": now}
     live = {key: value for key, value in payload.items() if key != "history"}
     live["type"] = "live"
@@ -1148,7 +1146,7 @@ def charger_reading(body: ChargerReading, request: Request):
             "oxygen_at": now if oxygen is not None else old.get("oxygen_at"),
             "source": "charger",
             "alarm": alarm,
-            "connection": "receiving",
+            "connection": "Charger receiving",
             "history": history[-120:],
             "stream_id": "charger",
             "seq": int(old.get("seq") or 0) + 1,
@@ -1341,7 +1339,19 @@ def charger_is_live(payload, now, hold=30):
     return stamp > 0 and -5 <= age <= hold
 
 
-def charger_owns_secret(secret, now):
+def phone_has_the_band(body, old):
+    """The charger only keeps the card while its reading is still the newer one."""
+    if body.heart_rate is None:
+        return False
+    try:
+        phone_at = float(body.heart_rate_at or body.captured or 0)
+        charger_at = float(old.get("heart_rate_at") or 0)
+    except (TypeError, ValueError):
+        return False
+    return phone_at >= charger_at + 15
+
+
+def charger_blocks_phone_card(secret, measured_at, now):
     if not secret:
         return False
     with db() as c:
@@ -1351,7 +1361,13 @@ def charger_owns_secret(secret, now):
             payload = json.loads(row[0])
         except (TypeError, ValueError):
             continue
-        if payload.get("activity_secret") == secret and charger_is_live(payload, now):
+        if payload.get("activity_secret") != secret or not charger_is_live(payload, now):
+            continue
+        try:
+            charger_at = float(payload.get("heart_rate_at") or 0)
+        except (TypeError, ValueError):
+            charger_at = 0
+        if measured_at < charger_at + 15:
             return True
     return False
 
@@ -1360,7 +1376,7 @@ def charger_owns_secret(secret, now):
 def publish_activity(body: ActivityPublish, request: Request):
     throttle("activity:" + body.secret, 60, 60)
     now = time.time()
-    if charger_owns_secret(body.secret, now):
+    if charger_blocks_phone_card(body.secret, body.measured_at, now):
         return {"ok": True, "skipped": "charger"}
     if not now - 30 <= body.measured_at <= now + 5:
         raise HTTPException(400, "Only fresh readings can update the lock screen")
@@ -1373,7 +1389,7 @@ def publish_activity(body: ActivityPublish, request: Request):
     state = {
         "heartRate": body.heart_rate,
         "oxygen": body.oxygen,
-        "connection": body.connection,
+        "connection": "Phone receiving",
         "signal": "Wi-Fi",
         "nurseryHint": "",
         "captured": body.measured_at,
@@ -1385,7 +1401,7 @@ def publish_activity(body: ActivityPublish, request: Request):
         "title": body.title,
         "sleep": body.sleep,
     }
-    queue_activity(body.secret, state, paced=True)
+    queue_activity(body.secret, state, paced=False)
     return {"ok": True, "seq": body.seq}
 
 
