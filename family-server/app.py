@@ -1500,10 +1500,8 @@ def queue_activity(secret, state, paced=False):
     if not paced:
         jobs.append(([token for token, _ in rows], "10", 90))
     else:
-        if hosts and due("host", 8):
-            jobs.append((hosts, "10", 90))
-        if watchers and watcher_due(secret, state, now):
-            jobs.append((watchers, "10", 90))
+        if watcher_due(secret, state, now):
+            jobs.append(([token for token, _ in rows], "10", 90))
     if TEST:
         for tokens, priority, _stale in jobs:
             for token in tokens:
@@ -1580,9 +1578,7 @@ def formatted_sleep(seconds):
 
 
 def watcher_due(secret, state, now):
-    """A changed number goes out once the reading is a few seconds newer.
-    The same number is pushed every 8 seconds by the clock, so a locked phone
-    does not sit on an old age while the bpm stays still."""
+    """A changed number is pushed at once. The same number goes out every 8 seconds so the lock-screen age stays honest."""
     alarm = state.get("alarm") or ""
     hr = reading_number(state.get("heartRate"))
     ox = reading_number(state.get("oxygen"))
@@ -1596,10 +1592,7 @@ def watcher_due(secret, state, now):
     sleep = state.get("sleep") or ""
     sleep_changed = sleep != (previous.get("sleep") or "")
     wall = now - float(previous.get("at") or 0) if previous else 999
-    reading_elapsed = stamp - float(previous.get("measured") or 0) if previous else 999
-    if previous and not alarm_changed and not sleep_changed and not number_changed and wall < 8:
-        return False
-    if previous and not alarm_changed and not sleep_changed and reading_elapsed < 4 and wall < 4:
+    if previous and not number_changed and not alarm_changed and not sleep_changed and wall < 8:
         return False
     ACTIVITY_GATE[f"{secret}:watcher"] = {"at": now, "alarm": alarm, "hr": hr, "ox": ox, "measured": stamp, "sleep": sleep}
     return True
