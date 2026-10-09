@@ -3610,7 +3610,6 @@ struct ContentView: View {
     private var home: some View {
         VStack(alignment: .leading, spacing: 16) {
             liveHero
-            if let line = chargerSleepLine { chargerSleepCard(line) }
             if showSleep, !mirroringNursery { sleepCard }
             if monitor.batteryWarning != .ok && !monitor.wearableCharging {
                 HStack(spacing: 10) {
@@ -3767,28 +3766,28 @@ struct ContentView: View {
         let line = family.remote?.snapshot?.sleep?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return line.isEmpty ? "Awake" : line
     }
-    private func chargerSleepCard(_ line: String) -> some View {
+    private func chargerSleepHeader(_ line: String) -> some View {
         let asleep = line.hasPrefix("Asleep")
         let timer = line.replacingOccurrences(of: "Asleep · ", with: "").trimmingCharacters(in: .whitespaces)
-        return HStack(spacing: 10) {
+        return HStack(alignment: .center, spacing: 12) {
             Image(systemName: asleep ? "moon.fill" : "figure.walk")
+                .font(.title2)
                 .foregroundStyle(asleep ? lavender : accentMint)
-            Text(asleep ? "Asleep" : "Awake")
-                .font(.headline)
-                .foregroundStyle(ink)
-            Spacer(minLength: 8)
-            if asleep, timer != "Asleep" {
-                Text(timer)
-                    .font(.title3.weight(.bold))
-                    .monospacedDigit()
+            VStack(alignment: .leading, spacing: 2) {
+                Text(asleep ? "Asleep" : "Awake")
+                    .font(.title3.weight(.semibold))
                     .foregroundStyle(ink)
+                if asleep, !timer.isEmpty, timer != "Asleep" {
+                    Text(timer)
+                        .font(.subheadline.weight(.semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(lavender)
+                }
             }
+            Spacer(minLength: 8)
+            if asleep { sleepZzz(color: lavender) }
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(asleep ? lavender.opacity(0.16) : cardFill)
-        .clipShape(RoundedRectangle(cornerRadius: 22))
-        .overlay(RoundedRectangle(cornerRadius: 22).stroke(asleep ? lavender.opacity(0.45) : cardStroke, lineWidth: 1))
+        .padding(.vertical, 4)
     }
     private var sleepCard: some View {
         TimelineView(.periodic(from: .now, by: 30)) { context in
@@ -4029,6 +4028,7 @@ struct ContentView: View {
                         .tint(accentMint)
                     }
                 } else {
+                if let line = chargerSleepLine { chargerSleepHeader(line) }
                 Text("Heart rate").font(.caption.weight(.bold)).tracking(1.1).foregroundStyle(muted)
                 HStack(alignment: .center, spacing: 12) {
                     PulsingHeart(
