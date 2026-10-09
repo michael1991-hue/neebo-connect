@@ -60,7 +60,7 @@ struct NivviLiveActivityWidget: Widget {
     @ViewBuilder
     func lockScreen(_ context: ActivityViewContext<NivviActivityAttributes>) -> some View {
         let status = bannerStatus(context)
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .center, spacing: 8) {
                 Text(context.attributes.title)
                     .font(.headline.weight(.bold))
@@ -77,6 +77,7 @@ struct NivviLiveActivityWidget: Widget {
                 }
                 .fixedSize(horizontal: true, vertical: false)
             }
+            readingStamp(context)
             HStack(alignment: .center, spacing: 0) {
                 readingColumn(icon: "heart.fill", tint: Color(red: 0.93, green: 0.38, blue: 0.42), value: metricNumber(context.state.heartRate), unit: charging(context.state.heartRate) ? "" : "bpm", caption: charging(context.state.heartRate) ? "Charging" : "Heart rate", alert: context.state.alarm == "high" || context.state.alarm == "low")
                 Rectangle().fill(Color.white.opacity(0.18)).frame(width: 1, height: 52)
@@ -108,7 +109,6 @@ struct NivviLiveActivityWidget: Widget {
                     Spacer(minLength: 0)
                 }
             }
-            readingStamp(context)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
