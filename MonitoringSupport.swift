@@ -149,7 +149,7 @@ struct SharedAlertLog {
         let title = event.title
         if title.localizedCaseInsensitiveContains("sensor") { return false }
         if title == "Heart rate back to normal" || title == "High heart-rate alert" || title == "Low heart-rate alert" || title == "Alarm acknowledged" { return true }
-        return event.kind == "critical" && title.localizedCaseInsensitiveContains("needs your attention")
+        return event.kind == "critical" && title.localizedCaseInsensitiveContains("your attention")
     }
 }
 
