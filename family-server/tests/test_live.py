@@ -138,11 +138,15 @@ def test_family_latest_fans_out_activity_push(client):
     assert relay.ACTIVITY_PUSHES[-1]["token"] == token
     assert "112" in relay.ACTIVITY_PUSHES[-1]["state"]["heartRate"]
     relay.ACTIVITY_PUSHES.clear()
-    changed = snapshot(captured=now + 5, heart_rate=113, heart_rate_at=now + 5, oxygen=97, oxygen_at=now, seq=2)
+    wobble = snapshot(captured=now + 2, heart_rate=113, heart_rate_at=now + 2, oxygen=97, oxygen_at=now, seq=2)
+    wobble["activity_secret"] = secret
+    assert client.put(f"/families/{family}/latest", headers=owner, json=wobble).status_code == 200
+    assert relay.ACTIVITY_PUSHES == []
+    changed = snapshot(captured=now + 5, heart_rate=116, heart_rate_at=now + 5, oxygen=97, oxygen_at=now, seq=3)
     changed["activity_secret"] = secret
     assert client.put(f"/families/{family}/latest", headers=owner, json=changed).status_code == 200
-    assert relay.ACTIVITY_PUSHES, "a one-beat change must reach watching phones immediately"
-    assert "113" in relay.ACTIVITY_PUSHES[-1]["state"]["heartRate"]
+    assert relay.ACTIVITY_PUSHES, "a clear change must reach watching phones immediately"
+    assert "116" in relay.ACTIVITY_PUSHES[-1]["state"]["heartRate"]
 
 
 def test_oxygen_caps_at_99_and_battery_is_shared(client):
