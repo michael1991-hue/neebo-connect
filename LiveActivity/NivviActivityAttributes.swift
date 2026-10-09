@@ -15,8 +15,9 @@ struct NivviActivityAttributes: ActivityAttributes {
         var stale: Bool = false
         var alarm: String = ""
         var sleep: String = ""
+        var sleepStarted: TimeInterval = 0
 
-        init(heartRate: String, oxygen: String, connection: String, signal: String, nurseryHint: String, captured: TimeInterval = 0, measuredAt: TimeInterval = 0, seq: Int = 0, session: String = "", stale: Bool = false, alarm: String = "", sleep: String = "") {
+        init(heartRate: String, oxygen: String, connection: String, signal: String, nurseryHint: String, captured: TimeInterval = 0, measuredAt: TimeInterval = 0, seq: Int = 0, session: String = "", stale: Bool = false, alarm: String = "", sleep: String = "", sleepStarted: TimeInterval = 0) {
             self.heartRate = heartRate
             self.oxygen = oxygen
             self.connection = connection
@@ -29,6 +30,7 @@ struct NivviActivityAttributes: ActivityAttributes {
             self.stale = stale
             self.alarm = alarm
             self.sleep = sleep
+            self.sleepStarted = sleepStarted
         }
 
         init(from decoder: Decoder) throws {
@@ -45,6 +47,7 @@ struct NivviActivityAttributes: ActivityAttributes {
             stale = try values.decodeIfPresent(Bool.self, forKey: .stale) ?? false
             alarm = try values.decodeIfPresent(String.self, forKey: .alarm) ?? ""
             sleep = try values.decodeIfPresent(String.self, forKey: .sleep) ?? ""
+            sleepStarted = try values.decodeIfPresent(TimeInterval.self, forKey: .sleepStarted) ?? 0
         }
 
         func encode(to encoder: Encoder) throws {
@@ -61,10 +64,11 @@ struct NivviActivityAttributes: ActivityAttributes {
             try values.encode(stale, forKey: .stale)
             try values.encode(alarm, forKey: .alarm)
             try values.encode(sleep, forKey: .sleep)
+            try values.encode(sleepStarted, forKey: .sleepStarted)
         }
 
         private enum CodingKeys: String, CodingKey {
-            case heartRate, oxygen, connection, signal, nurseryHint, captured, measuredAt, seq, session, stale, alarm, sleep
+            case heartRate, oxygen, connection, signal, nurseryHint, captured, measuredAt, seq, session, stale, alarm, sleep, sleepStarted
         }
     }
     var title: String

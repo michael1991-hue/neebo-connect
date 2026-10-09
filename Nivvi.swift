@@ -2994,8 +2994,16 @@ struct ContentView: View {
             stale: stale,
             alarm: alarm,
             forceNew: forceNew,
-            sleep: remoteSleepLine
+            sleep: remoteSleepLine,
+            sleepStarted: chargerSleepStarted
         )
+    }
+    private var chargerSleepStarted: TimeInterval {
+        guard family.remote?.snapshot?.source == "charger",
+              (family.remote?.snapshot?.sleep ?? "").hasPrefix("Asleep"),
+              let seconds = family.remote?.snapshot?.sleep_sec,
+              let held = family.remote?.snapshot?.sleep_held else { return 0 }
+        return held - max(0, seconds)
     }
     private var remoteSleepLine: String {
         guard family.remote?.snapshot?.source == "charger" else { return "" }

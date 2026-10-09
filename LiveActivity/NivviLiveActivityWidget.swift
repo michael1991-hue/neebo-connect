@@ -87,10 +87,21 @@ struct NivviLiveActivityWidget: Widget {
                     Image(systemName: sleepIcon(context.state.sleep))
                         .font(.subheadline)
                         .foregroundStyle(sleepTint(context.state.sleep))
-                    Text(context.state.sleep)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(sleepTint(context.state.sleep))
-                        .lineLimit(1)
+                    if context.state.sleep.hasPrefix("Asleep"), context.state.sleepStarted > 0 {
+                        Text("Asleep")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(sleepTint(context.state.sleep))
+                        Text(timerInterval: Date(timeIntervalSince1970: context.state.sleepStarted)...Date.distantFuture, countsDown: false)
+                            .font(.subheadline.weight(.bold))
+                            .monospacedDigit()
+                            .foregroundStyle(sleepTint(context.state.sleep))
+                            .lineLimit(1)
+                    } else {
+                        Text(context.state.sleep)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(sleepTint(context.state.sleep))
+                            .lineLimit(1)
+                    }
                     if context.state.sleep.hasPrefix("Asleep") {
                         sleepZzz
                     }

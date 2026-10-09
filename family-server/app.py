@@ -1387,7 +1387,21 @@ def activity_state(payload, secret):
         "alarm": alarm if alarm in ("high", "low") else "",
         "title": "Nivvi",
         "sleep": str(payload.get("sleep") or "")[:40],
+        "sleepStarted": sleep_started(payload),
     }
+
+
+def sleep_started(payload):
+    if not str(payload.get("sleep") or "").startswith("Asleep"):
+        return 0
+    try:
+        seconds = float(payload.get("sleep_sec") or 0)
+        held = float(payload.get("sleep_held") or 0)
+    except (TypeError, ValueError):
+        return 0
+    if held <= 0:
+        return 0
+    return held - max(0, seconds)
 
 
 def queue_activity(secret, state, paced=False):
