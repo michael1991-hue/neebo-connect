@@ -166,8 +166,8 @@ def test_charger_keeps_history_while_the_phone_is_off(client):
     second = client.get(f"/families/{family}/history", headers=owner).json()["points"]
     assert [point["hr"] for point in second] == [88, 91]
     now = 2_000.0
-    quiet, _, _ = relay.charger_sleep(True, 6, {}, now, 100)
-    assert quiet == ""
+    quiet, _, _ = relay.charger_sleep(True, 65, {}, now, 105)
+    assert quiet.startswith("Asleep")
     watching, _, _ = relay.charger_sleep(True, 400, {}, now, 129)
     assert watching == ""
     active, _, _ = relay.charger_sleep(True, 400, {}, now, 110)

@@ -1520,12 +1520,12 @@ def reading_number(text):
 
 
 def charger_sleep(flag, seconds, old, now, heart_rate=None):
-    """Her awake pulse is about 110 to 135. Sleep is about 100 or below, and only after the charger has held that for 3 minutes."""
+    """Active is about 110 and above. Below that, the charger's own sleep flag is sleep."""
     try:
         pulse = float(heart_rate)
     except (TypeError, ValueError):
         pulse = None
-    if pulse is not None and pulse > 100:
+    if pulse is not None and pulse >= 110:
         return "", None, None
     old = old or {}
     if flag is True:
@@ -1547,11 +1547,7 @@ def charger_sleep(flag, seconds, old, now, heart_rate=None):
                 running = reported
                 held = now
                 previous = reported
-            if running < 180:
-                return "", previous, held
             return formatted_sleep(running), previous, held
-        if reported < 180:
-            return "", reported, now
         return formatted_sleep(reported), reported, now
     previous_line = str(old.get("sleep") or "")
     try:
