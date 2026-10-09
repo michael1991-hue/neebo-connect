@@ -109,6 +109,24 @@ def test_charger_pushes_the_lock_screen(client):
     assert snap["activity_secret"] == secret and snap["source"] == "charger" and snap["sleep"] == "Asleep · 3 min"
 
 
+def test_charger_pushes_a_phone_registered_to_the_family(client):
+    relay.ACTIVITY_PUSHES.clear()
+    relay.ACTIVITY_GATE.clear()
+    owner = account(client, "family-card@example.com")
+    family = client.post("/families", headers=owner, json={"label": "Home"}).json()["id"]
+    token = "c" * 64
+    assert client.post("/live-activity/token", json={"secret": "d" * 32, "token": token, "kind": "watcher", "family": family}).status_code == 200
+    assert client.post(f"/families/{family}/charger-claim", headers=owner).status_code == 200
+    posted = client.post(
+        "/internal/charger",
+        headers={"X-Nivvi-Charger": "test-charger-secret"},
+        json={"serial": "11298", "heart_rate": 105, "heart_state": 0, "oxygen": 97, "oxygen_state": 0},
+    )
+    assert posted.status_code == 200
+    assert relay.ACTIVITY_PUSHES and relay.ACTIVITY_PUSHES[-1]["token"] == token
+    assert "105" in relay.ACTIVITY_PUSHES[-1]["state"]["heartRate"]
+
+
 def test_a_live_nursery_phone_is_not_replaced_by_the_charger(client):
     relay.ACTIVITY_PUSHES.clear()
     relay.ACTIVITY_GATE.clear()

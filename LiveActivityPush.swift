@@ -13,6 +13,7 @@ enum LiveActivityPush {
     private static var watching = false
     private static var watchGeneration = 0
     private static var localOwner = false
+    private static var familyID = ""
 
     static var secret: String {
         if let saved = UserDefaults.standard.string(forKey: secretKey), saved.count >= 16 { return saved }
@@ -24,6 +25,13 @@ enum LiveActivityPush {
     static var followSecret: String? {
         get { UserDefaults.standard.string(forKey: followKey) }
         set { UserDefaults.standard.set(newValue, forKey: followKey) }
+    }
+
+    static func watchFamily(_ id: String?) {
+        let next = id ?? ""
+        guard next != familyID else { return }
+        familyID = next
+        Task { await registerStoredToken() }
     }
 
     static func claimLocal() {
@@ -117,14 +125,19 @@ enum LiveActivityPush {
     }
 
     private static func register(_ token: String) async {
+        let family = familyID
         if let follow = followSecret, follow.count >= 16, !NivviLiveActivityBridge.preferLocalBluetooth {
             localOwner = false
-            await send("POST", path: "live-activity/token", body: ["secret": follow, "token": token, "kind": "watcher"])
+            await send("POST", path: "live-activity/token", body: ["secret": follow, "token": token, "kind": "watcher", "family": family])
+            return
+        }
+        if !family.isEmpty {
+            await send("POST", path: "live-activity/token", body: ["secret": secret, "token": token, "kind": "watcher", "family": family])
             return
         }
         guard localOwner || NivviLiveActivityBridge.preferLocalBluetooth else { return }
         localOwner = true
-        await send("POST", path: "live-activity/token", body: ["secret": secret, "token": token, "kind": "host"])
+        await send("POST", path: "live-activity/token", body: ["secret": secret, "token": token, "kind": "host", "family": family])
     }
 
     private static func post(_ path: String, body: [String: Any]) async {

@@ -120,7 +120,7 @@ def initialize():
         CREATE TABLE IF NOT EXISTS latest(family TEXT PRIMARY KEY REFERENCES families ON DELETE CASCADE,payload TEXT NOT NULL,received REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS devices(token TEXT PRIMARY KEY,user_id TEXT REFERENCES users ON DELETE CASCADE);
         CREATE TABLE IF NOT EXISTS pushes(id TEXT PRIMARY KEY,family TEXT REFERENCES families ON DELETE CASCADE,kind TEXT,created REAL,attempts INTEGER DEFAULT 0);
-        CREATE TABLE IF NOT EXISTS activity_tokens(token TEXT PRIMARY KEY, secret TEXT NOT NULL, updated REAL NOT NULL, kind TEXT NOT NULL DEFAULT 'watcher');
+        CREATE TABLE IF NOT EXISTS activity_tokens(token TEXT PRIMARY KEY, secret TEXT NOT NULL, updated REAL NOT NULL, kind TEXT NOT NULL DEFAULT 'watcher', family TEXT NOT NULL DEFAULT '');
         CREATE TABLE IF NOT EXISTS activity_latest(secret TEXT PRIMARY KEY, seq INTEGER NOT NULL, measured REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS chargers(serial TEXT PRIMARY KEY, family TEXT NOT NULL REFERENCES families ON DELETE CASCADE, claimed REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS charger_claims(family TEXT PRIMARY KEY REFERENCES families ON DELETE CASCADE, expires REAL NOT NULL, blocked TEXT NOT NULL DEFAULT '', serial TEXT NOT NULL DEFAULT '');
@@ -148,6 +148,7 @@ def initialize():
             "ALTER TABLE families ADD COLUMN low_threshold INTEGER",
             "ALTER TABLE families ADD COLUMN duration_seconds INTEGER NOT NULL DEFAULT 15",
             "ALTER TABLE activity_tokens ADD COLUMN kind TEXT NOT NULL DEFAULT 'watcher'",
+            "ALTER TABLE activity_tokens ADD COLUMN family TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE charger_claims ADD COLUMN blocked TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE charger_claims ADD COLUMN serial TEXT NOT NULL DEFAULT ''",
             "CREATE UNIQUE INDEX IF NOT EXISTS families_join_code ON families(join_code) WHERE join_code IS NOT NULL AND join_code != ''",
@@ -403,6 +404,7 @@ class ActivityToken(BaseModel):
     secret: str = Field(min_length=16, max_length=80)
     token: str = Field(pattern="^[a-fA-F0-9]{64,512}$")
     kind: str = "watcher"
+    family: str = Field(default="", max_length=64)
 
 
 class ActivityPublish(BaseModel):
@@ -1191,8 +1193,8 @@ def charger_reading(body: ChargerReading, request: Request):
     live["type"] = "live"
     live["kind"] = "live"
     HUB.emit(family_id, live)
-    if payload.get("activity_secret"):
-        queue_activity(payload["activity_secret"], activity_state(payload, payload["activity_secret"]), paced=True)
+    if payload.get("activity_secret") or family_id:
+        queue_activity(payload.get("activity_secret") or "", activity_state(payload, payload.get("activity_secret") or ""), paced=True, family=family_id)
     return {"ok": True, "seq": payload["seq"], "server_received": now}
 
 
@@ -1337,7 +1339,10 @@ def register_activity_token(body: ActivityToken, request: Request):
     throttle("activity-token:" + request.client.host, 30)
     kind = "host" if body.kind == "host" else "watcher"
     with db() as c:
-        c.execute("INSERT OR REPLACE INTO activity_tokens VALUES(?,?,?,?)", (body.token.lower(), body.secret, time.time(), kind))
+        c.execute(
+            "INSERT OR REPLACE INTO activity_tokens VALUES(?,?,?,?,?)",
+            (body.token.lower(), body.secret, time.time(), kind, "".join(ch for ch in body.family if ch.isalnum())[:64]),
+        )
         c.execute("DELETE FROM activity_tokens WHERE updated<?", (time.time() - 7 * 86400,))
     return {"ok": True}
 
@@ -1478,11 +1483,27 @@ def sleep_started(payload):
     return held - max(0, seconds)
 
 
-def queue_activity(secret, state, paced=False):
+def queue_activity(secret, state, paced=False, family=""):
+    family = "".join(ch for ch in str(family or "") if ch.isalnum())[:64]
     with db() as c:
-        rows = [(r[0], r[1] or "watcher") for r in c.execute("SELECT token, kind FROM activity_tokens WHERE secret=?", (secret,))]
+        if family:
+            found = c.execute(
+                "SELECT token, kind FROM activity_tokens WHERE secret=? OR family=?",
+                (secret, family),
+            ).fetchall()
+        else:
+            found = c.execute("SELECT token, kind FROM activity_tokens WHERE secret=?", (secret,)).fetchall()
+    rows = []
+    seen = set()
+    for row in found:
+        token = row[0]
+        if token in seen:
+            continue
+        seen.add(token)
+        rows.append((token, row[1] or "watcher"))
     if not rows:
         return
+    gate = secret or family
     now = time.time()
     alarm = state.get("alarm") or ""
     hosts = [token for token, kind in rows if kind == "host"]
@@ -1500,7 +1521,7 @@ def queue_activity(secret, state, paced=False):
     if not paced:
         jobs.append(([token for token, _ in rows], "10", 90))
     else:
-        if watcher_due(secret, state, now):
+        if watcher_due(gate, state, now):
             jobs.append(([token for token, _ in rows], "10", 150))
     if TEST:
         for tokens, priority, _stale in jobs:
