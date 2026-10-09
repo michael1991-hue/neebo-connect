@@ -472,13 +472,17 @@ final class FamilyRelay: ObservableObject {
         try await pushProfile()
         try await refreshFamilies()
     }
-    func claimCharger() async throws {
+    func claimCharger(serial: String) async throws {
+        let digits = serial.filter(\.isNumber)
+        guard (3...8).contains(digits.count) else {
+            throw FamilyError.message("This charger did not give its serial.")
+        }
         if families.isEmpty { try await refreshFamilies() }
         guard let familyID = ownFamily?.id ?? selected else {
             throw FamilyError.message("Join your child’s family first.")
         }
-        let _: FamilyReply = try await request("families/\(familyID)/charger-claim", method: "POST")
-        message = "This charger will belong to this family."
+        let _: FamilyReply = try await request("families/\(familyID)/charger-claim", method: "POST", body: try body(["serial": digits]))
+        message = "Charger NC\(digits) belongs to this family."
     }
     func refreshShareLink() async throws {
         guard let familyID = ownFamily?.id else { return }

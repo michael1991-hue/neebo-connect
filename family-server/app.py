@@ -123,7 +123,7 @@ def initialize():
         CREATE TABLE IF NOT EXISTS activity_tokens(token TEXT PRIMARY KEY, secret TEXT NOT NULL, updated REAL NOT NULL, kind TEXT NOT NULL DEFAULT 'watcher');
         CREATE TABLE IF NOT EXISTS activity_latest(secret TEXT PRIMARY KEY, seq INTEGER NOT NULL, measured REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS chargers(serial TEXT PRIMARY KEY, family TEXT NOT NULL REFERENCES families ON DELETE CASCADE, claimed REAL NOT NULL);
-        CREATE TABLE IF NOT EXISTS charger_claims(family TEXT PRIMARY KEY REFERENCES families ON DELETE CASCADE, expires REAL NOT NULL, blocked TEXT NOT NULL DEFAULT '');
+        CREATE TABLE IF NOT EXISTS charger_claims(family TEXT PRIMARY KEY REFERENCES families ON DELETE CASCADE, expires REAL NOT NULL, blocked TEXT NOT NULL DEFAULT '', serial TEXT NOT NULL DEFAULT '');
         CREATE TABLE IF NOT EXISTS charger_seen(serial TEXT PRIMARY KEY, seen REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS reading_log(family TEXT NOT NULL, t REAL NOT NULL, hr REAL, o2 REAL, sk REAL);
         CREATE INDEX IF NOT EXISTS reading_log_family_t ON reading_log(family, t);
@@ -149,6 +149,7 @@ def initialize():
             "ALTER TABLE families ADD COLUMN duration_seconds INTEGER NOT NULL DEFAULT 15",
             "ALTER TABLE activity_tokens ADD COLUMN kind TEXT NOT NULL DEFAULT 'watcher'",
             "ALTER TABLE charger_claims ADD COLUMN blocked TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE charger_claims ADD COLUMN serial TEXT NOT NULL DEFAULT ''",
             "CREATE UNIQUE INDEX IF NOT EXISTS families_join_code ON families(join_code) WHERE join_code IS NOT NULL AND join_code != ''",
         ):
             try:
@@ -1116,15 +1117,21 @@ def charger_reading(body: ChargerReading, request: Request):
         if mapped:
             family_id = mapped["family"]
         else:
-            pending = c.execute("SELECT family, blocked FROM charger_claims WHERE expires>?", (now,)).fetchall()
+            pending = c.execute("SELECT family, blocked, serial FROM charger_claims WHERE expires>?", (now,)).fetchall()
             if len(pending) != 1:
                 return {"ok": True, "skipped": "unclaimed" if not pending else "ambiguous"}
             family_id = pending[0]["family"]
+            wanted = "".join(ch for ch in str(pending[0]["serial"] or "") if ch.isdigit())
             blocked = {item for item in str(pending[0]["blocked"] or "").split(",") if item}
-            if serial in blocked:
+            if wanted and serial != wanted:
+                return {"ok": True, "skipped": "not-this-charger"}
+            if not wanted and serial in blocked:
                 return {"ok": True, "skipped": "already-online"}
-            if c.execute("SELECT 1 FROM chargers WHERE family=?", (family_id,)).fetchone():
+            owned = c.execute("SELECT serial FROM chargers WHERE family=?", (family_id,)).fetchall()
+            if owned and not wanted and any(row["serial"] != serial for row in owned):
                 return {"ok": True, "skipped": "has-charger"}
+            if wanted:
+                c.execute("DELETE FROM chargers WHERE family=? AND serial!=?", (family_id, serial))
             c.execute("INSERT OR REPLACE INTO chargers VALUES(?,?,?)", (serial, family_id, now))
             c.execute("DELETE FROM charger_claims WHERE family=?", (family_id,))
         if not c.execute("SELECT 1 FROM families WHERE id=?", (family_id,)).fetchone():
@@ -1205,14 +1212,19 @@ def family_history(family: str, start: float = 0, user=Depends(require_user)):
     return {"points": [{"t": row["t"], "hr": row["hr"], "o2": row["o2"], "sk": row["sk"]} for row in rows]}
 
 
+class ChargerClaim(BaseModel):
+    serial: str = ""
+
+
 @app.post("/families/{family}/charger-claim")
-def claim_charger(family: str, user=Depends(require_user)):
-    """This phone's family is waiting for its own charger. Another family's charger is never taken."""
+def claim_charger(family: str, body: ChargerClaim | None = None, user=Depends(require_user)):
+    """Link the charger whose serial the phone just read. Another family's charger is never taken."""
+    wanted = "".join(ch for ch in str(body.serial if body else "") if ch.isdigit())[:20]
     with db() as c:
         member(c, family, user)
         busy = ",".join(row[0] for row in c.execute("SELECT serial FROM charger_seen WHERE seen>?", (time.time() - 300,)))
-        c.execute("INSERT OR REPLACE INTO charger_claims VALUES(?,?,?)", (family, time.time() + 180, busy))
-    return {"ok": True}
+        c.execute("INSERT OR REPLACE INTO charger_claims VALUES(?,?,?,?)", (family, time.time() + 180, busy, wanted))
+    return {"ok": True, "serial": wanted}
 
 
 @app.post("/families/{family}/ack")

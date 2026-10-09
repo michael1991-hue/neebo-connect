@@ -20,6 +20,7 @@ final class ChargerSetup: NSObject, ObservableObject, CBCentralManagerDelegate, 
     private var pendingPassword: Data?
     private var pendingServices = 0
     private var claimWhenConfirmed = false
+    private var serial = ""
     private var scan: Timer?
     private let nivviServer = "mqtt.nivvi.app"
 
@@ -85,6 +86,11 @@ final class ChargerSetup: NSObject, ObservableObject, CBCentralManagerDelegate, 
         let name = peripheral.name ?? advertised ?? ""
         let services = advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID] ?? []
         guard self.peripheral == nil, isCharger(name, services) else { return }
+        rememberSerial(name)
+        if let local = advertised { rememberSerial(local) }
+        if let maker = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data {
+            rememberSerial(String(data: maker, encoding: .utf8) ?? "")
+        }
         self.peripheral = peripheral
         central.stopScan()
         scan?.invalidate()
@@ -131,6 +137,9 @@ final class ChargerSetup: NSObject, ObservableObject, CBCentralManagerDelegate, 
             case "FFC1": serverChar = characteristic
             default: break
             }
+            if characteristic.properties.contains(.read), BluetoothPolicy.normalized(characteristic.uuid.uuidString) != "FFB2" {
+                peripheral.readValue(for: characteristic)
+            }
         }
         pendingServices = max(0, pendingServices - 1)
         guard pendingServices == 0 else { return }
@@ -142,21 +151,27 @@ final class ChargerSetup: NSObject, ObservableObject, CBCentralManagerDelegate, 
             if replyChar.properties.contains(.notify) { peripheral.setNotifyValue(true, for: replyChar) }
             peripheral.readValue(for: replyChar)
         }
-        if serverReady { status = "Connected to NCO." }
+        if serverReady { status = serial.isEmpty ? "Connected to NCO. Reading its serial." : "This charger is NC\(serial)." }
         else if !ready { status = "Connected, but the charger settings were not found." }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
         guard error == nil, let data = characteristic.value else { return }
         let id = BluetoothPolicy.normalized(characteristic.uuid.uuidString)
+        let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .controlCharacters) ?? ""
+        rememberSerial(text)
         if id == "FFB1" {
             let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .controlCharacters) ?? ""
             if !text.isEmpty { network = text }
-            if ready && pendingPassword == nil && !status.hasPrefix("Sending") { status = network.isEmpty ? "Charger ready." : "Charger is saved as \(network)." }
+            if ready && pendingPassword == nil && !status.hasPrefix("Sending") {
+                status = network.isEmpty ? "Charger ready." : "Charger is saved as \(network)."
+                if !serial.isEmpty { status = "NC\(serial). " + status }
+            }
         } else if id == "FFC1" {
             let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .controlCharacters) ?? ""
             server = text
             status = text == nivviServer ? "This charger uses the Nivvi server." : "Server is \(text.isEmpty ? "not set" : text)."
+            if !serial.isEmpty { status = "NC\(serial). " + status }
             if claimWhenConfirmed && text == nivviServer {
                 claimWhenConfirmed = false
                 Task { await self.linkToFamily() }
@@ -199,7 +214,7 @@ final class ChargerSetup: NSObject, ObservableObject, CBCentralManagerDelegate, 
 
     private func isCharger(_ name: String, _ services: [CBUUID]) -> Bool {
         let upper = name.uppercased()
-        if upper == "NCO" || upper == "NC0" || upper.contains("CHARGER") { return true }
+        if upper == "NCO" || upper == "NC0" || upper.contains("CHARGER") || upper.range(of: #"^NC\d{3,8}$"#, options: .regularExpression) != nil { return true }
         for service in services where BluetoothPolicy.normalized(service.uuidString) == "FFB0" {
             return true
         }
@@ -207,12 +222,35 @@ final class ChargerSetup: NSObject, ObservableObject, CBCentralManagerDelegate, 
     }
 
     private func linkToFamily() async {
+        guard !serial.isEmpty else {
+            status = "Connected, but this charger did not give its serial. Move closer and try again."
+            return
+        }
         do {
-            try await FamilyRelay.shared.claimCharger()
-            status = "This charger is linked to your family."
+            try await FamilyRelay.shared.claimCharger(serial: serial)
+            status = "NC\(serial) is linked to your family."
         } catch {
             status = error.localizedDescription
         }
+    }
+
+    private func rememberSerial(_ text: String) {
+        guard serial.isEmpty, let found = Self.serialNumber(in: text) else { return }
+        serial = found
+        if !status.hasPrefix("Sending") && !status.hasPrefix("Sent") {
+            status = "This charger is NC\(found)."
+        }
+    }
+
+    static func serialNumber(in text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let upper = trimmed.uppercased()
+        if upper == "NCO" || upper == "NC0" { return nil }
+        if let match = upper.range(of: #"NC(\d{3,8})"#, options: .regularExpression) {
+            return String(upper[match].dropFirst(2))
+        }
+        if trimmed.range(of: #"^\d{4,6}$"#, options: .regularExpression) != nil { return trimmed }
+        return nil
     }
 }
 

@@ -61,6 +61,19 @@ def test_charger_stays_inside_the_family_that_claimed_it(client):
     assert second.json().get("skipped") == "has-charger"
 
 
+def test_only_the_named_charger_is_attached(client):
+    owner = account(client, "named-charger@example.com")
+    family = client.post("/families", headers=owner, json={"label": "Home"}).json()["id"]
+    headers = {"X-Nivvi-Charger": "test-charger-secret"}
+    assert client.post("/internal/charger", headers=headers, json={"serial": "8201", "heart_rate": 91, "heart_state": 0}).json()["skipped"] == "unclaimed"
+    assert client.post(f"/families/{family}/charger-claim", headers=owner, json={"serial": "10674"}).json()["serial"] == "10674"
+    wrong = client.post("/internal/charger", headers=headers, json={"serial": "8201", "heart_rate": 91, "heart_state": 0})
+    assert wrong.json().get("skipped") == "not-this-charger"
+    right = client.post("/internal/charger", headers=headers, json={"serial": "10674", "heart_rate": 80, "heart_state": 0})
+    assert right.json().get("skipped") not in ("not-this-charger", "already-online", "unclaimed")
+    assert client.get(f"/families/{family}/latest", headers=owner).json()["snapshot"]["heart_rate"] == 80
+
+
 def test_charger_pushes_the_lock_screen(client):
     relay.ACTIVITY_PUSHES.clear()
     relay.ACTIVITY_GATE.clear()
