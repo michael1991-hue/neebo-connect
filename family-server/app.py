@@ -1091,8 +1091,7 @@ def charger_alarm(rate, limits, old, now):
 
 @app.post("/internal/charger")
 def charger_reading(body: ChargerReading, request: Request):
-    """The charger takes the shared reading as soon as it sees the band.
-    The phone can stay connected. Its own screen is left alone."""
+    """The charger fills in only when the nursery phone is not already sending a live reading."""
     secret = os.environ.get("NIVVI_CHARGER_SECRET", "")
     given = request.headers.get("x-nivvi-charger", "")
     if not secret or not hmac.compare_digest(given, secret):
@@ -1128,6 +1127,8 @@ def charger_reading(body: ChargerReading, request: Request):
         ).fetchone()
         previous = c.execute("SELECT payload FROM latest WHERE family=?", (family_id,)).fetchone()
         old = json.loads(previous[0]) if previous else {}
+        if phone_is_monitoring(old, now):
+            return {"ok": True, "skipped": "phone"}
         alarm, pending, since, clear_since = charger_alarm(body.heart_rate, limits, old, now)
         previous_alarm = old.get("alarm") if old.get("source") == "charger" else "none"
         sleep_line, sleep_seconds, sleep_held = charger_sleep(body.sleep, body.sleep_sec, old, now, body.heart_rate)
@@ -1330,6 +1331,20 @@ def remove_activity_token(body: ActivityToken):
 def charger_is_live(payload, now, hold=30):
     """A charger that has seen the band recently owns the shared reading."""
     if not payload or payload.get("source") != "charger":
+        return False
+    try:
+        stamp = float(payload.get("heart_rate_at") or payload.get("captured") or 0)
+    except (TypeError, ValueError):
+        return False
+    age = now - stamp
+    return stamp > 0 and -5 <= age <= hold
+
+
+def phone_is_monitoring(payload, now, hold=20):
+    """A fresh nursery-phone reading is the band on the child. Do not replace it with the charger."""
+    if not payload or payload.get("source") == "charger":
+        return False
+    if payload.get("heart_rate") in (None, 0):
         return False
     try:
         stamp = float(payload.get("heart_rate_at") or payload.get("captured") or 0)

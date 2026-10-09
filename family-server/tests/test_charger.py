@@ -89,7 +89,7 @@ def test_charger_pushes_the_lock_screen(client):
     assert snap["activity_secret"] == secret and snap["source"] == "charger" and snap["sleep"] == "Asleep · 3 min"
 
 
-def test_charger_takes_the_shared_reading_while_the_phone_stays_connected(client):
+def test_a_live_nursery_phone_is_not_replaced_by_the_charger(client):
     relay.ACTIVITY_PUSHES.clear()
     relay.ACTIVITY_GATE.clear()
     owner = account(client, "both-connected@example.com")
@@ -109,28 +109,23 @@ def test_charger_takes_the_shared_reading_while_the_phone_stays_connected(client
         "activity_secret": secret,
         "seq": 1,
         "stream_id": "phone-1",
+        "battery": "86%",
     }
     assert client.put(f"/families/{family}/latest", headers=owner, json=phone).status_code == 200
     assert client.post(f"/families/{family}/charger-claim", headers=owner).status_code == 200
     headers = {"X-Nivvi-Charger": "test-charger-secret"}
     posted = client.post("/internal/charger", headers=headers, json={"serial": "11298", "heart_rate": 91, "heart_state": 0, "oxygen": 98, "oxygen_state": 0})
-    assert posted.json()["ok"] is True and posted.json().get("skipped") != "phone"
+    assert posted.json().get("skipped") == "phone"
     snap = client.get(f"/families/{family}/latest", headers=owner).json()["snapshot"]
-    assert snap["source"] == "charger" and snap["heart_rate"] == 91
-    phone["heart_rate"] = 70
-    phone["seq"] = 2
-    phone["captured"] = now + 1
-    phone["heart_rate_at"] = now + 1
-    held = client.put(f"/families/{family}/latest", headers=owner, json=phone)
-    assert held.status_code == 200 and held.json().get("skipped") == "charger"
+    assert snap["source"] == "phone" and snap["heart_rate"] == 80 and snap["battery"] == "86%"
+    quiet = dict(phone)
+    quiet["captured"] = now - 30
+    quiet["heart_rate_at"] = now - 30
+    quiet["seq"] = 2
+    assert client.put(f"/families/{family}/latest", headers=owner, json=quiet).status_code == 200
+    taken = client.post("/internal/charger", headers=headers, json={"serial": "11298", "heart_rate": 91, "heart_state": 0, "oxygen": 98, "oxygen_state": 0})
+    assert taken.json()["ok"] is True and taken.json().get("skipped") != "phone"
     assert client.get(f"/families/{family}/latest", headers=owner).json()["snapshot"]["heart_rate"] == 91
-    relay.ACTIVITY_PUSHES.clear()
-    direct = client.post("/live-activity/publish", json={
-        "secret": secret, "seq": 9, "measured_at": now + 1, "heart_rate": "70 bpm", "oxygen": "97%",
-        "connection": "Connected", "session": "Home", "title": "Home",
-    })
-    assert direct.status_code == 200 and direct.json().get("skipped") == "charger"
-    assert relay.ACTIVITY_PUSHES == []
 
 
 def test_charger_keeps_history_while_the_phone_is_off(client):
