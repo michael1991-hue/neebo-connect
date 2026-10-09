@@ -1132,7 +1132,7 @@ def charger_reading(body: ChargerReading, request: Request):
         old = json.loads(previous[0]) if previous else {}
         alarm, pending, since, clear_since = charger_alarm(body.heart_rate, limits, old, now)
         previous_alarm = old.get("alarm") if old.get("source") == "charger" else "none"
-        sleep_line, sleep_seconds, sleep_held = charger_sleep(body.sleep, body.sleep_sec, old, now)
+        sleep_line, sleep_seconds, sleep_held = charger_sleep(body.sleep, body.sleep_sec, old, now, body.heart_rate)
         point = {"t": now, "hr": body.heart_rate, "o2": oxygen, "sk": skin}
         history = [item for item in (old.get("history") or []) if isinstance(item, dict)]
         history.append(point)
@@ -1469,8 +1469,14 @@ def reading_number(text):
         return None
 
 
-def charger_sleep(flag, seconds, old, now):
-    """A repeated sleep count must not freeze the timer. Keep counting from the first reading."""
+def charger_sleep(flag, seconds, old, now, heart_rate=None):
+    """Sitting still is not sleep. A pulse of 120 or more, or a flag only a few seconds old, stays Awake."""
+    try:
+        pulse = float(heart_rate)
+    except (TypeError, ValueError):
+        pulse = None
+    if pulse is not None and pulse >= 120:
+        return "", None, None
     old = old or {}
     if flag is True:
         try:
@@ -1486,8 +1492,16 @@ def charger_sleep(flag, seconds, old, now):
             previous = None
             held = None
         if previous is not None and held and reported <= previous + 2:
-            running = previous + max(0, now - held)
-            return formatted_sleep(int(running)), previous, held
+            running = int(previous + max(0, now - held))
+            if reported + 30 < previous:
+                running = reported
+                held = now
+                previous = reported
+            if running < 180:
+                return "", previous, held
+            return formatted_sleep(running), previous, held
+        if reported < 180:
+            return "", reported, now
         return formatted_sleep(reported), reported, now
     previous_line = str(old.get("sleep") or "")
     try:
