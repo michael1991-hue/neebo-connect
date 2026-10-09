@@ -1184,6 +1184,7 @@ def charger_reading(body: ChargerReading, request: Request):
             "sleep_sec": sleep_seconds,
             "sleep_held": sleep_held,
             "sleep_pulse": sleep_pulse,
+            "wake_since": old.get("wake_since"),
             "recovery_chime": old.get("recovery_chime") if old.get("recovery_chime") is not None else True,
             "alarm_pending": pending,
             "alarm_since": since,
@@ -1574,6 +1575,7 @@ def charger_sleep(flag, seconds, old, now, heart_rate=None):
     except (TypeError, ValueError):
         base = None
     if flag is True:
+        old["wake_since"] = None
         try:
             reported = int(seconds)
         except (TypeError, ValueError):
@@ -1605,12 +1607,19 @@ def charger_sleep(flag, seconds, old, now, heart_rate=None):
             learned = round(pulse if base is None else base * 0.85 + pulse * 0.15, 1)
         return formatted_sleep(running), previous, held, learned
     previous_line = str(old.get("sleep") or "")
+    if not previous_line.startswith("Asleep"):
+        old["wake_since"] = None
+        return "", None, None, base
     try:
-        held = float(old.get("sleep_held") or 0)
+        wake = float(old.get("wake_since") or 0)
     except (TypeError, ValueError):
-        held = 0
-    if previous_line.startswith("Asleep") and held and now - held < 90:
-        return previous_line, old.get("sleep_sec"), held, base
+        wake = 0
+    if wake <= 0:
+        wake = now
+    old["wake_since"] = wake
+    if now - wake < 180:
+        return previous_line, old.get("sleep_sec"), old.get("sleep_held"), base
+    old["wake_since"] = None
     return "", None, None, base
 
 

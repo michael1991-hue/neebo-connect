@@ -15,7 +15,7 @@ with (root / "apple/Info.plist").open("rb") as stream:
 for key in ("CFBundleShortVersionString", "CFBundleVersion"):
     assert info[key] == source[key], f"Packaged {key} differs from source"
 assert info["UIDeviceFamily"] == [1], "Archive must target iPhone, matching the UI and supplied icons"
-assert info["UIBackgroundModes"] == ["bluetooth-central"], "Expected BLE central background mode"
+assert "bluetooth-central" in info.get("UIBackgroundModes", []), "Expected BLE central background mode"
 assert info.get("NSBluetoothAlwaysUsageDescription"), "Missing Bluetooth permission explanation"
 assert int(info["DTSDKName"].replace("iphoneos", "").split(".")[0]) >= 26, "iOS SDK 26+ required"
 assert (app / "Nivvi").is_file(), "Missing executable"

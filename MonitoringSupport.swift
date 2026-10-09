@@ -1022,18 +1022,25 @@ struct SleepClock: Equatable {
         lastSample = time
     }
 
-    /// 01 from the band is active. End sleep immediately. A twitch rule does not apply.
+    /// 01 from the band is movement. One packet can be a twitch, so sleep
+    /// stays until movement has held for the same minute as the other wake rule.
     mutating func markActive(at time: Date) {
-        if asleep, let start = stillSince { finish(start: start, end: time) }
-        else if let open = naps.last, open.ended == nil { finish(start: open.started, end: time) }
+        docked = false
+        offWrist = false
+        lastSample = time
+        if !asleep && stillSince == nil {
+            movingSince = time
+            return
+        }
+        if movingSince == nil { movingSince = time }
+        guard let moving = movingSince, time.timeIntervalSince(moving) >= Self.wake else { return }
+        if asleep, let start = stillSince { finish(start: start, end: moving) }
+        else if let open = naps.last, open.ended == nil { finish(start: open.started, end: moving) }
         stillSince = nil
         movingSince = time
         restlessSince = nil
         raisedSince = nil
         asleep = false
-        docked = false
-        offWrist = false
-        lastSample = time
     }
 
     func face(at time: Date) -> (title: String, duration: String, detail: String) {

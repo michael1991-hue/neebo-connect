@@ -201,7 +201,9 @@ def test_charger_keeps_history_while_the_phone_is_off(client):
     assert kept == "Asleep · 5 min" and same == 300 and still == now
     running, stuck, anchor, _ = relay.charger_sleep(True, 300, {"sleep": line, "sleep_sec": sec, "sleep_held": now}, now + 65)
     assert stuck == 300 and anchor == now and "6 min" in running
-    cleared, gone, dropped, _ = relay.charger_sleep(False, 0, {"sleep": line, "sleep_sec": sec, "sleep_held": now}, now + 91)
+    flicker, _, _, _ = relay.charger_sleep(False, 0, {"sleep": line, "sleep_sec": sec, "sleep_held": now}, now + 91)
+    assert flicker.startswith("Asleep")
+    cleared, gone, dropped, _ = relay.charger_sleep(False, 0, {"sleep": line, "sleep_sec": sec, "sleep_held": now, "wake_since": now}, now + 181)
     assert cleared == "" and gone is None and dropped is None
     now = 1_000.0
     limits = {"high_enabled": 1, "low_enabled": 1, "high_threshold": 100, "low_threshold": 60, "duration_seconds": 15}
