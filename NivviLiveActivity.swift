@@ -128,8 +128,7 @@ enum NivviLiveActivityBridge {
 
     private static func freshUntil(_ measuredAt: TimeInterval, stale: Bool) -> Date {
         if stale { return Date() }
-        let measured = measuredAt > 0 ? Date(timeIntervalSince1970: measuredAt) : Date()
-        let until = measured.addingTimeInterval(180)
-        return until < Date() ? Date() : until
+        let until = Date().addingTimeInterval(600)
+        return until
     }
 }

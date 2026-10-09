@@ -174,13 +174,18 @@ struct NivviLiveActivityWidget: Widget {
 
     @ViewBuilder
     private func readingStamp(_ context: ActivityViewContext<NivviActivityAttributes>) -> some View {
-        if context.state.measuredAt > 0 {
+        if activityIsStale(context), context.state.measuredAt > 0 {
             (Text("Last reading · ") + Text(Date(timeIntervalSince1970: context.state.measuredAt), style: .relative))
                 .font(.caption.weight(.medium))
-                .foregroundStyle(Color.white.opacity(0.62))
+                .foregroundStyle(Color(red: 1, green: 0.62, blue: 0.28))
                 .frame(maxWidth: .infinity)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
+        } else if context.state.measuredAt > 0 {
+            Text("Live")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(Color(red: 0.45, green: 0.86, blue: 0.74))
+                .frame(maxWidth: .infinity)
         } else {
             Text("No reading yet")
                 .font(.caption.weight(.medium))

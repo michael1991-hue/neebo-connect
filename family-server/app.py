@@ -1424,12 +1424,12 @@ def queue_activity(secret, state, paced=False):
 
     jobs = []
     if not paced:
-        jobs.append(([token for token, _ in rows], "10", 180))
+        jobs.append(([token for token, _ in rows], "10", 600))
     else:
         if hosts and due("host", 8):
-            jobs.append((hosts, "10", 180))
+            jobs.append((hosts, "10", 600))
         if watchers and watcher_due(secret, state, now):
-            jobs.append((watchers, "10", 180))
+            jobs.append((watchers, "10", 600))
     if TEST:
         for tokens, priority, _stale in jobs:
             for token in tokens:
