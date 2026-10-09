@@ -215,6 +215,7 @@ struct FamilySnapshot: Codable {
         try box.encode(recovery_chime, forKey: .recovery_chime)
     }
 }
+struct FamilyHistoryReply: Codable { var points: [FamilySample] = [] }
 struct RemoteReading: Codable {
     let fresh: Bool
     let age: Double?
@@ -267,6 +268,7 @@ final class FamilyRelay: ObservableObject {
     @Published private(set) var socketConnected = false
     @Published private(set) var lastLatency: TimeInterval?
     @Published private(set) var trail: [SavedMeasurement] = []
+    @Published private(set) var storedHistory: [FamilySample] = []
     @Published private(set) var alarmCatchup = true
     @Published private(set) var inboundAck = false
     @Published private(set) var lastUpload: Date?
@@ -922,6 +924,12 @@ final class FamilyRelay: ObservableObject {
         appliedAlarm = nextAlarm
         if snap.acknowledged == true { inboundAck = true }
         if followingFamily { LiveActivityPush.rememberFollowSecret(snap.activity_secret) }
+    }
+    func pullStoredHistory() async throws {
+        guard let familyID = selected ?? ownFamily?.id else { return }
+        let start = Int(Date().addingTimeInterval(-36 * 3600).timeIntervalSince1970)
+        let reply: FamilyHistoryReply = try await request("families/\(familyID)/history?start=\(start)")
+        storedHistory = reply.points
     }
     func consumeInboundAck() -> Bool {
         guard inboundAck else { return false }

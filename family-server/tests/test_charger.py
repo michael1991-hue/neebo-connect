@@ -133,7 +133,23 @@ def test_charger_takes_the_shared_reading_while_the_phone_stays_connected(client
     assert relay.ACTIVITY_PUSHES == []
 
 
-def test_charger_sleep_stays_through_a_short_gap():
+def test_charger_keeps_history_while_the_phone_is_off(client):
+    owner = account(client, "history-off@example.com")
+    family = client.post("/families", headers=owner, json={"label": "Home"}).json()["id"]
+    assert client.post(f"/families/{family}/charger-claim", headers=owner).status_code == 200
+    headers = {"X-Nivvi-Charger": "test-charger-secret"}
+    reading = {"serial": "11298", "heart_rate": 88, "heart_state": 0, "oxygen": 99, "oxygen_state": 0, "temperature": 32.1}
+    assert client.post("/internal/charger", headers=headers, json=reading).status_code == 200
+    first = client.get(f"/families/{family}/history", headers=owner).json()["points"]
+    assert len(first) == 1 and first[0]["hr"] == 88
+    import sqlite3
+    store = sqlite3.connect(relay.DB)
+    store.execute("UPDATE reading_log SET t=t-40 WHERE family=?", (family,))
+    store.commit()
+    reading["heart_rate"] = 91
+    assert client.post("/internal/charger", headers=headers, json=reading).status_code == 200
+    second = client.get(f"/families/{family}/history", headers=owner).json()["points"]
+    assert [point["hr"] for point in second] == [88, 91]
     now = 2_000.0
     line, sec, held = relay.charger_sleep(True, 300, {}, now)
     assert line == "Asleep · 5 min" and sec == 300 and held == now

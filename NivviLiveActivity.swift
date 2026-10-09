@@ -128,7 +128,6 @@ enum NivviLiveActivityBridge {
 
     private static func freshUntil(_ measuredAt: TimeInterval, stale: Bool) -> Date {
         if stale { return Date() }
-        let until = Date().addingTimeInterval(600)
-        return until
+        return Date().addingTimeInterval(90)
     }
 }

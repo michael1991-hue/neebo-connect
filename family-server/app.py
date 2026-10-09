@@ -124,6 +124,8 @@ def initialize():
         CREATE TABLE IF NOT EXISTS activity_latest(secret TEXT PRIMARY KEY, seq INTEGER NOT NULL, measured REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS chargers(serial TEXT PRIMARY KEY, family TEXT NOT NULL REFERENCES families ON DELETE CASCADE, claimed REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS charger_claims(family TEXT PRIMARY KEY REFERENCES families ON DELETE CASCADE, expires REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS reading_log(family TEXT NOT NULL, t REAL NOT NULL, hr REAL, o2 REAL, sk REAL);
+        CREATE INDEX IF NOT EXISTS reading_log_family_t ON reading_log(family, t);
         """)
         for stmt in (
             "ALTER TABLE members ADD COLUMN role TEXT NOT NULL DEFAULT 'watcher'",
@@ -1134,6 +1136,10 @@ def charger_reading(body: ChargerReading, request: Request):
         point = {"t": now, "hr": body.heart_rate, "o2": oxygen, "sk": skin}
         history = [item for item in (old.get("history") or []) if isinstance(item, dict)]
         history.append(point)
+        last_logged = c.execute("SELECT t FROM reading_log WHERE family=? ORDER BY t DESC LIMIT 1", (family_id,)).fetchone()
+        if not last_logged or now - float(last_logged["t"]) >= 30:
+            c.execute("INSERT INTO reading_log(family,t,hr,o2,sk) VALUES(?,?,?,?,?)", (family_id, now, body.heart_rate, oxygen, skin))
+            c.execute("DELETE FROM reading_log WHERE family=? AND t<?", (family_id, now - 14 * 86400))
         payload = {
             "captured": now,
             "heart_rate": body.heart_rate,
@@ -1174,6 +1180,22 @@ def charger_reading(body: ChargerReading, request: Request):
     if payload.get("activity_secret"):
         queue_activity(payload["activity_secret"], activity_state(payload, payload["activity_secret"]), paced=True)
     return {"ok": True, "seq": payload["seq"], "server_received": now}
+
+
+@app.get("/families/{family}/history")
+def family_history(family: str, start: float = 0, user=Depends(require_user)):
+    """Readings the charger stored while every phone was off."""
+    now = time.time()
+    if start <= 0 or start > now:
+        start = now - 36 * 3600
+    start = max(start, now - 14 * 86400)
+    with db() as c:
+        member(c, family, user)
+        rows = c.execute(
+            "SELECT t, hr, o2, sk FROM reading_log WHERE family=? AND t>=? ORDER BY t LIMIT 4000",
+            (family, start),
+        ).fetchall()
+    return {"points": [{"t": row["t"], "hr": row["hr"], "o2": row["o2"], "sk": row["sk"]} for row in rows]}
 
 
 @app.post("/families/{family}/charger-claim")
@@ -1383,7 +1405,7 @@ def activity_state(payload, secret):
         "measuredAt": measured,
         "seq": int(payload.get("seq") or 0),
         "session": payload.get("source") or "Nivvi",
-        "stale": age > 180,
+        "stale": age > 90,
         "alarm": alarm if alarm in ("high", "low") else "",
         "title": "Nivvi",
         "sleep": str(payload.get("sleep") or "")[:40],
@@ -1424,12 +1446,12 @@ def queue_activity(secret, state, paced=False):
 
     jobs = []
     if not paced:
-        jobs.append(([token for token, _ in rows], "10", 600))
+        jobs.append(([token for token, _ in rows], "10", 90))
     else:
         if hosts and due("host", 8):
-            jobs.append((hosts, "10", 600))
+            jobs.append((hosts, "10", 90))
         if watchers and watcher_due(secret, state, now):
-            jobs.append((watchers, "10", 600))
+            jobs.append((watchers, "10", 90))
     if TEST:
         for tokens, priority, _stale in jobs:
             for token in tokens:

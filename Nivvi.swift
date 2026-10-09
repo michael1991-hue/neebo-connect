@@ -3040,6 +3040,9 @@ struct ContentView: View {
                     SavedMeasurement.mapped(time: Date(timeIntervalSince1970: $0.t), heartRate: $0.hr, oxygen: $0.o2, source: "family-share", skinCelsius: $0.sk)
                 })
             }
+            rows.append(contentsOf: family.storedHistory.map {
+                SavedMeasurement.mapped(time: Date(timeIntervalSince1970: $0.t), heartRate: $0.hr, oxygen: $0.o2, source: "family-share", skinCelsius: $0.sk)
+            })
             monitor.ingestShared(rows)
             if let alerts = family.remote?.snapshot?.alerts { monitor.ingestSharedAlerts(alerts) }
         }
@@ -3189,6 +3192,10 @@ struct ContentView: View {
             if phase == .active {
                 family.resumeForeground()
                 healLockScreenIfStale()
+                Task {
+                    try? await family.pullStoredHistory()
+                    persistSharedHistory()
+                }
             }
         }
         .sheet(isPresented: $showProfile) {
@@ -3245,6 +3252,10 @@ struct ContentView: View {
                 Task { try? await family.notifications() }
             }
             applyShareAlert()
+            Task {
+                try? await family.pullStoredHistory()
+                persistSharedHistory()
+            }
             monitor.refreshBackgroundHold()
         }
         .onChange(of: family.publishing) { _ in monitor.refreshBackgroundHold() }
