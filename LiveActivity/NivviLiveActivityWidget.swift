@@ -91,6 +91,9 @@ struct NivviLiveActivityWidget: Widget {
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(sleepTint(context.state.sleep))
                         .lineLimit(1)
+                    if context.state.sleep.hasPrefix("Asleep") {
+                        sleepZzz
+                    }
                     Spacer(minLength: 0)
                 }
             }
@@ -102,6 +105,22 @@ struct NivviLiveActivityWidget: Widget {
         .activitySystemActionForegroundColor(.white)
     }
 
+    private var sleepZzz: some View {
+        TimelineView(.periodic(from: .now, by: 0.7)) { timeline in
+            let step = Int(timeline.date.timeIntervalSince1970 / 0.7) % 3
+            HStack(alignment: .lastTextBaseline, spacing: 0) {
+                Text("Z")
+                    .font(.subheadline.weight(.bold))
+                Text("z")
+                    .font(.caption.weight(.bold))
+                    .opacity(step > 0 ? 1 : 0.2)
+                Text("z")
+                    .font(.caption2.weight(.bold))
+                    .opacity(step > 1 ? 1 : 0.2)
+            }
+            .foregroundStyle(Color(red: 0.85, green: 0.82, blue: 1))
+        }
+    }
     private func sleepTint(_ line: String) -> Color {
         if line.hasPrefix("Asleep") { return Color(red: 0.85, green: 0.82, blue: 1) }
         if line.hasPrefix("Settling") { return Color(red: 0.73, green: 0.78, blue: 0.96) }

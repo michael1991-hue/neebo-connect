@@ -1130,6 +1130,7 @@ def charger_reading(body: ChargerReading, request: Request):
         old = json.loads(previous[0]) if previous else {}
         alarm, pending, since, clear_since = charger_alarm(body.heart_rate, limits, old, now)
         previous_alarm = old.get("alarm") if old.get("source") == "charger" else "none"
+        sleep_line, sleep_held = charger_sleep(body.sleep, body.sleep_sec, old, now)
         point = {"t": now, "hr": body.heart_rate, "o2": oxygen, "sk": skin}
         history = [item for item in (old.get("history") or []) if isinstance(item, dict)]
         history.append(point)
@@ -1152,7 +1153,8 @@ def charger_reading(body: ChargerReading, request: Request):
             "charging": False,
             "skin": skin if skin is not None else old.get("skin"),
             "activity_secret": old.get("activity_secret") or None,
-            "sleep": charger_sleep(body.sleep, body.sleep_sec),
+            "sleep": sleep_line,
+            "sleep_held": sleep_held,
             "recovery_chime": old.get("recovery_chime") if old.get("recovery_chime") is not None else True,
             "alarm_pending": pending,
             "alarm_since": since,
@@ -1430,10 +1432,21 @@ def reading_number(text):
         return None
 
 
-def charger_sleep(flag, seconds):
-    """The charger's own sleep flag and timer. The phone's FFE4 codes are not used."""
-    if flag is not True:
-        return ""
+def charger_sleep(flag, seconds, old, now):
+    """Keep the charger's sleep line through a brief gap so the lock screen does not flicker."""
+    if flag is True:
+        return formatted_sleep(seconds), now
+    previous = str((old or {}).get("sleep") or "")
+    try:
+        held = float((old or {}).get("sleep_held") or 0)
+    except (TypeError, ValueError):
+        held = 0
+    if previous.startswith("Asleep") and held and now - held < 90:
+        return previous, held
+    return "", None
+
+
+def formatted_sleep(seconds):
     try:
         seconds = int(seconds)
     except (TypeError, ValueError):
@@ -1445,10 +1458,6 @@ def charger_sleep(flag, seconds):
         return f"Asleep · {minutes} min"
     hours, mins = divmod(minutes, 60)
     return f"Asleep · {hours} hr" if mins == 0 else f"Asleep · {hours} hr {mins} min"
-    try:
-        return int(float(str(text).split()[0]))
-    except (TypeError, ValueError):
-        return None
 
 
 def watcher_due(secret, state, now):

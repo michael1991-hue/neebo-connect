@@ -133,7 +133,14 @@ def test_charger_takes_the_shared_reading_while_the_phone_stays_connected(client
     assert relay.ACTIVITY_PUSHES == []
 
 
-def test_charger_alarm_uses_the_saved_limits():
+def test_charger_sleep_stays_through_a_short_gap():
+    now = 2_000.0
+    line, held = relay.charger_sleep(True, 194, {}, now)
+    assert line == "Asleep · 3 min" and held == now
+    kept, still = relay.charger_sleep(None, None, {"sleep": line, "sleep_held": now}, now + 20)
+    assert kept == "Asleep · 3 min" and still == now
+    cleared, gone = relay.charger_sleep(False, 0, {"sleep": line, "sleep_held": now}, now + 91)
+    assert cleared == "" and gone is None
     now = 1_000.0
     limits = {"high_enabled": 1, "low_enabled": 1, "high_threshold": 100, "low_threshold": 60, "duration_seconds": 15}
     alarm, pending, since, clear = relay.charger_alarm(130, limits, {}, now)
