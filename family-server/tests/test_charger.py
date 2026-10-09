@@ -43,15 +43,22 @@ def test_charger_stays_inside_the_family_that_claimed_it(client):
     relay_db = __import__("sqlite3").connect(relay.DB)
     relay_db.execute("DELETE FROM charger_claims WHERE family=?", (stranger,))
     relay_db.commit()
-    posted = client.post("/internal/charger", headers=headers, json=reading)
+    refused = client.post("/internal/charger", headers=headers, json=reading)
+    assert refused.json().get("skipped") == "already-online"
+    assert client.get(f"/families/{family}/latest", headers=owner).json()["snapshot"] is None
+    fresh = {"serial": "55555", "heart_rate": 83, "heart_state": 0, "oxygen": 97, "oxygen_state": 0}
+    posted = client.post("/internal/charger", headers=headers, json=fresh)
     assert posted.status_code == 200 and posted.json()["ok"] is True
     snap = client.get(f"/families/{family}/latest", headers=owner).json()["snapshot"]
     assert snap["source"] == "charger" and snap["heart_rate"] == 83 and snap["host_relation"] == "Charger"
     assert client.get(f"/families/{stranger}/latest", headers=other).json()["snapshot"] is None
     assert client.post("/internal/charger", headers=headers, json={"serial": "99999", "heart_rate": 80, "heart_state": 0}).json()["skipped"] == "unclaimed"
-    again = client.post("/internal/charger", headers=headers, json=reading)
+    again = client.post("/internal/charger", headers=headers, json=fresh)
     assert again.json().get("skipped") != "unclaimed"
     assert client.get(f"/families/{stranger}/latest", headers=other).json()["snapshot"] is None
+    assert client.post(f"/families/{family}/charger-claim", headers=owner).status_code == 200
+    second = client.post("/internal/charger", headers=headers, json={"serial": "77777", "heart_rate": 70, "heart_state": 0})
+    assert second.json().get("skipped") == "has-charger"
 
 
 def test_charger_pushes_the_lock_screen(client):
