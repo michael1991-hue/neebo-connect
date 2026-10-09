@@ -553,7 +553,8 @@ struct RateAlarmEngine {
     mutating func ingestExact(bpm: Double?, source: String, at now: Date, settings: AlarmSettings, allowExperimentalCustom: Bool = false) -> RateAlarm? {
         guard settings.validationMessage == nil, settings.highEnabled || settings.lowEnabled else { reset(); return nil }
         guard (source == "standard-2A37" || source == "standard-PLX-continuous" || (allowExperimentalCustom && source == "experimental-custom")), let bpm = bpm, bpm.isFinite, bpm > 0, bpm <= 65535 else { interrupt(); return nil }
-        if let last = previous, now.timeIntervalSince(last) > 10 || now < last { interrupt() }
+        let gap = previous.map { now.timeIntervalSince($0) > 10 || now < $0 } ?? false
+        if gap { pending = nil; since = nil }
         previous = now
         let direction: RateAlarm?
         if settings.lowEnabled, let limit = settings.lowThreshold, bpm < Double(limit) { direction = .low }
