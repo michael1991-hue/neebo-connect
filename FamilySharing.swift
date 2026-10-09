@@ -292,7 +292,7 @@ final class FamilyRelay: ObservableObject {
     private var reconnectTask: Task<Void, Never>?
     private var watching = false
     private var ownFamily: SharedFamily? { families.first { $0.owner == account?.user_id } }
-    private var publishFamilyID: String? {
+    var publishFamilyID: String? {
         selected ?? ownFamily?.id
     }
     var isCarer: Bool { families.contains { $0.role == "carer" } }

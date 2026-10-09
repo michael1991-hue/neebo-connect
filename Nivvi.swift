@@ -2977,7 +2977,7 @@ struct ContentView: View {
             connection = family.remote?.snapshot?.connection ?? "Family sharing"
             signal = "Internet"
             hint = family.statusLine
-            LiveActivityPush.watchFamily(family.ownFamily?.id ?? family.selected)
+            LiveActivityPush.watchFamily(family.publishFamilyID)
         } else {
             connection = monitor.connection.label
             signal = BluetoothSignal.label(monitor.signalRSSI)
