@@ -14,7 +14,7 @@ SDKROOT="$sdk_path" xcrun --sdk iphoneos swiftc -swift-version 5 -parse-as-libra
   -sdk "$sdk_path" -target arm64-apple-ios16.0 \
   -module-name Nivvi -framework SwiftUI -framework CoreBluetooth -framework Charts -framework AudioToolbox -framework UserNotifications -framework AVFoundation -framework PhotosUI -framework ImageIO -framework Security -framework Network -framework ActivityKit \
   -Xlinker -rpath -Xlinker @executable_path/Frameworks \
-  Nivvi.swift MonitoringSupport.swift PulseOximetry.swift FamilySharing.swift WiFiShare.swift Atmosphere.swift NivviLiveActivity.swift LiveActivityPush.swift LiveActivity/NivviActivityAttributes.swift -o "$app_dir/Nivvi"
+  Nivvi.swift MonitoringSupport.swift PulseOximetry.swift FamilySharing.swift WiFiShare.swift ChargerWiFi.swift Atmosphere.swift NivviLiveActivity.swift LiveActivityPush.swift LiveActivity/NivviActivityAttributes.swift -o "$app_dir/Nivvi"
 cp apple/Info.plist "$app_dir/Info.plist"
 cp apple/PrivacyInfo.xcprivacy "$app_dir/PrivacyInfo.xcprivacy"
 python3 prepare-icons.py
