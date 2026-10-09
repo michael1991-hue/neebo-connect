@@ -1470,12 +1470,12 @@ def reading_number(text):
 
 
 def charger_sleep(flag, seconds, old, now, heart_rate=None):
-    """Sitting still is not sleep. A pulse of 120 or more, or a flag only a few seconds old, stays Awake."""
+    """Her awake pulse is about 110 to 135. Sleep is about 100 or below, and only after the charger has held that for 3 minutes."""
     try:
         pulse = float(heart_rate)
     except (TypeError, ValueError):
         pulse = None
-    if pulse is not None and pulse >= 120:
+    if pulse is not None and pulse > 100:
         return "", None, None
     old = old or {}
     if flag is True:

@@ -155,6 +155,10 @@ def test_charger_keeps_history_while_the_phone_is_off(client):
     assert quiet == ""
     watching, _, _ = relay.charger_sleep(True, 400, {}, now, 129)
     assert watching == ""
+    active, _, _ = relay.charger_sleep(True, 400, {}, now, 110)
+    assert active == ""
+    real, _, _ = relay.charger_sleep(True, 300, {}, now, 98)
+    assert real.startswith("Asleep")
     line, sec, held = relay.charger_sleep(True, 300, {}, now)
     assert line == "Asleep · 5 min" and sec == 300 and held == now
     kept, same, still = relay.charger_sleep(None, None, {"sleep": line, "sleep_sec": sec, "sleep_held": now}, now + 20)
