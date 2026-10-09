@@ -3610,6 +3610,7 @@ struct ContentView: View {
     private var home: some View {
         VStack(alignment: .leading, spacing: 16) {
             liveHero
+            if let line = chargerSleepLine { chargerSleepCard(line) }
             if showSleep, !mirroringNursery { sleepCard }
             if monitor.batteryWarning != .ok && !monitor.wearableCharging {
                 HStack(spacing: 10) {
@@ -3760,6 +3761,34 @@ struct ContentView: View {
                 .accessibilityLabel("Heart-rate chart for the last two minutes")
             }
         }
+    }
+    private var chargerSleepLine: String? {
+        guard family.remote?.snapshot?.source == "charger" else { return nil }
+        let line = family.remote?.snapshot?.sleep?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return line.isEmpty ? "Awake" : line
+    }
+    private func chargerSleepCard(_ line: String) -> some View {
+        let asleep = line.hasPrefix("Asleep")
+        let timer = line.replacingOccurrences(of: "Asleep · ", with: "").trimmingCharacters(in: .whitespaces)
+        return HStack(spacing: 10) {
+            Image(systemName: asleep ? "moon.fill" : "figure.walk")
+                .foregroundStyle(asleep ? lavender : accentMint)
+            Text(asleep ? "Asleep" : "Awake")
+                .font(.headline)
+                .foregroundStyle(ink)
+            Spacer(minLength: 8)
+            if asleep, timer != "Asleep" {
+                Text(timer)
+                    .font(.title3.weight(.bold))
+                    .monospacedDigit()
+                    .foregroundStyle(ink)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(asleep ? lavender.opacity(0.16) : cardFill)
+        .clipShape(RoundedRectangle(cornerRadius: 22))
+        .overlay(RoundedRectangle(cornerRadius: 22).stroke(asleep ? lavender.opacity(0.45) : cardStroke, lineWidth: 1))
     }
     private var sleepCard: some View {
         TimelineView(.periodic(from: .now, by: 30)) { context in
