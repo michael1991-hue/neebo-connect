@@ -1514,8 +1514,9 @@ def formatted_sleep(seconds):
 
 
 def watcher_due(secret, state, now):
-    """Send at once when the number changes, otherwise about every 20 seconds.
-    A push every second is dropped by Apple and the watching lock screen goes stale."""
+    """A changed number goes out once the reading is a few seconds newer.
+    The same number is pushed every 8 seconds by the clock, so a locked phone
+    does not sit on an old age while the bpm stays still."""
     alarm = state.get("alarm") or ""
     hr = reading_number(state.get("heartRate"))
     ox = reading_number(state.get("oxygen"))
@@ -1528,10 +1529,11 @@ def watcher_due(secret, state, now):
     alarm_changed = alarm in ("high", "low") and previous.get("alarm") != alarm
     sleep = state.get("sleep") or ""
     sleep_changed = sleep != (previous.get("sleep") or "")
-    elapsed = stamp - float(previous.get("measured") or 0) if previous else 999
-    if previous and not alarm_changed and not sleep_changed and elapsed < 4:
+    wall = now - float(previous.get("at") or 0) if previous else 999
+    reading_elapsed = stamp - float(previous.get("measured") or 0) if previous else 999
+    if previous and not alarm_changed and not sleep_changed and not number_changed and wall < 8:
         return False
-    if previous and not number_changed and not alarm_changed and not sleep_changed and elapsed < 20:
+    if previous and not alarm_changed and not sleep_changed and reading_elapsed < 4 and wall < 4:
         return False
     ACTIVITY_GATE[f"{secret}:watcher"] = {"at": now, "alarm": alarm, "hr": hr, "ox": ox, "measured": stamp, "sleep": sleep}
     return True

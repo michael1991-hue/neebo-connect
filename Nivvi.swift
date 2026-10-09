@@ -3215,6 +3215,8 @@ struct ContentView: View {
                     try? await family.pullStoredHistory()
                     persistSharedHistory()
                 }
+            } else {
+                syncLiveActivity()
             }
         }
         .sheet(isPresented: $showProfile) {
