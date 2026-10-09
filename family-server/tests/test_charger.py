@@ -135,12 +135,14 @@ def test_charger_takes_the_shared_reading_while_the_phone_stays_connected(client
 
 def test_charger_sleep_stays_through_a_short_gap():
     now = 2_000.0
-    line, held = relay.charger_sleep(True, 194, {}, now)
-    assert line == "Asleep · 3 min" and held == now
-    kept, still = relay.charger_sleep(None, None, {"sleep": line, "sleep_held": now}, now + 20)
-    assert kept == "Asleep · 3 min" and still == now
-    cleared, gone = relay.charger_sleep(False, 0, {"sleep": line, "sleep_held": now}, now + 91)
-    assert cleared == "" and gone is None
+    line, sec, held = relay.charger_sleep(True, 300, {}, now)
+    assert line == "Asleep · 5 min" and sec == 300 and held == now
+    kept, same, still = relay.charger_sleep(None, None, {"sleep": line, "sleep_sec": sec, "sleep_held": now}, now + 20)
+    assert kept == "Asleep · 5 min" and same == 300 and still == now
+    running, stuck, anchor = relay.charger_sleep(True, 300, {"sleep": line, "sleep_sec": sec, "sleep_held": now}, now + 65)
+    assert stuck == 300 and anchor == now and "6 min" in running
+    cleared, gone, dropped = relay.charger_sleep(False, 0, {"sleep": line, "sleep_sec": sec, "sleep_held": now}, now + 91)
+    assert cleared == "" and gone is None and dropped is None
     now = 1_000.0
     limits = {"high_enabled": 1, "low_enabled": 1, "high_threshold": 100, "low_threshold": 60, "duration_seconds": 15}
     alarm, pending, since, clear = relay.charger_alarm(130, limits, {}, now)

@@ -3768,26 +3768,39 @@ struct ContentView: View {
     }
     private func chargerSleepHeader(_ line: String) -> some View {
         let asleep = line.hasPrefix("Asleep")
-        let timer = line.replacingOccurrences(of: "Asleep · ", with: "").trimmingCharacters(in: .whitespaces)
-        return HStack(alignment: .center, spacing: 12) {
-            Image(systemName: asleep ? "moon.fill" : "figure.walk")
-                .font(.title2)
-                .foregroundStyle(asleep ? lavender : accentMint)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(asleep ? "Asleep" : "Awake")
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(ink)
-                if asleep, !timer.isEmpty, timer != "Asleep" {
-                    Text(timer)
-                        .font(.subheadline.weight(.semibold))
-                        .monospacedDigit()
-                        .foregroundStyle(lavender)
+        return TimelineView(.periodic(from: .now, by: 1)) { context in
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: asleep ? "moon.fill" : "figure.walk")
+                    .font(.title2)
+                    .foregroundStyle(asleep ? lavender : accentMint)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(asleep ? "Asleep" : "Awake")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(ink)
+                    if asleep {
+                        Text(chargerSleepClock(at: context.date))
+                            .font(.subheadline.weight(.semibold))
+                            .monospacedDigit()
+                            .foregroundStyle(lavender)
+                    }
                 }
+                Spacer(minLength: 8)
+                if asleep { sleepZzz(color: lavender) }
             }
-            Spacer(minLength: 8)
-            if asleep { sleepZzz(color: lavender) }
+            .padding(.vertical, 4)
         }
-        .padding(.vertical, 4)
+    }
+    private func chargerSleepClock(at now: Date) -> String {
+        if let seconds = family.remote?.snapshot?.sleep_sec, let held = family.remote?.snapshot?.sleep_held {
+            let total = max(0, Int(seconds + now.timeIntervalSince1970 - held))
+            let hours = total / 3600
+            let minutes = (total % 3600) / 60
+            let secs = total % 60
+            if hours > 0 { return String(format: "%dh %02dm %02ds", hours, minutes, secs) }
+            return String(format: "%dm %02ds", minutes, secs)
+        }
+        let timer = (family.remote?.snapshot?.sleep ?? "").replacingOccurrences(of: "Asleep · ", with: "")
+        return timer == "Asleep" ? "0m 00s" : timer
     }
     private var sleepCard: some View {
         TimelineView(.periodic(from: .now, by: 30)) { context in

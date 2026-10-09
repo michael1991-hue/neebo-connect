@@ -1130,7 +1130,7 @@ def charger_reading(body: ChargerReading, request: Request):
         old = json.loads(previous[0]) if previous else {}
         alarm, pending, since, clear_since = charger_alarm(body.heart_rate, limits, old, now)
         previous_alarm = old.get("alarm") if old.get("source") == "charger" else "none"
-        sleep_line, sleep_held = charger_sleep(body.sleep, body.sleep_sec, old, now)
+        sleep_line, sleep_seconds, sleep_held = charger_sleep(body.sleep, body.sleep_sec, old, now)
         point = {"t": now, "hr": body.heart_rate, "o2": oxygen, "sk": skin}
         history = [item for item in (old.get("history") or []) if isinstance(item, dict)]
         history.append(point)
@@ -1154,6 +1154,7 @@ def charger_reading(body: ChargerReading, request: Request):
             "skin": skin if skin is not None else old.get("skin"),
             "activity_secret": old.get("activity_secret") or None,
             "sleep": sleep_line,
+            "sleep_sec": sleep_seconds,
             "sleep_held": sleep_held,
             "recovery_chime": old.get("recovery_chime") if old.get("recovery_chime") is not None else True,
             "alarm_pending": pending,
@@ -1433,17 +1434,33 @@ def reading_number(text):
 
 
 def charger_sleep(flag, seconds, old, now):
-    """Keep the charger's sleep line through a brief gap so the lock screen does not flicker."""
+    """A repeated sleep count must not freeze the timer. Keep counting from the first reading."""
+    old = old or {}
     if flag is True:
-        return formatted_sleep(seconds), now
-    previous = str((old or {}).get("sleep") or "")
+        try:
+            reported = int(seconds)
+        except (TypeError, ValueError):
+            reported = 0
+        if reported < 0:
+            reported = 0
+        try:
+            previous = int(old.get("sleep_sec"))
+            held = float(old.get("sleep_held"))
+        except (TypeError, ValueError):
+            previous = None
+            held = None
+        if previous is not None and held and reported <= previous + 2:
+            running = previous + max(0, now - held)
+            return formatted_sleep(int(running)), previous, held
+        return formatted_sleep(reported), reported, now
+    previous_line = str(old.get("sleep") or "")
     try:
-        held = float((old or {}).get("sleep_held") or 0)
+        held = float(old.get("sleep_held") or 0)
     except (TypeError, ValueError):
         held = 0
-    if previous.startswith("Asleep") and held and now - held < 90:
-        return previous, held
-    return "", None
+    if previous_line.startswith("Asleep") and held and now - held < 90:
+        return previous_line, old.get("sleep_sec"), held
+    return "", None, None
 
 
 def formatted_sleep(seconds):
