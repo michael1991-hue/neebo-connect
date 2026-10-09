@@ -1050,6 +1050,21 @@ struct SleepClock: Equatable {
         return ("AWAKE", "—", "Moving")
     }
 
+    func testLine(at time: Date) -> (title: String, detail: String) {
+        let shown = face(at: time)
+        switch shown.title {
+        case "ASLEEP": return ("Asleep", shown.duration)
+        case "SETTLING":
+            let waited = stillSince.map { Int(time.timeIntervalSince($0)) } ?? 0
+            let left = max(0, Int(Self.settle) - waited)
+            return ("Still", String(format: "%dm %02ds until asleep", left / 60, left % 60))
+        case "AWAKE": return ("Active", "Moving")
+        case "CHARGING": return ("Charging", "Not sleep")
+        case "REMOVED": return ("Band off", "Not sleep")
+        default: return ("Waiting", "Waiting for the band")
+        }
+    }
+
     func logged(on day: Date) -> [SleepNap] {
         naps.filter { nap in
             Calendar.current.isDate(nap.started, inSameDayAs: day)

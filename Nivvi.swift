@@ -920,7 +920,14 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             sleep: sleepLockLine
         )
     }
-    var sleepLockLine: String { "" }
+    var sleepLockLine: String {
+        switch sleep.face(at: Date()).title {
+        case "ASLEEP": return "Asleep · \(sleep.face(at: Date()).duration)"
+        case "SETTLING": return "Still"
+        case "AWAKE": return "Active"
+        default: return ""
+        }
+    }
     var sleepShareLine: String { "" }
     private func expireMeasurements() {
         defer { publishFamilySnapshot() }
@@ -3785,6 +3792,32 @@ struct ContentView: View {
         let line = family.remote?.snapshot?.sleep?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return line.isEmpty ? "Awake" : line
     }
+    private var phoneSleepHeader: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            let line = monitor.sleep.testLine(at: context.date)
+            let asleep = line.title == "Asleep"
+            let active = line.title == "Active"
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: asleep ? "moon.fill" : (active ? "figure.walk" : "pause.circle"))
+                    .font(.title2)
+                    .foregroundStyle(asleep ? lavender : accentMint)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(line.title)
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(ink)
+                    if !line.detail.isEmpty {
+                        Text(line.detail)
+                            .font(.subheadline.weight(.semibold))
+                            .monospacedDigit()
+                            .foregroundStyle(asleep ? lavender : muted)
+                    }
+                }
+                Spacer(minLength: 8)
+                if asleep { sleepZzz(color: lavender) }
+            }
+            .padding(.vertical, 4)
+        }
+    }
     private func chargerSleepHeader(_ line: String) -> some View {
         let asleep = line.hasPrefix("Asleep")
         return TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -4060,7 +4093,8 @@ struct ContentView: View {
                         .tint(accentMint)
                     }
                 } else {
-                if let line = chargerSleepLine { chargerSleepHeader(line) }
+                if let line = chargerSleepLine, !monitor.connection.isConnected { chargerSleepHeader(line) }
+                if monitor.connection.isConnected { phoneSleepHeader }
                 Text("Heart rate").font(.caption.weight(.bold)).tracking(1.1).foregroundStyle(muted)
                 HStack(alignment: .center, spacing: 12) {
                     PulsingHeart(
