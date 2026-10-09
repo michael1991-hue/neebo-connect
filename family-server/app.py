@@ -1148,7 +1148,12 @@ def charger_reading(body: ChargerReading, request: Request):
             return {"ok": True, "skipped": "phone"}
         alarm, pending, since, clear_since = charger_alarm(body.heart_rate, limits, old, now)
         previous_alarm = old.get("alarm") if old.get("source") == "charger" else "none"
-        sleep_line, sleep_seconds, sleep_held = charger_sleep(body.sleep, body.sleep_sec, old, now, body.heart_rate)
+        if old.get("sleep_pulse") in (None, ""):
+            prior = family_sleep_prior(c, family_id, now)
+            if prior is not None:
+                old = dict(old)
+                old["sleep_pulse"] = prior
+        sleep_line, sleep_seconds, sleep_held, sleep_pulse = charger_sleep(body.sleep, body.sleep_sec, old, now, body.heart_rate)
         point = {"t": now, "hr": body.heart_rate, "o2": oxygen, "sk": skin}
         history = [item for item in (old.get("history") or []) if isinstance(item, dict)]
         history.append(point)
@@ -1178,6 +1183,7 @@ def charger_reading(body: ChargerReading, request: Request):
             "sleep": sleep_line,
             "sleep_sec": sleep_seconds,
             "sleep_held": sleep_held,
+            "sleep_pulse": sleep_pulse,
             "recovery_chime": old.get("recovery_chime") if old.get("recovery_chime") is not None else True,
             "alarm_pending": pending,
             "alarm_since": since,
@@ -1540,15 +1546,33 @@ def reading_number(text):
         return None
 
 
+def family_sleep_prior(c, family_id, now):
+    """This child's own quiet pulse from recent history, not a number shared by every child."""
+    rows = c.execute(
+        "SELECT hr FROM reading_log WHERE family=? AND t>=? AND hr>=40 AND hr<=180",
+        (family_id, now - 8 * 3600),
+    ).fetchall()
+    values = sorted(row[0] for row in rows if isinstance(row[0], (int, float)))
+    if len(values) < 20:
+        return None
+    return round(float(values[len(values) // 5]), 1)
+
+
 def charger_sleep(flag, seconds, old, now, heart_rate=None):
-    """The charger decides sleep. A pulse of 120 or more is awake, which is how 129 while watching television stays awake."""
+    """The charger flags sleep. Whether that pulse is sleep depends on this child.
+    Near their own sleep pulse, about a minute is enough. Far above it, it is not sleep.
+    With no history yet, the flag has to hold for 3 minutes before it is believed."""
+    old = old or {}
     try:
         pulse = float(heart_rate)
     except (TypeError, ValueError):
         pulse = None
-    if pulse is not None and pulse >= 120:
-        return "", None, None
-    old = old or {}
+    try:
+        base = float(old.get("sleep_pulse"))
+        if not 40 <= base <= 160:
+            base = None
+    except (TypeError, ValueError):
+        base = None
     if flag is True:
         try:
             reported = int(seconds)
@@ -1568,16 +1592,26 @@ def charger_sleep(flag, seconds, old, now, heart_rate=None):
                 running = reported
                 held = now
                 previous = reported
-            return formatted_sleep(running), previous, held
-        return formatted_sleep(reported), reported, now
+        else:
+            running = reported
+            previous = reported
+            held = now
+        close = base is not None and pulse is not None and pulse <= base + 12
+        far = base is not None and pulse is not None and pulse > base + 20
+        if far or not ((close and running >= 45) or running >= 180):
+            return "", previous, held, base
+        learned = base
+        if pulse is not None and (base is None or pulse <= base + 12):
+            learned = round(pulse if base is None else base * 0.85 + pulse * 0.15, 1)
+        return formatted_sleep(running), previous, held, learned
     previous_line = str(old.get("sleep") or "")
     try:
         held = float(old.get("sleep_held") or 0)
     except (TypeError, ValueError):
         held = 0
     if previous_line.startswith("Asleep") and held and now - held < 90:
-        return previous_line, old.get("sleep_sec"), held
-    return "", None, None
+        return previous_line, old.get("sleep_sec"), held, base
+    return "", None, None, base
 
 
 def formatted_sleep(seconds):

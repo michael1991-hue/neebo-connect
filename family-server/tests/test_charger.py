@@ -184,23 +184,24 @@ def test_charger_keeps_history_while_the_phone_is_off(client):
     second = client.get(f"/families/{family}/history", headers=owner).json()["points"]
     assert [point["hr"] for point in second] == [88, 91]
     now = 2_000.0
-    quiet, _, _ = relay.charger_sleep(True, 65, {}, now, 105)
-    assert quiet.startswith("Asleep")
-    watching, _, _ = relay.charger_sleep(True, 400, {}, now, 129)
+    hers = {"sleep_pulse": 100}
+    quiet, _, _, _ = relay.charger_sleep(True, 65, {}, now, 105)
+    assert quiet == ""
+    learned, _, _, pulse = relay.charger_sleep(True, 80, hers, now, 109)
+    assert learned.startswith("Asleep") and pulse <= 109
+    other_child, _, _, _ = relay.charger_sleep(True, 400, {"sleep_pulse": 80}, now, 110)
+    assert other_child == ""
+    watching, _, _, _ = relay.charger_sleep(True, 400, hers, now, 129)
     assert watching == ""
-    border, _, _ = relay.charger_sleep(True, 400, {}, now, 110)
-    assert border.startswith("Asleep")
-    awake, _, _ = relay.charger_sleep(True, 400, {}, now, 120)
-    assert awake == ""
-    real, _, _ = relay.charger_sleep(True, 300, {}, now, 98)
+    real, _, _, _ = relay.charger_sleep(True, 300, {}, now, 98)
     assert real.startswith("Asleep")
-    line, sec, held = relay.charger_sleep(True, 300, {}, now)
+    line, sec, held, _ = relay.charger_sleep(True, 300, {}, now)
     assert line == "Asleep · 5 min" and sec == 300 and held == now
-    kept, same, still = relay.charger_sleep(None, None, {"sleep": line, "sleep_sec": sec, "sleep_held": now}, now + 20)
+    kept, same, still, _ = relay.charger_sleep(None, None, {"sleep": line, "sleep_sec": sec, "sleep_held": now}, now + 20)
     assert kept == "Asleep · 5 min" and same == 300 and still == now
-    running, stuck, anchor = relay.charger_sleep(True, 300, {"sleep": line, "sleep_sec": sec, "sleep_held": now}, now + 65)
+    running, stuck, anchor, _ = relay.charger_sleep(True, 300, {"sleep": line, "sleep_sec": sec, "sleep_held": now}, now + 65)
     assert stuck == 300 and anchor == now and "6 min" in running
-    cleared, gone, dropped = relay.charger_sleep(False, 0, {"sleep": line, "sleep_sec": sec, "sleep_held": now}, now + 91)
+    cleared, gone, dropped, _ = relay.charger_sleep(False, 0, {"sleep": line, "sleep_sec": sec, "sleep_held": now}, now + 91)
     assert cleared == "" and gone is None and dropped is None
     now = 1_000.0
     limits = {"high_enabled": 1, "low_enabled": 1, "high_threshold": 100, "low_threshold": 60, "duration_seconds": 15}
