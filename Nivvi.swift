@@ -3197,6 +3197,20 @@ struct ContentView: View {
                 Button("Cancel") { captureRequest = nil }
             }.padding(24).presentationDetents([.medium])
         }
+        .onChange(of: tab) { page in
+            guard page == 1 else { return }
+            Task {
+                try? await family.pullStoredHistory()
+                persistSharedHistory()
+            }
+        }
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 60_000_000_000)
+                try? await family.pullStoredHistory()
+                persistSharedHistory()
+            }
+        }
         .onAppear {
             let photoURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("child-profile.jpg")
             try? FileManager.default.removeItem(at: photoURL)
@@ -4294,7 +4308,7 @@ struct ContentView: View {
                     .accessibilityLabel("Add note")
             }
             if displayedHistory.contains(where: { $0.source == "family-share" || $0.source == "wifi-share" }) {
-                Text("This hour comes from the monitoring phone’s saved readings, about one card every 30 seconds. A gap means that phone had nothing for a minute or more. They stay here for 30 days.")
+                Text("About one saved reading every 30 seconds, kept for 30 days. A gap is a minute or more with no pulse from the charger or the phone. The line is not filled in.")
                     .font(.caption).foregroundStyle(muted)
             }
             if displayedHistory.isEmpty {

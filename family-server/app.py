@@ -1145,6 +1145,10 @@ def charger_reading(body: ChargerReading, request: Request):
         previous = c.execute("SELECT payload FROM latest WHERE family=?", (family_id,)).fetchone()
         old = json.loads(previous[0]) if previous else {}
         if phone_is_monitoring(old, now):
+            last_logged = c.execute("SELECT t FROM reading_log WHERE family=? ORDER BY t DESC LIMIT 1", (family_id,)).fetchone()
+            if not last_logged or now - float(last_logged["t"]) >= 30:
+                c.execute("INSERT INTO reading_log(family,t,hr,o2,sk) VALUES(?,?,?,?,?)", (family_id, now, body.heart_rate, oxygen, skin))
+                c.execute("DELETE FROM reading_log WHERE family=? AND t<?", (family_id, now - 14 * 86400))
             return {"ok": True, "skipped": "phone"}
         alarm, pending, since, clear_since = charger_alarm(body.heart_rate, limits, old, now)
         previous_alarm = old.get("alarm") if old.get("source") == "charger" else "none"
