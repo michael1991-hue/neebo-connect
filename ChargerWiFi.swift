@@ -101,7 +101,7 @@ final class ChargerSetup: NSObject, ObservableObject, CBCentralManagerDelegate, 
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         status = "Connected. Reading the charger."
-        peripheral.discoverServices([CBUUID(string: "FFB0"), CBUUID(string: "FFC0")])
+        peripheral.discoverServices([CBUUID(string: "FFB0"), CBUUID(string: "FFC0"), CBUUID(string: "FFD0")])
     }
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
@@ -118,7 +118,7 @@ final class ChargerSetup: NSObject, ObservableObject, CBCentralManagerDelegate, 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         let services = (peripheral.services ?? []).filter {
             let id = BluetoothPolicy.normalized($0.uuid.uuidString)
-            return id == "FFB0" || id == "FFC0"
+            return id == "FFB0" || id == "FFC0" || id == "FFD0"
         }
         guard !services.isEmpty else {
             status = "Connected, but this is not the charger."
@@ -158,6 +158,7 @@ final class ChargerSetup: NSObject, ObservableObject, CBCentralManagerDelegate, 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
         guard error == nil, let data = characteristic.value else { return }
         let id = BluetoothPolicy.normalized(characteristic.uuid.uuidString)
+        if id == "FFD3" { rememberSerial(Self.serialNumber(in: data) ?? "") }
         let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .controlCharacters) ?? ""
         rememberSerial(text)
         if id == "FFB1" {
@@ -251,6 +252,15 @@ final class ChargerSetup: NSObject, ObservableObject, CBCentralManagerDelegate, 
         }
         if trimmed.range(of: #"^\d{4,6}$"#, options: .regularExpression) != nil { return trimmed }
         return nil
+    }
+
+    /// FFD3 is the serial, little-endian. 22 2C 00 00 is 11298.
+    static func serialNumber(in data: Data) -> String? {
+        guard data.count >= 2, data[0] != 0 || data[1] != 0 else { return nil }
+        let serial = UInt32(data[0]) | (UInt32(data[1]) << 8)
+        guard (1000...999999).contains(serial) else { return nil }
+        if data.count >= 4, data[2] != 0 || data[3] != 0 { return nil }
+        return String(serial)
     }
 }
 
