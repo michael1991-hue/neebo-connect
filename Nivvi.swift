@@ -928,7 +928,14 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         default: return ""
         }
     }
-    var sleepShareLine: String { "" }
+    var sleepShareLine: String {
+        let line = sleep.testLine(at: Date())
+        switch line.title {
+        case "Asleep": return "Asleep · \(line.detail)"
+        case "Still", "Active", "Charging", "Band off": return line.title
+        default: return ""
+        }
+    }
     private func expireMeasurements() {
         defer { publishFamilySnapshot() }
         if let time = oxygenTime, Date().timeIntervalSince(time) > 30 || Date() < time {
@@ -3013,8 +3020,13 @@ struct ContentView: View {
         return held - max(0, seconds)
     }
     private var remoteSleepLine: String {
-        guard family.remote?.snapshot?.source == "charger" else { return "" }
-        return family.remote?.snapshot?.sleep ?? ""
+        let line = family.remote?.snapshot?.sleep?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !line.isEmpty else { return "" }
+        if family.remote?.snapshot?.source == "charger" { return line }
+        if line == "Active" || line == "Still" || line == "Charging" || line == "Band off" || line.hasPrefix("Asleep") {
+            return line
+        }
+        return ""
     }
     private func publishWiFiShare() {
         guard wifi.hosting else { return }
@@ -3792,6 +3804,34 @@ struct ContentView: View {
         let line = family.remote?.snapshot?.sleep?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return line.isEmpty ? "Awake" : line
     }
+    private var sharedBandLine: String? {
+        guard !monitor.connection.isConnected, family.remote?.snapshot?.source != "charger" else { return nil }
+        let line = family.remote?.snapshot?.sleep?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return line.isEmpty ? nil : line
+    }
+    private func sharedBandHeader(_ line: String) -> some View {
+        let asleep = line.hasPrefix("Asleep")
+        let active = line == "Active"
+        return HStack(alignment: .center, spacing: 12) {
+            Image(systemName: asleep ? "moon.fill" : (active ? "figure.walk" : "pause.circle"))
+                .font(.title2)
+                .foregroundStyle(asleep ? lavender : accentMint)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(asleep ? "Asleep" : line)
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(ink)
+                if asleep {
+                    Text(line.replacingOccurrences(of: "Asleep · ", with: ""))
+                        .font(.subheadline.weight(.semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(lavender)
+                }
+            }
+            Spacer(minLength: 8)
+            if asleep { sleepZzz(color: lavender) }
+        }
+        .padding(.vertical, 4)
+    }
     private var phoneSleepHeader: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
             let line = monitor.sleep.testLine(at: context.date)
@@ -4093,8 +4133,9 @@ struct ContentView: View {
                         .tint(accentMint)
                     }
                 } else {
-                if let line = chargerSleepLine, !monitor.connection.isConnected { chargerSleepHeader(line) }
                 if monitor.connection.isConnected { phoneSleepHeader }
+                else if let line = chargerSleepLine { chargerSleepHeader(line) }
+                else if let line = sharedBandLine { sharedBandHeader(line) }
                 Text("Heart rate").font(.caption.weight(.bold)).tracking(1.1).foregroundStyle(muted)
                 HStack(alignment: .center, spacing: 12) {
                     PulsingHeart(
