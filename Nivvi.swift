@@ -3053,6 +3053,13 @@ struct ContentView: View {
         return "none"
     }
     private func persistSharedHistory() {
+        // The charger writes the night on the server. This phone must keep that
+        // log even when it is the monitoring phone, or a locked screen leaves a hole.
+        if family.signedIn, !family.storedHistory.isEmpty {
+            monitor.ingestShared(family.storedHistory.map {
+                SavedMeasurement.mapped(time: Date(timeIntervalSince1970: $0.t), heartRate: $0.hr, oxygen: $0.o2, source: "family-share", skinCelsius: $0.sk)
+            })
+        }
         if watchingFamily {
             var rows = family.trail
             if let samples = family.remote?.snapshot?.history {
@@ -3060,9 +3067,6 @@ struct ContentView: View {
                     SavedMeasurement.mapped(time: Date(timeIntervalSince1970: $0.t), heartRate: $0.hr, oxygen: $0.o2, source: "family-share", skinCelsius: $0.sk)
                 })
             }
-            rows.append(contentsOf: family.storedHistory.map {
-                SavedMeasurement.mapped(time: Date(timeIntervalSince1970: $0.t), heartRate: $0.hr, oxygen: $0.o2, source: "family-share", skinCelsius: $0.sk)
-            })
             monitor.ingestShared(rows)
             if let alerts = family.remote?.snapshot?.alerts { monitor.ingestSharedAlerts(alerts) }
         }
