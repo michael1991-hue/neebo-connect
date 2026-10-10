@@ -259,8 +259,9 @@ def test_full_charge_notifies_once(client):
     family = client.post("/families", headers=owner, json={"label": "Home"}).json()["id"]
     assert client.post(f"/families/{family}/charger-claim", headers=owner, json={"serial": "11298"}).status_code == 200
     headers = {"X-Nivvi-Charger": "test-charger-secret"}
+    assert client.post("/internal/charger", headers=headers, json={"serial": "11298", "heart_rate": 90, "heart_state": 0, "battery": 98}).status_code == 200
     assert client.post("/internal/charger", headers=headers, json={"serial": "11298", "heart_rate": 90, "heart_state": 0, "battery": 99}).status_code == 200
-    assert client.post("/internal/charger", headers=headers, json={"serial": "11298", "heart_rate": 90, "heart_state": 0, "battery": 100}).status_code == 200
+    assert client.post("/internal/charger", headers=headers, json={"serial": "11298", "heart_rate": 90, "heart_state": 0, "battery": 99}).status_code == 200
     assert client.post("/internal/charger", headers=headers, json={"serial": "11298", "heart_rate": 90, "heart_state": 0, "battery": 100}).status_code == 200
     store = __import__("sqlite3").connect(relay.DB)
     notes = store.execute("SELECT kind FROM pushes WHERE family=?", (family,)).fetchall()

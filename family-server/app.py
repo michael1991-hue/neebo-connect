@@ -1035,6 +1035,11 @@ def publish(family: str, body: Snapshot, user=Depends(require_user)):
     return {"ok": True, "seq": payload["seq"], "server_received": now}
 
 
+def battery_full(value):
+    """The dock reports a full Neebo as 99%, not 100%."""
+    return str(value or "") in ("99%", "100%")
+
+
 class ChargerReading(BaseModel):
     serial: str = Field(default="", max_length=40)
     heart_rate: float | None = None
@@ -1144,7 +1149,7 @@ def charger_reading(body: ChargerReading, request: Request):
         ).fetchone()
         previous = c.execute("SELECT payload FROM latest WHERE family=?", (family_id,)).fetchone()
         old = json.loads(previous[0]) if previous else {}
-        if battery == "100%" and str(old.get("battery") or "") != "100%":
+        if battery_full(battery) and not battery_full(old.get("battery")):
             c.execute(
                 "INSERT INTO pushes(id,family,kind,created) VALUES(?,?,?,?)",
                 (secrets.token_hex(16), family_id, "charged", now),
@@ -1154,9 +1159,9 @@ def charger_reading(body: ChargerReading, request: Request):
             if not last_logged or now - float(last_logged["t"]) >= 30:
                 c.execute("INSERT INTO reading_log(family,t,hr,o2,sk) VALUES(?,?,?,?,?)", (family_id, now, body.heart_rate, oxygen, skin))
                 c.execute("DELETE FROM reading_log WHERE family=? AND t<?", (family_id, now - 14 * 86400))
-            if battery == "100%":
+            if battery_full(battery):
                 patched = dict(old)
-                patched["battery"] = "100%"
+                patched["battery"] = battery
                 c.execute("INSERT OR REPLACE INTO latest VALUES(?,?,?)", (family_id, json.dumps(patched), now))
             return {"ok": True, "skipped": "phone"}
         alarm, pending, since, clear_since = charger_alarm(body.heart_rate, limits, old, now)
