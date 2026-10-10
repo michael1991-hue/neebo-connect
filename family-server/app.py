@@ -1433,7 +1433,7 @@ def charger_blocks_phone_card(secret, measured_at, now):
             charger_at = float(payload.get("heart_rate_at") or 0)
         except (TypeError, ValueError):
             charger_at = 0
-        if measured_at < charger_at + 15:
+        if charger_at > measured_at + 2:
             return True
     return False
 
@@ -1544,7 +1544,7 @@ def queue_activity(secret, state, paced=False, family=""):
 
     jobs = []
     if not paced:
-        jobs.append(([token for token, _ in rows], "10", 90))
+        jobs.append(([token for token, _ in rows], "10", 180))
     else:
         if watcher_due(gate, state, now):
             jobs.append(([token for token, _ in rows], "10", 180))

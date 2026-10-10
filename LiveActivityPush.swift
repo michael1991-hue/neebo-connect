@@ -89,11 +89,23 @@ enum LiveActivityPush {
             "title": title,
             "sleep": sleep
         ]
+        // Start the request before this Bluetooth wake ends. A queued task
+        // was still waiting when the locked phone went back to sleep, so the
+        // lock screen kept the old number.
         let task = UIApplication.shared.beginBackgroundTask(withName: "nivvi.lock-push") {}
-        Task {
-            await post("live-activity/publish", body: body)
+        guard let root = Bundle.main.object(forInfoDictionaryKey: "NivviFamilyServerURL") as? String,
+              let url = URL(string: root)?.appendingPathComponent("live-activity/publish") else {
             if task != .invalid { UIApplication.shared.endBackgroundTask(task) }
+            return
         }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 8
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        URLSession.shared.dataTask(with: request) { _, _, _ in
+            if task != .invalid { UIApplication.shared.endBackgroundTask(task) }
+        }.resume()
     }
 
     @available(iOS 16.1, *)

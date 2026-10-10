@@ -267,3 +267,42 @@ def test_full_charge_notifies_once(client):
     notes = store.execute("SELECT kind FROM pushes WHERE family=?", (family,)).fetchall()
     assert [row[0] for row in notes] == ["charged"]
 
+
+def test_phone_lock_screen_is_not_blocked_by_a_live_charger(client):
+    relay.ACTIVITY_PUSHES.clear()
+    owner = account(client, "phone-card@example.com")
+    family = client.post("/families", headers=owner, json={"label": "Home"}).json()["id"]
+    secret = "a" * 32
+    token = "b" * 64
+    assert client.post("/live-activity/token", json={"secret": secret, "token": token, "kind": "host"}).status_code == 200
+    now = __import__("time").time()
+    phone = {
+        "captured": now,
+        "heart_rate": 120,
+        "heart_rate_at": now,
+        "oxygen": 97,
+        "source": "phone",
+        "alarm": "none",
+        "connection": "receiving",
+        "activity_secret": secret,
+        "seq": 1,
+    }
+    assert client.put(f"/families/{family}/latest", headers=owner, json=phone).status_code == 200
+    assert client.post(f"/families/{family}/charger-claim", headers=owner, json={"serial": "11298"}).status_code == 200
+    headers = {"X-Nivvi-Charger": "test-charger-secret"}
+    assert client.post("/internal/charger", headers=headers, json={"serial": "11298", "heart_rate": 110, "heart_state": 0}).status_code == 200
+    relay.ACTIVITY_PUSHES.clear()
+    posted = client.post("/live-activity/publish", json={
+        "secret": secret,
+        "seq": 2,
+        "measured_at": __import__("time").time(),
+        "heart_rate": "124 bpm",
+        "oxygen": "97%",
+        "connection": "Phone receiving",
+        "session": "Delilah",
+        "title": "Delilah Faith",
+    })
+    assert posted.status_code == 200 and posted.json().get("skipped") != "charger"
+    assert relay.ACTIVITY_PUSHES and relay.ACTIVITY_PUSHES[-1]["state"]["heartRate"] == "124 bpm"
+
+
