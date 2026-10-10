@@ -252,3 +252,17 @@ def test_charger_reading_alerts_watching_phones(client):
     assert snap["alarm"] == "high" and snap["source"] == "charger"
     kind = store.execute("SELECT kind FROM pushes WHERE family=?", (family,)).fetchone()[0]
     assert kind == "attention"
+
+
+def test_full_charge_notifies_once(client):
+    owner = account(client, "charge-note@example.com")
+    family = client.post("/families", headers=owner, json={"label": "Home"}).json()["id"]
+    assert client.post(f"/families/{family}/charger-claim", headers=owner, json={"serial": "11298"}).status_code == 200
+    headers = {"X-Nivvi-Charger": "test-charger-secret"}
+    assert client.post("/internal/charger", headers=headers, json={"serial": "11298", "heart_rate": 90, "heart_state": 0, "battery": 99}).status_code == 200
+    assert client.post("/internal/charger", headers=headers, json={"serial": "11298", "heart_rate": 90, "heart_state": 0, "battery": 100}).status_code == 200
+    assert client.post("/internal/charger", headers=headers, json={"serial": "11298", "heart_rate": 90, "heart_state": 0, "battery": 100}).status_code == 200
+    store = __import__("sqlite3").connect(relay.DB)
+    notes = store.execute("SELECT kind FROM pushes WHERE family=?", (family,)).fetchall()
+    assert [row[0] for row in notes] == ["charged"]
+

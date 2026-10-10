@@ -1144,11 +1144,20 @@ def charger_reading(body: ChargerReading, request: Request):
         ).fetchone()
         previous = c.execute("SELECT payload FROM latest WHERE family=?", (family_id,)).fetchone()
         old = json.loads(previous[0]) if previous else {}
+        if battery == "100%" and str(old.get("battery") or "") != "100%":
+            c.execute(
+                "INSERT INTO pushes(id,family,kind,created) VALUES(?,?,?,?)",
+                (secrets.token_hex(16), family_id, "charged", now),
+            )
         if phone_is_monitoring(old, now):
             last_logged = c.execute("SELECT t FROM reading_log WHERE family=? ORDER BY t DESC LIMIT 1", (family_id,)).fetchone()
             if not last_logged or now - float(last_logged["t"]) >= 30:
                 c.execute("INSERT INTO reading_log(family,t,hr,o2,sk) VALUES(?,?,?,?,?)", (family_id, now, body.heart_rate, oxygen, skin))
                 c.execute("DELETE FROM reading_log WHERE family=? AND t<?", (family_id, now - 14 * 86400))
+            if battery == "100%":
+                patched = dict(old)
+                patched["battery"] = "100%"
+                c.execute("INSERT OR REPLACE INTO latest VALUES(?,?,?)", (family_id, json.dumps(patched), now))
             return {"ok": True, "skipped": "phone"}
         alarm, pending, since, clear_since = charger_alarm(body.heart_rate, limits, old, now)
         previous_alarm = old.get("alarm") if old.get("source") == "charger" else "none"
@@ -1732,17 +1741,28 @@ async def deliver_pushes():
                     c.execute("DELETE FROM pushes WHERE id=?", (event["id"],))
                 continue
             with db() as c:
-                # Fetch membership at send time; never use a cached invitation recipient list.
-                tokens = [r[0] for r in c.execute(
-                    """SELECT token FROM devices WHERE user_id IN (
-                           SELECT owner FROM families WHERE id=?
-                           UNION
-                           SELECT user_id FROM members WHERE family=?
-                       ) AND user_id IS NOT (
-                           SELECT host_user FROM families WHERE id=? AND host_user IS NOT NULL
-                       )""",
-                    (event["family"], event["family"], event["family"]),
-                )]
+                # A full charge is for every phone, including the one with the band.
+                # An alarm stays off the phone that is already monitoring.
+                if event["kind"] == "charged":
+                    tokens = [r[0] for r in c.execute(
+                        """SELECT token FROM devices WHERE user_id IN (
+                               SELECT owner FROM families WHERE id=?
+                               UNION
+                               SELECT user_id FROM members WHERE family=?
+                           )""",
+                        (event["family"], event["family"]),
+                    )]
+                else:
+                    tokens = [r[0] for r in c.execute(
+                        """SELECT token FROM devices WHERE user_id IN (
+                               SELECT owner FROM families WHERE id=?
+                               UNION
+                               SELECT user_id FROM members WHERE family=?
+                           ) AND user_id IS NOT (
+                               SELECT host_user FROM families WHERE id=? AND host_user IS NOT NULL
+                           )""",
+                        (event["family"], event["family"], event["family"]),
+                    )]
             failed = False
             for token in tokens:
                 with db() as c:
@@ -1760,8 +1780,11 @@ async def deliver_pushes():
                 recovery = event["kind"] == "recovery"
                 handover = event["kind"] == "handover"
                 removed = event["kind"] == "removed"
+                charged = event["kind"] == "charged"
                 sensor = event["kind"] in ("sensor", "sensor-restored")
-                if handover:
+                if charged:
+                    message = "Device charged"
+                elif handover:
                     with db() as c:
                         named = c.execute("SELECT child_name, label, host_relation FROM families WHERE id=?", (event["family"],)).fetchone()
                     who = ((named["host_relation"] or "Someone") if named else "Someone").strip() or "Someone"
@@ -1771,10 +1794,10 @@ async def deliver_pushes():
                     message = "The band may have been taken off. Check it is still worn."
                 else:
                     message = "A shared reading has returned to range. Open Nivvi to check its time." if recovery else "Changed readings received from the shared sensor. Open Nivvi to check." if event["kind"] == "sensor-restored" else "Check the shared sensor data. Open Nivvi for the latest status." if sensor else "A shared monitor needs attention. Open Nivvi for the latest status."
-                payload = {"aps": {"alert": {"title": "Nivvi family update", "body": message}, "sound": "NivviRelief.wav" if recovery else "NivviSensor.wav" if sensor or handover or removed else "NivviSiren.wav"}, "family_id": event["family"]}
+                payload = {"aps": {"alert": {"title": "Device charged" if charged else "Nivvi family update", "body": message}, "sound": "NivviRelief.wav" if recovery or charged else "NivviSensor.wav" if sensor or handover or removed else "NivviSiren.wav"}, "family_id": event["family"]}
                 if handover:
                     payload["handover"] = True
-                result = await client.post(f"https://{host}/3/device/{token}", headers={"authorization": "bearer " + bearer, "apns-topic": os.environ["NIVVI_APNS_TOPIC"], "apns-push-type": "alert", "apns-expiration": str(int(event["created"]+120)), "apns-collapse-id": event["family"]}, json=payload)
+                result = await client.post(f"https://{host}/3/device/{token}", headers={"authorization": "bearer " + bearer, "apns-topic": os.environ["NIVVI_APNS_TOPIC"], "apns-push-type": "alert", "apns-expiration": str(int(event["created"]+120)), "apns-collapse-id": event["family"] + (":charged" if charged else "")}, json=payload)
                 if result.status_code == 410 or (result.status_code == 400 and result.json().get("reason") == "BadDeviceToken"):
                     with db() as c:
                         c.execute("DELETE FROM devices WHERE token=?", (token,))
