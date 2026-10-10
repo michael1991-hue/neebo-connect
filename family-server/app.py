@@ -1233,10 +1233,12 @@ def family_history(family: str, start: float = 0, user=Depends(require_user)):
     with db() as c:
         member(c, family, user)
         rows = c.execute(
-            "SELECT t, hr, o2, sk FROM reading_log WHERE family=? AND t>=? ORDER BY t LIMIT 4000",
+            """SELECT t, hr, o2, sk FROM reading_log
+               WHERE family=? AND t>=?
+               ORDER BY t DESC LIMIT 6000""",
             (family, start),
         ).fetchall()
-    return {"points": [{"t": row["t"], "hr": row["hr"], "o2": row["o2"], "sk": row["sk"]} for row in rows]}
+    return {"points": [{"t": row["t"], "hr": row["hr"], "o2": row["o2"], "sk": row["sk"]} for row in reversed(rows)]}
 
 
 class ChargerClaim(BaseModel):

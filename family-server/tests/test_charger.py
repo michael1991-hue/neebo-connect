@@ -306,3 +306,23 @@ def test_phone_lock_screen_is_not_blocked_by_a_live_charger(client):
     assert relay.ACTIVITY_PUSHES and relay.ACTIVITY_PUSHES[-1]["state"]["heartRate"] == "124 bpm"
 
 
+def test_recent_charger_history_is_not_cut_off(client):
+    owner = account(client, "history-cap@example.com")
+    family = client.post("/families", headers=owner, json={"label": "Home"}).json()["id"]
+    store = __import__("sqlite3").connect(relay.DB)
+    now = __import__("time").time()
+    store.executemany(
+        "INSERT INTO reading_log(family,t,hr,o2,sk) VALUES(?,?,?,?,?)",
+        [(family, now - 50000 + i, 90, None, None) for i in range(4000)],
+    )
+    store.execute(
+        "INSERT INTO reading_log(family,t,hr,o2,sk) VALUES(?,?,?,?,?)",
+        (family, now - 5, 118, 97, None),
+    )
+    store.commit()
+    points = client.get(f"/families/{family}/history", headers=owner).json()["points"]
+    assert points[-1]["hr"] == 118
+    assert points[0]["t"] <= points[-1]["t"]
+
+
+
