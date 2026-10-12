@@ -1,4 +1,7 @@
 family-server/.env
 family-server/**/*.p8
 .DS_Store
-build/tests/
+build/
+**/__pycache__/
+*.pyc
+
