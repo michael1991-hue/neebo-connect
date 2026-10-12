@@ -1158,8 +1158,8 @@ def publish_activity(body: ActivityPublish, request: Request):
         raise HTTPException(400, "Only fresh readings can update the lock screen")
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
-        previous = c.execute("SELECT seq FROM activity_latest WHERE secret=?", (body.secret,)).fetchone()
-        if previous and body.seq <= previous[0]:
+        previous = c.execute("SELECT seq, measured FROM activity_latest WHERE secret=?", (body.secret,)).fetchone()
+        if previous and body.seq <= previous["seq"] and body.measured_at <= float(previous["measured"]) + 2:
             raise HTTPException(409, "An older reading cannot replace a newer one")
         c.execute("INSERT OR REPLACE INTO activity_latest VALUES(?,?,?)", (body.secret, body.seq, body.measured_at))
     state = {
@@ -1300,7 +1300,7 @@ def watcher_due(secret, state, now):
     sleep = state.get("sleep") or ""
     sleep_changed = sleep != (previous.get("sleep") or "")
     wall = now - float(previous.get("at") or 0) if previous else 999
-    if previous and not number_changed and not alarm_changed and not sleep_changed and wall < 30:
+    if previous and not number_changed and not alarm_changed and not sleep_changed and wall < 8:
         return False
     ACTIVITY_GATE[f"{secret}:watcher"] = {"at": now, "alarm": alarm, "hr": hr, "ox": ox, "measured": stamp, "sleep": sleep}
     return True

@@ -104,7 +104,11 @@ enum LiveActivityPush {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 8
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        URLSession.shared.dataTask(with: request) { _, _, _ in
+        URLSession.shared.dataTask(with: request) { data, response, _ in
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if status == 409 {
+                uploadSeq += 1000
+            }
             if task != .invalid { UIApplication.shared.endBackgroundTask(task) }
         }.resume()
     }

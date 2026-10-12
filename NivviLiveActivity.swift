@@ -61,14 +61,23 @@ enum NivviLiveActivityBridge {
             if !urgent, Date().timeIntervalSince(lastPush) < (preferLocalBluetooth ? 2 : 1) { return }
             lastPush = Date()
             lastStale = stale
-            let background = UIApplication.shared.beginBackgroundTask(withName: "nivvi.lock-screen") { }
-            Task { @MainActor in
-                defer { if background != .invalid { UIApplication.shared.endBackgroundTask(background) } }
-                if #available(iOS 16.2, *) {
-                    await activity.update(ActivityContent(state: state, staleDate: freshUntil(measuredAt.timeIntervalSince1970, stale: stale)))
-                } else {
-                    await activity.update(using: state)
+            // A later Swift task does not run once the locked phone is suspended.
+            // The main queue does, for as long as this wake is held open.
+            let background = UIApplication.shared.beginBackgroundTask(withName: "nivvi.lock-screen") {}
+            let apply = {
+                Task { @MainActor in
+                    if #available(iOS 16.2, *) {
+                        await activity.update(ActivityContent(state: state, staleDate: freshUntil(measuredAt.timeIntervalSince1970, stale: stale)))
+                    } else {
+                        await activity.update(using: state)
+                    }
+                    if background != .invalid { UIApplication.shared.endBackgroundTask(background) }
                 }
+            }
+            if Thread.isMainThread {
+                apply()
+            } else {
+                DispatchQueue.main.async(execute: apply)
             }
             return
         }
