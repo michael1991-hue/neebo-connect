@@ -196,7 +196,6 @@ struct NivviLiveActivityWidget: Widget {
         if activityIsStale(context) { return ("Delayed", caution) }
         let connection = context.state.connection.lowercased()
         if connection.contains("phone") { return ("Phone", mint) }
-        if connection.contains("charger") { return ("Charger", mint) }
         if context.state.alarm == "removed" { return ("Removed", caution) }
         if metricNumber(context.state.heartRate) == "—" { return ("Waiting", caution) }
         if connection.contains("not connected") || connection.contains("disconnect") || connection.contains("bluetooth") {

@@ -122,11 +122,6 @@ def initialize():
         CREATE TABLE IF NOT EXISTS pushes(id TEXT PRIMARY KEY,family TEXT REFERENCES families ON DELETE CASCADE,kind TEXT,created REAL,attempts INTEGER DEFAULT 0);
         CREATE TABLE IF NOT EXISTS activity_tokens(token TEXT PRIMARY KEY, secret TEXT NOT NULL, updated REAL NOT NULL, kind TEXT NOT NULL DEFAULT 'watcher', family TEXT NOT NULL DEFAULT '');
         CREATE TABLE IF NOT EXISTS activity_latest(secret TEXT PRIMARY KEY, seq INTEGER NOT NULL, measured REAL NOT NULL);
-        CREATE TABLE IF NOT EXISTS chargers(serial TEXT PRIMARY KEY, family TEXT NOT NULL REFERENCES families ON DELETE CASCADE, claimed REAL NOT NULL);
-        CREATE TABLE IF NOT EXISTS charger_claims(family TEXT PRIMARY KEY REFERENCES families ON DELETE CASCADE, expires REAL NOT NULL, blocked TEXT NOT NULL DEFAULT '', serial TEXT NOT NULL DEFAULT '');
-        CREATE TABLE IF NOT EXISTS charger_seen(serial TEXT PRIMARY KEY, seen REAL NOT NULL);
-        CREATE TABLE IF NOT EXISTS reading_log(family TEXT NOT NULL, t REAL NOT NULL, hr REAL, o2 REAL, sk REAL);
-        CREATE INDEX IF NOT EXISTS reading_log_family_t ON reading_log(family, t);
         """)
         for stmt in (
             "ALTER TABLE members ADD COLUMN role TEXT NOT NULL DEFAULT 'watcher'",
@@ -149,8 +144,6 @@ def initialize():
             "ALTER TABLE families ADD COLUMN duration_seconds INTEGER NOT NULL DEFAULT 15",
             "ALTER TABLE activity_tokens ADD COLUMN kind TEXT NOT NULL DEFAULT 'watcher'",
             "ALTER TABLE activity_tokens ADD COLUMN family TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE charger_claims ADD COLUMN blocked TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE charger_claims ADD COLUMN serial TEXT NOT NULL DEFAULT ''",
             "CREATE UNIQUE INDEX IF NOT EXISTS families_join_code ON families(join_code) WHERE join_code IS NOT NULL AND join_code != ''",
         ):
             try:
@@ -994,36 +987,25 @@ def publish(family: str, body: Snapshot, user=Depends(require_user)):
             c.execute("UPDATE families SET host_user=?, host_stream=COALESCE(?, host_stream) WHERE id=?", (user["id"], stream, family))
         previous = c.execute("SELECT payload FROM latest WHERE family=?", (family,)).fetchone()
         old = json.loads(previous[0]) if previous else {}
-        if charger_is_live(old, now) and not phone_has_the_band(body, old):
-            secret = (body.activity_secret or "").strip()
-            if secret and not old.get("activity_secret"):
-                old["activity_secret"] = secret
-                c.execute("INSERT OR REPLACE INTO latest VALUES(?,?,?)", (family, json.dumps(old), now))
-            held = old
-        else:
-            held = None
-        if held is None:
-            old_seq = int(old.get("seq") or 0)
-            if body.stream_id and old.get("stream_id") == body.stream_id and body.seq is not None and body.seq <= old_seq:
-                raise HTTPException(409, "An older snapshot cannot replace a newer one")
-            if body.seq is None and old.get("captured", 0) > body.captured:
-                raise HTTPException(409, "An older snapshot cannot replace a newer one")
-            if body.heart_rate is None and body.alarm == "none" and old.get("alarm") in ("high", "low"):
-                body.alarm = old["alarm"]
-            payload = merge_snapshot(old, body, now)
-            payload["alarm"] = body.alarm
-            c.execute("INSERT OR REPLACE INTO latest VALUES(?,?,?)", (family, json.dumps(payload), now))
-            if body.alarm != old.get("alarm", "none"):
-                # A new reading, a sensor check, or the band coming back on must not
-                # banner anyone. Sound only for a high or low, the band leaving the
-                # skin, and a high or low that has returned while the chime is on.
-                recovery = body.alarm == "none" and body.heart_rate is not None and old.get("alarm") in ("high", "low") and body.recovery_chime
-                if recovery or body.alarm in ("high", "low", "removed"):
-                    kind = "recovery" if recovery else "removed" if body.alarm == "removed" else "attention"
-                    c.execute("DELETE FROM pushes WHERE family=?", (family,))
-                    c.execute("INSERT INTO pushes(id,family,kind,created) VALUES(?,?,?,?)", (secrets.token_hex(16), family, kind, now))
-    if held is not None:
-        return {"ok": True, "skipped": "charger", "seq": held.get("seq"), "server_received": now}
+        old_seq = int(old.get("seq") or 0)
+        if body.stream_id and old.get("stream_id") == body.stream_id and body.seq is not None and body.seq <= old_seq:
+            raise HTTPException(409, "An older snapshot cannot replace a newer one")
+        if body.seq is None and old.get("captured", 0) > body.captured:
+            raise HTTPException(409, "An older snapshot cannot replace a newer one")
+        if body.heart_rate is None and body.alarm == "none" and old.get("alarm") in ("high", "low"):
+            body.alarm = old["alarm"]
+        payload = merge_snapshot(old, body, now)
+        payload["alarm"] = body.alarm
+        c.execute("INSERT OR REPLACE INTO latest VALUES(?,?,?)", (family, json.dumps(payload), now))
+        if body.alarm != old.get("alarm", "none"):
+            # A new reading, a sensor check, or the band coming back on must not
+            # banner anyone. Sound only for a high or low, the band leaving the
+            # skin, and a high or low that has returned while the chime is on.
+            recovery = body.alarm == "none" and body.heart_rate is not None and old.get("alarm") in ("high", "low") and body.recovery_chime
+            if recovery or body.alarm in ("high", "low", "removed"):
+                kind = "recovery" if recovery else "removed" if body.alarm == "removed" else "attention"
+                c.execute("DELETE FROM pushes WHERE family=?", (family,))
+                c.execute("INSERT INTO pushes(id,family,kind,created) VALUES(?,?,?,?)", (secrets.token_hex(16), family, kind, now))
     live = {key: value for key, value in payload.items() if key != "history"}
     live["type"] = "live"
     live["kind"] = "live"
@@ -1034,226 +1016,6 @@ def publish(family: str, body: Snapshot, user=Depends(require_user)):
         queue_activity(payload["activity_secret"], activity_state(payload, payload.get("activity_secret")), paced=True)
     return {"ok": True, "seq": payload["seq"], "server_received": now}
 
-
-def battery_full(value):
-    """The dock reports a full Neebo as 99%, not 100%."""
-    return str(value or "") in ("99%", "100%")
-
-
-class ChargerReading(BaseModel):
-    serial: str = Field(default="", max_length=40)
-    heart_rate: float | None = None
-    heart_state: int | None = None
-    oxygen: float | None = None
-    oxygen_state: int | None = None
-    temperature: float | None = None
-    battery: int | None = None
-    sleep: bool | None = None
-    sleep_sec: int | None = None
-
-
-def charger_alarm(rate, limits, old, now):
-    """The family's own high and low limits. The charger does not bring its own."""
-    if not limits:
-        return "none", None, None, None
-    high_on = bool(limits["high_enabled"])
-    low_on = bool(limits["low_enabled"])
-    high = limits["high_threshold"]
-    low = limits["low_threshold"]
-    try:
-        duration = int(limits["duration_seconds"] or 15)
-    except (TypeError, ValueError):
-        duration = 15
-    if not 5 <= duration <= 120:
-        duration = 15
-    if not high_on and not low_on:
-        return "none", None, None, None
-    direction = None
-    if low_on and low and rate < low:
-        direction = "low"
-    elif high_on and high and rate > high:
-        direction = "high"
-    carried = old.get("source") == "charger"
-    active = old.get("alarm") if carried and old.get("alarm") in ("high", "low") else None
-    pending = old.get("alarm_pending") if carried else None
-    since = old.get("alarm_since") if carried else None
-    clear_since = old.get("alarm_clear_since") if carried else None
-    if direction is None:
-        if active != "high":
-            return "none", None, None, None
-        safely_under = bool(high) and rate <= high - 8
-        if not safely_under:
-            return "high", None, None, None
-        if not clear_since:
-            clear_since = now
-        if now - float(clear_since) >= duration:
-            return "none", None, None, None
-        return "high", None, None, clear_since
-    if pending != direction:
-        pending = direction
-        since = now
-    if active == direction:
-        return direction, pending, since, None
-    if since is not None and now - float(since) >= duration:
-        return direction, direction, since, None
-    return active or "none", pending, since, None
-
-
-@app.post("/internal/charger")
-def charger_reading(body: ChargerReading, request: Request):
-    """The charger fills in only when the nursery phone is not already sending a live reading."""
-    secret = os.environ.get("NIVVI_CHARGER_SECRET", "")
-    given = request.headers.get("x-nivvi-charger", "")
-    if not secret or not hmac.compare_digest(given, secret):
-        raise HTTPException(404, "Not found")
-    if body.heart_state not in (None, 0) or body.heart_rate is None or not 1 <= body.heart_rate <= 250:
-        return {"ok": True, "skipped": "no pulse"}
-    oxygen = body.oxygen if body.oxygen_state in (None, 0) and body.oxygen is not None and 1 <= body.oxygen <= 100 else None
-    if oxygen is not None and oxygen > 99:
-        oxygen = 99
-    skin = body.temperature if body.temperature is not None and 10 <= body.temperature <= 45 else None
-    battery = f"{body.battery}%" if body.battery is not None and 0 <= body.battery <= 100 else None
-    now = time.time()
-    serial = "".join(ch for ch in str(body.serial) if ch.isdigit())[:20]
-    if not serial:
-        return {"ok": True, "skipped": "no serial"}
-    with db() as c:
-        c.execute("BEGIN IMMEDIATE")
-        mapped = c.execute("SELECT family FROM chargers WHERE serial=?", (serial,)).fetchone()
-        c.execute("INSERT OR REPLACE INTO charger_seen VALUES(?,?)", (serial, now))
-        if mapped:
-            family_id = mapped["family"]
-        else:
-            pending = c.execute("SELECT family, blocked, serial FROM charger_claims WHERE expires>?", (now,)).fetchall()
-            if len(pending) != 1:
-                return {"ok": True, "skipped": "unclaimed" if not pending else "ambiguous"}
-            family_id = pending[0]["family"]
-            wanted = "".join(ch for ch in str(pending[0]["serial"] or "") if ch.isdigit())
-            blocked = {item for item in str(pending[0]["blocked"] or "").split(",") if item}
-            if wanted and serial != wanted:
-                return {"ok": True, "skipped": "not-this-charger"}
-            if not wanted and serial in blocked:
-                return {"ok": True, "skipped": "already-online"}
-            owned = c.execute("SELECT serial FROM chargers WHERE family=?", (family_id,)).fetchall()
-            if owned and not wanted and any(row["serial"] != serial for row in owned):
-                return {"ok": True, "skipped": "has-charger"}
-            if wanted:
-                c.execute("DELETE FROM chargers WHERE family=? AND serial!=?", (family_id, serial))
-            c.execute("INSERT OR REPLACE INTO chargers VALUES(?,?,?)", (serial, family_id, now))
-            c.execute("DELETE FROM charger_claims WHERE family=?", (family_id,))
-        if not c.execute("SELECT 1 FROM families WHERE id=?", (family_id,)).fetchone():
-            return {"ok": True, "skipped": "unclaimed"}
-        limits = c.execute(
-            "SELECT high_enabled, low_enabled, high_threshold, low_threshold, duration_seconds FROM families WHERE id=?",
-            (family_id,),
-        ).fetchone()
-        previous = c.execute("SELECT payload FROM latest WHERE family=?", (family_id,)).fetchone()
-        old = json.loads(previous[0]) if previous else {}
-        if battery_full(battery) and not battery_full(old.get("battery")):
-            c.execute(
-                "INSERT INTO pushes(id,family,kind,created) VALUES(?,?,?,?)",
-                (secrets.token_hex(16), family_id, "charged", now),
-            )
-        if phone_is_monitoring(old, now):
-            last_logged = c.execute("SELECT t FROM reading_log WHERE family=? ORDER BY t DESC LIMIT 1", (family_id,)).fetchone()
-            if not last_logged or now - float(last_logged["t"]) >= 30:
-                c.execute("INSERT INTO reading_log(family,t,hr,o2,sk) VALUES(?,?,?,?,?)", (family_id, now, body.heart_rate, oxygen, skin))
-                c.execute("DELETE FROM reading_log WHERE family=? AND t<?", (family_id, now - 14 * 86400))
-            if battery_full(battery):
-                patched = dict(old)
-                patched["battery"] = battery
-                c.execute("INSERT OR REPLACE INTO latest VALUES(?,?,?)", (family_id, json.dumps(patched), now))
-            return {"ok": True, "skipped": "phone"}
-        alarm, pending, since, clear_since = charger_alarm(body.heart_rate, limits, old, now)
-        previous_alarm = old.get("alarm") if old.get("source") == "charger" else "none"
-        if old.get("sleep_pulse") in (None, ""):
-            prior = family_sleep_prior(c, family_id, now)
-            if prior is not None:
-                old = dict(old)
-                old["sleep_pulse"] = prior
-        sleep_line, sleep_seconds, sleep_held, sleep_pulse = charger_sleep(body.sleep, body.sleep_sec, old, now, body.heart_rate)
-        point = {"t": now, "hr": body.heart_rate, "o2": oxygen, "sk": skin}
-        history = [item for item in (old.get("history") or []) if isinstance(item, dict)]
-        history.append(point)
-        last_logged = c.execute("SELECT t FROM reading_log WHERE family=? ORDER BY t DESC LIMIT 1", (family_id,)).fetchone()
-        if not last_logged or now - float(last_logged["t"]) >= 30:
-            c.execute("INSERT INTO reading_log(family,t,hr,o2,sk) VALUES(?,?,?,?,?)", (family_id, now, body.heart_rate, oxygen, skin))
-            c.execute("DELETE FROM reading_log WHERE family=? AND t<?", (family_id, now - 14 * 86400))
-        payload = {
-            "captured": now,
-            "heart_rate": body.heart_rate,
-            "heart_rate_at": now,
-            "oxygen": oxygen if oxygen is not None else old.get("oxygen"),
-            "oxygen_at": now if oxygen is not None else old.get("oxygen_at"),
-            "source": "charger",
-            "alarm": alarm,
-            "connection": "Charger receiving",
-            "history": history[-120:],
-            "stream_id": "charger",
-            "seq": int(old.get("seq") or 0) + 1,
-            "kind": "live",
-            "acknowledged": bool(old.get("acknowledged")) if alarm == previous_alarm else False,
-            "host_relation": "Charger",
-            "battery": battery or old.get("battery"),
-            "charging": False,
-            "skin": skin if skin is not None else old.get("skin"),
-            "activity_secret": old.get("activity_secret") or None,
-            "sleep": sleep_line,
-            "sleep_sec": sleep_seconds,
-            "sleep_held": sleep_held,
-            "sleep_pulse": sleep_pulse,
-            "wake_since": old.get("wake_since"),
-            "recovery_chime": old.get("recovery_chime") if old.get("recovery_chime") is not None else True,
-            "alarm_pending": pending,
-            "alarm_since": since,
-            "alarm_clear_since": clear_since,
-            "server_received": now,
-        }
-        c.execute("INSERT OR REPLACE INTO latest VALUES(?,?,?)", (family_id, json.dumps(payload), now))
-        if alarm != previous_alarm and (alarm in ("high", "low") or (alarm == "none" and previous_alarm in ("high", "low") and payload["recovery_chime"])):
-            kind = "recovery" if alarm == "none" else "attention"
-            c.execute("DELETE FROM pushes WHERE family=?", (family_id,))
-            c.execute("INSERT INTO pushes(id,family,kind,created) VALUES(?,?,?,?)", (secrets.token_hex(16), family_id, kind, now))
-    live = {key: value for key, value in payload.items() if key != "history"}
-    live["type"] = "live"
-    live["kind"] = "live"
-    HUB.emit(family_id, live)
-    if payload.get("activity_secret") or family_id:
-        queue_activity(payload.get("activity_secret") or "", activity_state(payload, payload.get("activity_secret") or ""), paced=True, family=family_id)
-    return {"ok": True, "seq": payload["seq"], "server_received": now}
-
-
-@app.get("/families/{family}/history")
-def family_history(family: str, start: float = 0, user=Depends(require_user)):
-    """Readings the charger stored while every phone was off."""
-    now = time.time()
-    if start <= 0 or start > now:
-        start = now - 36 * 3600
-    start = max(start, now - 14 * 86400)
-    with db() as c:
-        member(c, family, user)
-        rows = c.execute(
-            """SELECT t, hr, o2, sk FROM reading_log
-               WHERE family=? AND t>=?
-               ORDER BY t DESC LIMIT 6000""",
-            (family, start),
-        ).fetchall()
-    return {"points": [{"t": row["t"], "hr": row["hr"], "o2": row["o2"], "sk": row["sk"]} for row in reversed(rows)]}
-
-
-class ChargerClaim(BaseModel):
-    serial: str = ""
-
-
-@app.post("/families/{family}/charger-claim")
-def claim_charger(family: str, body: ChargerClaim | None = None, user=Depends(require_user)):
-    """Link the charger whose serial the phone just read. Another family's charger is never taken."""
-    wanted = "".join(ch for ch in str(body.serial if body else "") if ch.isdigit())[:20]
-    with db() as c:
-        member(c, family, user)
-        busy = ",".join(row[0] for row in c.execute("SELECT serial FROM charger_seen WHERE seen>?", (time.time() - 300,)))
-        c.execute("INSERT OR REPLACE INTO charger_claims VALUES(?,?,?,?)", (family, time.time() + 180, busy, wanted))
-    return {"ok": True, "serial": wanted}
 
 
 @app.post("/families/{family}/ack")
@@ -1381,71 +1143,11 @@ def remove_activity_token(body: ActivityToken):
     return {"ok": True}
 
 
-def charger_is_live(payload, now, hold=30):
-    """A charger that has seen the band recently owns the shared reading."""
-    if not payload or payload.get("source") != "charger":
-        return False
-    try:
-        stamp = float(payload.get("heart_rate_at") or payload.get("captured") or 0)
-    except (TypeError, ValueError):
-        return False
-    age = now - stamp
-    return stamp > 0 and -5 <= age <= hold
-
-
-def phone_is_monitoring(payload, now, hold=20):
-    """A fresh nursery-phone reading is the band on the child. Do not replace it with the charger."""
-    if not payload or payload.get("source") == "charger":
-        return False
-    if payload.get("heart_rate") in (None, 0):
-        return False
-    try:
-        stamp = float(payload.get("heart_rate_at") or payload.get("captured") or 0)
-    except (TypeError, ValueError):
-        return False
-    age = now - stamp
-    return stamp > 0 and -5 <= age <= hold
-
-
-def phone_has_the_band(body, old):
-    """The charger only keeps the card while its reading is still the newer one."""
-    if body.heart_rate is None:
-        return False
-    try:
-        phone_at = float(body.heart_rate_at or body.captured or 0)
-        charger_at = float(old.get("heart_rate_at") or 0)
-    except (TypeError, ValueError):
-        return False
-    return phone_at >= charger_at + 15
-
-
-def charger_blocks_phone_card(secret, measured_at, now):
-    if not secret:
-        return False
-    with db() as c:
-        rows = c.execute("SELECT payload FROM latest").fetchall()
-    for row in rows:
-        try:
-            payload = json.loads(row[0])
-        except (TypeError, ValueError):
-            continue
-        if payload.get("activity_secret") != secret or not charger_is_live(payload, now):
-            continue
-        try:
-            charger_at = float(payload.get("heart_rate_at") or 0)
-        except (TypeError, ValueError):
-            charger_at = 0
-        if charger_at > measured_at + 2:
-            return True
-    return False
-
 
 @app.post("/live-activity/publish")
 def publish_activity(body: ActivityPublish, request: Request):
     throttle("activity:" + body.secret, 60, 60)
     now = time.time()
-    if charger_blocks_phone_card(body.secret, body.measured_at, now):
-        return {"ok": True, "skipped": "charger"}
     if not now - 30 <= body.measured_at <= now + 5:
         raise HTTPException(400, "Only fresh readings can update the lock screen")
     with db() as c:
@@ -1567,95 +1269,6 @@ def reading_number(text):
         return None
 
 
-def family_sleep_prior(c, family_id, now):
-    """This child's own quiet pulse from recent history, not a number shared by every child."""
-    rows = c.execute(
-        "SELECT hr FROM reading_log WHERE family=? AND t>=? AND hr>=40 AND hr<=180",
-        (family_id, now - 8 * 3600),
-    ).fetchall()
-    values = sorted(row[0] for row in rows if isinstance(row[0], (int, float)))
-    if len(values) < 20:
-        return None
-    return round(float(values[len(values) // 5]), 1)
-
-
-def charger_sleep(flag, seconds, old, now, heart_rate=None):
-    """The charger flags sleep. Whether that pulse is sleep depends on this child.
-    Near their own sleep pulse, about a minute is enough. Far above it, it is not sleep.
-    With no history yet, the flag has to hold for 3 minutes before it is believed."""
-    old = old or {}
-    try:
-        pulse = float(heart_rate)
-    except (TypeError, ValueError):
-        pulse = None
-    try:
-        base = float(old.get("sleep_pulse"))
-        if not 40 <= base <= 160:
-            base = None
-    except (TypeError, ValueError):
-        base = None
-    if flag is True:
-        old["wake_since"] = None
-        try:
-            reported = int(seconds)
-        except (TypeError, ValueError):
-            reported = 0
-        if reported < 0:
-            reported = 0
-        try:
-            previous = int(old.get("sleep_sec"))
-            held = float(old.get("sleep_held"))
-        except (TypeError, ValueError):
-            previous = None
-            held = None
-        if previous is not None and held and reported <= previous + 2:
-            running = int(previous + max(0, now - held))
-            if reported + 30 < previous:
-                running = reported
-                held = now
-                previous = reported
-        else:
-            running = reported
-            previous = reported
-            held = now
-        close = base is not None and pulse is not None and pulse <= base + 12
-        far = base is not None and pulse is not None and pulse > base + 20
-        if far or not ((close and running >= 45) or running >= 180):
-            return "", previous, held, base
-        learned = base
-        if pulse is not None and (base is None or pulse <= base + 12):
-            learned = round(pulse if base is None else base * 0.85 + pulse * 0.15, 1)
-        return formatted_sleep(running), previous, held, learned
-    previous_line = str(old.get("sleep") or "")
-    if not previous_line.startswith("Asleep"):
-        old["wake_since"] = None
-        return "", None, None, base
-    try:
-        wake = float(old.get("wake_since") or 0)
-    except (TypeError, ValueError):
-        wake = 0
-    if wake <= 0:
-        wake = now
-    old["wake_since"] = wake
-    if now - wake < 180:
-        return previous_line, old.get("sleep_sec"), old.get("sleep_held"), base
-    old["wake_since"] = None
-    return "", None, None, base
-
-
-def formatted_sleep(seconds):
-    try:
-        seconds = int(seconds)
-    except (TypeError, ValueError):
-        return "Asleep"
-    if seconds < 60:
-        return "Asleep"
-    minutes = seconds // 60
-    if minutes < 60:
-        return f"Asleep · {minutes} min"
-    hours, mins = divmod(minutes, 60)
-    return f"Asleep · {hours} hr" if mins == 0 else f"Asleep · {hours} hr {mins} min"
-
 
 def watcher_due(secret, state, now):
     """A real change goes straight out. A one-beat wobble does not, or Apple stops delivering and the card sits for minutes."""
@@ -1748,28 +1361,16 @@ async def deliver_pushes():
                     c.execute("DELETE FROM pushes WHERE id=?", (event["id"],))
                 continue
             with db() as c:
-                # A full charge is for every phone, including the one with the band.
-                # An alarm stays off the phone that is already monitoring.
-                if event["kind"] == "charged":
-                    tokens = [r[0] for r in c.execute(
-                        """SELECT token FROM devices WHERE user_id IN (
-                               SELECT owner FROM families WHERE id=?
-                               UNION
-                               SELECT user_id FROM members WHERE family=?
-                           )""",
-                        (event["family"], event["family"]),
-                    )]
-                else:
-                    tokens = [r[0] for r in c.execute(
-                        """SELECT token FROM devices WHERE user_id IN (
-                               SELECT owner FROM families WHERE id=?
-                               UNION
-                               SELECT user_id FROM members WHERE family=?
-                           ) AND user_id IS NOT (
-                               SELECT host_user FROM families WHERE id=? AND host_user IS NOT NULL
-                           )""",
-                        (event["family"], event["family"], event["family"]),
-                    )]
+                tokens = [r[0] for r in c.execute(
+                    """SELECT token FROM devices WHERE user_id IN (
+                           SELECT owner FROM families WHERE id=?
+                           UNION
+                           SELECT user_id FROM members WHERE family=?
+                       ) AND user_id IS NOT (
+                           SELECT host_user FROM families WHERE id=? AND host_user IS NOT NULL
+                       )""",
+                    (event["family"], event["family"], event["family"]),
+                )]
             failed = False
             for token in tokens:
                 with db() as c:
@@ -1787,11 +1388,8 @@ async def deliver_pushes():
                 recovery = event["kind"] == "recovery"
                 handover = event["kind"] == "handover"
                 removed = event["kind"] == "removed"
-                charged = event["kind"] == "charged"
                 sensor = event["kind"] in ("sensor", "sensor-restored")
-                if charged:
-                    message = "Device charged"
-                elif handover:
+                if handover:
                     with db() as c:
                         named = c.execute("SELECT child_name, label, host_relation FROM families WHERE id=?", (event["family"],)).fetchone()
                     who = ((named["host_relation"] or "Someone") if named else "Someone").strip() or "Someone"
@@ -1801,10 +1399,10 @@ async def deliver_pushes():
                     message = "The band may have been taken off. Check it is still worn."
                 else:
                     message = "A shared reading has returned to range. Open Nivvi to check its time." if recovery else "Changed readings received from the shared sensor. Open Nivvi to check." if event["kind"] == "sensor-restored" else "Check the shared sensor data. Open Nivvi for the latest status." if sensor else "A shared monitor needs attention. Open Nivvi for the latest status."
-                payload = {"aps": {"alert": {"title": "Device charged" if charged else "Nivvi family update", "body": message}, "sound": "NivviRelief.wav" if recovery or charged else "NivviSensor.wav" if sensor or handover or removed else "NivviSiren.wav"}, "family_id": event["family"]}
+                payload = {"aps": {"alert": {"title": "Nivvi family update", "body": message}, "sound": "NivviRelief.wav" if recovery else "NivviSensor.wav" if sensor or handover or removed else "NivviSiren.wav"}, "family_id": event["family"]}
                 if handover:
                     payload["handover"] = True
-                result = await client.post(f"https://{host}/3/device/{token}", headers={"authorization": "bearer " + bearer, "apns-topic": os.environ["NIVVI_APNS_TOPIC"], "apns-push-type": "alert", "apns-expiration": str(int(event["created"]+120)), "apns-collapse-id": event["family"] + (":charged" if charged else "")}, json=payload)
+                result = await client.post(f"https://{host}/3/device/{token}", headers={"authorization": "bearer " + bearer, "apns-topic": os.environ["NIVVI_APNS_TOPIC"], "apns-push-type": "alert", "apns-expiration": str(int(event["created"]+120)), "apns-collapse-id": event["family"]}, json=payload)
                 if result.status_code == 410 or (result.status_code == 400 and result.json().get("reason") == "BadDeviceToken"):
                     with db() as c:
                         c.execute("DELETE FROM devices WHERE token=?", (token,))

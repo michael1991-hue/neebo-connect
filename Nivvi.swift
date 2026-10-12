@@ -2756,7 +2756,6 @@ struct ContentView: View {
     @State private var skyOffset: CGFloat = 0
     @AppStorage("nivvi.favorite.device.ids") private var favoriteDeviceIDs = ""
     @State private var showFamily = false
-    @State private var showCharger = false
     @State private var lockScreenNote = "Starts a new 8 hours. The card blinks off, then comes back."
     @State private var lastLockScreenHeal = Date.distantPast
     @State private var showProfile = false
@@ -3009,21 +3008,12 @@ struct ContentView: View {
             stale: stale,
             alarm: alarm,
             forceNew: forceNew,
-            sleep: remoteSleepLine,
-            sleepStarted: chargerSleepStarted
+            sleep: remoteSleepLine
         )
-    }
-    private var chargerSleepStarted: TimeInterval {
-        guard family.remote?.snapshot?.source == "charger",
-              (family.remote?.snapshot?.sleep ?? "").hasPrefix("Asleep"),
-              let seconds = family.remote?.snapshot?.sleep_sec,
-              let held = family.remote?.snapshot?.sleep_held else { return 0 }
-        return held - max(0, seconds)
     }
     private var remoteSleepLine: String {
         let line = family.remote?.snapshot?.sleep?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !line.isEmpty else { return "" }
-        if family.remote?.snapshot?.source == "charger" { return line }
         if line == "Active" || line == "Still" || line == "Charging" || line == "Band off" || line.hasPrefix("Asleep") {
             return line
         }
@@ -3053,13 +3043,6 @@ struct ContentView: View {
         return "none"
     }
     private func persistSharedHistory() {
-        // The charger writes the night on the server. This phone must keep that
-        // log even when it is the monitoring phone, or a locked screen leaves a hole.
-        if family.signedIn, !family.storedHistory.isEmpty {
-            monitor.ingestShared(family.storedHistory.map {
-                SavedMeasurement.mapped(time: Date(timeIntervalSince1970: $0.t), heartRate: $0.hr, oxygen: $0.o2, source: "family-share", skinCelsius: $0.sk)
-            })
-        }
         if watchingFamily {
             var rows = family.trail
             if let samples = family.remote?.snapshot?.history {
@@ -3203,17 +3186,7 @@ struct ContentView: View {
         }
         .onChange(of: tab) { page in
             guard page == 1 else { return }
-            Task {
-                try? await family.pullStoredHistory()
-                persistSharedHistory()
-            }
-        }
-        .task {
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 60_000_000_000)
-                try? await family.pullStoredHistory()
-                persistSharedHistory()
-            }
+            persistSharedHistory()
         }
         .onAppear {
             let photoURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("child-profile.jpg")
@@ -3230,10 +3203,7 @@ struct ContentView: View {
             if phase == .active {
                 family.resumeForeground()
                 healLockScreenIfStale()
-                Task {
-                    try? await family.pullStoredHistory()
-                    persistSharedHistory()
-                }
+                persistSharedHistory()
             } else {
                 syncLiveActivity()
             }
@@ -3292,10 +3262,7 @@ struct ContentView: View {
                 Task { try? await family.notifications() }
             }
             applyShareAlert()
-            Task {
-                try? await family.pullStoredHistory()
-                persistSharedHistory()
-            }
+            persistSharedHistory()
             monitor.refreshBackgroundHold()
         }
         .onChange(of: family.publishing) { _ in monitor.refreshBackgroundHold() }
@@ -3331,7 +3298,6 @@ struct ContentView: View {
                     }
             }
         }
-        .sheet(isPresented: $showCharger) { ChargerWiFiView() }
         .sheet(isPresented: $showParentNote) {
             NavigationStack {
                 Form {
@@ -3820,13 +3786,8 @@ struct ContentView: View {
             }
         }
     }
-    private var chargerSleepLine: String? {
-        guard family.remote?.snapshot?.source == "charger" else { return nil }
-        let line = family.remote?.snapshot?.sleep?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return line.isEmpty ? "Awake" : line
-    }
     private var sharedBandLine: String? {
-        guard !monitor.connection.isConnected, family.remote?.snapshot?.source != "charger" else { return nil }
+        guard !monitor.connection.isConnected else { return nil }
         let line = family.remote?.snapshot?.sleep?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return line.isEmpty ? nil : line
     }
@@ -3878,42 +3839,6 @@ struct ContentView: View {
             }
             .padding(.vertical, 4)
         }
-    }
-    private func chargerSleepHeader(_ line: String) -> some View {
-        let asleep = line.hasPrefix("Asleep")
-        return TimelineView(.periodic(from: .now, by: 1)) { context in
-            HStack(alignment: .center, spacing: 12) {
-                Image(systemName: asleep ? "moon.fill" : "figure.walk")
-                    .font(.title2)
-                    .foregroundStyle(asleep ? lavender : accentMint)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(asleep ? "Asleep" : "Awake")
-                        .font(.title3.weight(.semibold))
-                        .foregroundStyle(ink)
-                    if asleep {
-                        Text(chargerSleepClock(at: context.date))
-                            .font(.subheadline.weight(.semibold))
-                            .monospacedDigit()
-                            .foregroundStyle(lavender)
-                    }
-                }
-                Spacer(minLength: 8)
-                if asleep { sleepZzz(color: lavender) }
-            }
-            .padding(.vertical, 4)
-        }
-    }
-    private func chargerSleepClock(at now: Date) -> String {
-        if let seconds = family.remote?.snapshot?.sleep_sec, let held = family.remote?.snapshot?.sleep_held {
-            let total = max(0, Int(seconds + now.timeIntervalSince1970 - held))
-            let hours = total / 3600
-            let minutes = (total % 3600) / 60
-            let secs = total % 60
-            if hours > 0 { return String(format: "%dh %02dm %02ds", hours, minutes, secs) }
-            return String(format: "%dm %02ds", minutes, secs)
-        }
-        let timer = (family.remote?.snapshot?.sleep ?? "").replacingOccurrences(of: "Asleep · ", with: "")
-        return timer == "Asleep" ? "0m 00s" : timer
     }
     private var sleepCard: some View {
         TimelineView(.periodic(from: .now, by: 30)) { context in
@@ -4155,7 +4080,6 @@ struct ContentView: View {
                     }
                 } else {
                 if monitor.connection.isConnected { phoneSleepHeader }
-                else if let line = chargerSleepLine { chargerSleepHeader(line) }
                 else if let line = sharedBandLine { sharedBandHeader(line) }
                 Text("Heart rate").font(.caption.weight(.bold)).tracking(1.1).foregroundStyle(muted)
                 HStack(alignment: .center, spacing: 12) {
@@ -4312,7 +4236,7 @@ struct ContentView: View {
                     .accessibilityLabel("Add note")
             }
             if displayedHistory.contains(where: { $0.source == "family-share" || $0.source == "wifi-share" }) {
-                Text("About one saved reading every 30 seconds, kept for 30 days. A gap is a minute or more with no pulse from the charger or the phone. The line is not filled in.")
+                Text("About one saved reading every 30 seconds, kept for 30 days. A gap is a minute or more with no pulse. The line is not filled in.")
                     .font(.caption).foregroundStyle(muted)
             }
             if displayedHistory.isEmpty {
@@ -4567,8 +4491,6 @@ struct ContentView: View {
                 settingsPush("Family sharing", "Live numbers on another iPhone", "person.2.fill") {
                     FamilySharingView().navigationTitle("Family sharing").navigationBarTitleDisplayMode(.inline)
                 }
-                Divider()
-                settingsPush("Charger", "Home Wi‑Fi for the NCO dock", "wifi") { ChargerWiFiView() }
                 Divider()
                 settingsPush("Heart-rate alerts", configuredRangeLabel, "heart.text.square") { settingsScreen(.alerts) }
                 Divider()
