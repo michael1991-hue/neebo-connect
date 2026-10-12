@@ -577,7 +577,11 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             alerts: heartAlertsToShare(),
             recovery_chime: recoverySoundEnabled
         )
-        FamilyRelay.shared.capture(snapshot)
+        if Thread.isMainThread {
+            MainActor.assumeIsolated { FamilyRelay.shared.capture(snapshot) }
+        } else {
+            DispatchQueue.main.async { FamilyRelay.shared.capture(snapshot) }
+        }
         pushLocalShare()
     }
     private var cachedGraph: [FamilySample] = []

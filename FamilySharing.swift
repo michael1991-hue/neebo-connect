@@ -720,13 +720,16 @@ final class FamilyRelay: ObservableObject {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("Bearer " + current, forHTTPHeaderField: "Authorization")
         req.httpBody = body
+        let sent = next.captured
         let uploadTask = UIApplication.shared.beginBackgroundTask(withName: "nivvi.family.upload") { }
         URLSession.shared.dataTask(with: req) { [weak self] data, response, error in
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             let reply = data.flatMap { try? JSONDecoder().decode(FamilyReply.self, from: $0) }
             let detail = data.map { Self.serverMessage($0, status: status) } ?? error?.localizedDescription ?? "Sharing request failed (\(status))."
             DispatchQueue.main.async {
-                self?.finishUpload(status: status, reply: reply, detail: detail, generation: token, includeHistory: includeHistory, captured: next.captured, taskID: uploadTask)
+                MainActor.assumeIsolated {
+                    self?.finishUpload(status: status, reply: reply, detail: detail, generation: token, includeHistory: includeHistory, captured: sent, taskID: uploadTask)
+                }
             }
         }.resume()
     }
