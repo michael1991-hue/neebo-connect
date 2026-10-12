@@ -64,7 +64,7 @@ enum NivviLiveActivityBridge {
             // A later Swift task does not run once the locked phone is suspended.
             // The main queue does, for as long as this wake is held open.
             let background = UIApplication.shared.beginBackgroundTask(withName: "nivvi.lock-screen") {}
-            let apply = {
+            let apply: () -> Void = {
                 Task { @MainActor in
                     if #available(iOS 16.2, *) {
                         await activity.update(ActivityContent(state: state, staleDate: freshUntil(measuredAt.timeIntervalSince1970, stale: stale)))
