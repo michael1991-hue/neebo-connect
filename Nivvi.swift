@@ -888,6 +888,10 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         guard ble || stale else { return }
         NivviLiveActivityBridge.preferLocalBluetooth = true
         LiveActivityPush.claimLocal()
+        if Thread.isMainThread {
+            let familyID = MainActor.assumeIsolated { FamilyRelay.shared.publishFamilyID }
+            LiveActivityPush.watchFamily(familyID)
+        }
         let chargingNow = wearableCharging
         let hr = pulseOximeterRate ?? verifiedHeartRate.map(Double.init) ?? customHeartRateCandidate.map(Double.init)
         let ox = pulseOximeterOxygen ?? verifiedOxygen.map(Double.init) ?? customOxygenCandidate.map(Double.init)

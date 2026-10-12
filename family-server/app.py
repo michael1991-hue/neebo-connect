@@ -410,6 +410,7 @@ class ActivityPublish(BaseModel):
     session: str = Field(default="", max_length=80)
     title: str = Field(default="Nivvi", max_length=80)
     sleep: str = Field(default="", max_length=40)
+    family: str = Field(default="", max_length=64)
 
 
 @asynccontextmanager
@@ -1017,8 +1018,8 @@ def publish(family: str, body: Snapshot, user=Depends(require_user)):
     if body.history:
         live["history"] = recent_shared_history(payload.get("history"), now)
     HUB.emit(family, live)
-    if payload.get("activity_secret"):
-        queue_activity(payload["activity_secret"], activity_state(payload, payload.get("activity_secret")), paced=True)
+    if payload.get("activity_secret") or family:
+        queue_activity(payload.get("activity_secret") or "", activity_state(payload, payload.get("activity_secret")), paced=True, family=family)
     return {"ok": True, "seq": payload["seq"], "server_received": now}
 
 
@@ -1176,7 +1177,7 @@ def publish_activity(body: ActivityPublish, request: Request):
         "title": body.title,
         "sleep": body.sleep,
     }
-    queue_activity(body.secret, state, paced=False)
+    queue_activity(body.secret, state, paced=False, family=body.family)
     return {"ok": True, "seq": body.seq}
 
 
@@ -1226,7 +1227,15 @@ def queue_activity(secret, state, paced=False, family=""):
                 (secret, family),
             ).fetchall()
         else:
-            found = c.execute("SELECT token, kind FROM activity_tokens WHERE secret=?", (secret,)).fetchall()
+            found = c.execute(
+                """SELECT token, kind FROM activity_tokens
+                   WHERE secret=? OR (
+                     family!='' AND family IN (
+                       SELECT family FROM activity_tokens WHERE secret=? AND family!=''
+                     )
+                   )""",
+                (secret, secret),
+            ).fetchall()
     rows = []
     seen = set()
     for row in found:

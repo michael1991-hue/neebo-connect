@@ -166,6 +166,22 @@ def test_family_latest_fans_out_activity_push(client):
     assert "116" in relay.ACTIVITY_PUSHES[-1]["state"]["heartRate"]
 
 
+def test_family_lock_screen_reaches_a_phone_registered_by_family(client):
+    owner, _, _ = account(client, "watcher-lock@example.com")
+    family = client.post("/families", headers=owner, json={"label": "Lock"}).json()["id"]
+    host_secret = "e" * 32
+    watcher = "f" * 64
+    assert client.post(
+        "/live-activity/token",
+        json={"secret": "9" * 32, "token": watcher, "kind": "watcher", "family": family},
+    ).status_code == 200
+    now = time.time()
+    body = snapshot(captured=now, heart_rate=134, heart_rate_at=now, oxygen=97, oxygen_at=now, seq=1)
+    body["activity_secret"] = host_secret
+    assert client.put(f"/families/{family}/latest", headers=owner, json=body).status_code == 200
+    assert any(push["token"] == watcher and "134" in push["state"]["heartRate"] for push in relay.ACTIVITY_PUSHES)
+
+
 def test_oxygen_caps_at_99_and_battery_is_shared(client):
     owner, _, _ = account(client, "battery@example.com")
     family = client.post("/families", headers=owner, json={"label": "Band"}).json()["id"]

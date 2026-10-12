@@ -87,7 +87,8 @@ enum LiveActivityPush {
             "connection": connection,
             "session": session,
             "title": title,
-            "sleep": sleep
+            "sleep": sleep,
+            "family": familyID
         ]
         // Start the request before this Bluetooth wake ends. A queued task
         // was still waiting when the locked phone went back to sleep, so the
@@ -138,18 +139,18 @@ enum LiveActivityPush {
 
     private static func register(_ token: String) async {
         let family = familyID
-        if let follow = followSecret, follow.count >= 16, !NivviLiveActivityBridge.preferLocalBluetooth {
-            localOwner = false
+        if localOwner || NivviLiveActivityBridge.preferLocalBluetooth {
+            localOwner = true
+            await send("POST", path: "live-activity/token", body: ["secret": secret, "token": token, "kind": "host", "family": family])
+            return
+        }
+        if let follow = followSecret, follow.count >= 16 {
             await send("POST", path: "live-activity/token", body: ["secret": follow, "token": token, "kind": "watcher", "family": family])
             return
         }
         if !family.isEmpty {
             await send("POST", path: "live-activity/token", body: ["secret": secret, "token": token, "kind": "watcher", "family": family])
-            return
         }
-        guard localOwner || NivviLiveActivityBridge.preferLocalBluetooth else { return }
-        localOwner = true
-        await send("POST", path: "live-activity/token", body: ["secret": secret, "token": token, "kind": "host", "family": family])
     }
 
     private static func post(_ path: String, body: [String: Any]) async {
