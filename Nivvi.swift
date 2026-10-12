@@ -577,14 +577,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             alerts: heartAlertsToShare(),
             recovery_chime: recoverySoundEnabled
         )
-        // Start the upload before this wake ends. A detached task was often
-        // still queued when a locked phone went back to sleep, so watchers
-        // kept an old lock-screen number.
-        let task = UIApplication.shared.beginBackgroundTask(withName: "nivvi.reading.upload") {}
-        DispatchQueue.main.async {
-            FamilyRelay.shared.capture(snapshot)
-            if task != .invalid { UIApplication.shared.endBackgroundTask(task) }
-        }
+        FamilyRelay.shared.capture(snapshot)
         pushLocalShare()
     }
     private var cachedGraph: [FamilySample] = []

@@ -107,8 +107,10 @@ enum FamilyLivePolicy {
         guard following else { return .idle }
         if sensorAlarm || hostConnection == "idle" || hostConnection == "bluetoothOff" { return .sensorDisconnected }
         let eventAge = lastEvent.map { now.timeIntervalSince($0) } ?? .infinity
-        if !socketConnected && eventAge > 12 { return .viewerOffline }
-        if !heartFresh { return .hostStale }
+        if !heartFresh {
+            if !socketConnected && eventAge > 12 { return .viewerOffline }
+            return .hostStale
+        }
         return .live
     }
     static func shouldSoundAlarm(catchup: Bool, previous: String, next: String) -> Bool {

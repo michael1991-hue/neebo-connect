@@ -708,38 +708,60 @@ final class FamilyRelay: ObservableObject {
         if uploadBusy { pendingSnapshot = next; return }
         let token = generation
         uploadBusy = true
-        let uploadTask = UIApplication.shared.beginBackgroundTask(withName: "nivvi.family.upload") { }
-        Task {
-            defer {
-                uploadBusy = false
-                if uploadTask != .invalid { UIApplication.shared.endBackgroundTask(uploadTask) }
-                if let pending = pendingSnapshot { pendingSnapshot = nil; capture(pending) }
-            }
-            guard publishing && token == generation else { return }
-            do {
-                let reply: FamilyReply = try await request("families/\(familyID)/latest", method: "PUT", body: JSONEncoder().encode(next), timeout: 8)
-                guard token == generation else { return }
-                lastUpload = Date()
-                lastAlarm = next.alarm
-                if let received = reply.server_received {
-                    lastLatency = received - next.captured
-                }
-                if includeHistory { lastHistoryUpload = Date() }
-            } catch {
-                let text = error.localizedDescription
-                if text.contains("Another phone") {
-                    publishing = false
-                    message = "Another phone took over monitoring."
-                    return
-                }
-                if text.contains("(409)") {
-                    uploadSeq += 1
-                    pendingSnapshot?.seq = uploadSeq
-                    pendingSnapshot?.stream_id = publishStream
-                }
-                message = "Remote update unavailable: " + text
-            }
+        guard configured, let server, let current = account?.token,
+              let body = try? JSONEncoder().encode(next) else {
+            uploadBusy = false
+            return
         }
+        var req = URLRequest(url: server.appendingPathComponent("families/\(familyID)/latest"))
+        req.httpMethod = "PUT"
+        req.timeoutInterval = 8
+        req.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("Bearer " + current, forHTTPHeaderField: "Authorization")
+        req.httpBody = body
+        let uploadTask = UIApplication.shared.beginBackgroundTask(withName: "nivvi.family.upload") { }
+        URLSession.shared.dataTask(with: req) { [weak self] data, response, error in
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let reply = data.flatMap { try? JSONDecoder().decode(FamilyReply.self, from: $0) }
+            let detail = data.map { Self.serverMessage($0, status: status) } ?? error?.localizedDescription ?? "Sharing request failed (\(status))."
+            DispatchQueue.main.async {
+                self?.finishUpload(status: status, reply: reply, detail: detail, generation: token, includeHistory: includeHistory, captured: next.captured, taskID: uploadTask)
+            }
+        }.resume()
+    }
+    private func finishUpload(status: Int, reply: FamilyReply?, detail: String, generation token: UUID, includeHistory: Bool, captured: Double, taskID: UIBackgroundTaskIdentifier) {
+        defer {
+            uploadBusy = false
+            if taskID != .invalid { UIApplication.shared.endBackgroundTask(taskID) }
+            if let pending = pendingSnapshot { pendingSnapshot = nil; capture(pending) }
+        }
+        guard publishing && token == generation else { return }
+        guard (200..<300).contains(status) else {
+            if status == 401 {
+                publishing = false
+                rememberHosting(false, stream: nil)
+            }
+            let text = detail
+            if text.contains("Another phone") {
+                publishing = false
+                rememberHosting(false, stream: nil)
+                message = "Another phone took over monitoring."
+                return
+            }
+            if status == 409 {
+                uploadSeq += 1
+                pendingSnapshot?.seq = uploadSeq
+                pendingSnapshot?.stream_id = publishStream
+            }
+            message = "Remote update unavailable: " + text
+            return
+        }
+        lastUpload = Date()
+        if let received = reply?.server_received {
+            lastLatency = received - captured
+        }
+        if includeHistory { lastHistoryUpload = Date() }
     }
     func saveDeviceToken(_ token: String) { deviceToken = token }
     func notifications() async throws {
