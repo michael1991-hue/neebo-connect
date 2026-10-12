@@ -433,7 +433,8 @@ final class FamilyRelay: ObservableObject {
         guard token == generation else { return }
         families = result
         if !result.contains(where: { $0.id == selected }) { selected = result.first?.id; clearRemote() }
-        if families.isEmpty { publishing = false }
+        if families.isEmpty { publishing = false; rememberHosting(false, stream: nil) }
+        resumeHostingIfSaved()
         if let token = (result.first { $0.id == selected }?.share_token)
             ?? ownFamily?.share_token
             ?? result.first?.share_token,
@@ -461,6 +462,7 @@ final class FamilyRelay: ObservableObject {
         lastHistoryUpload = nil
         publishStream = reply.stream_id ?? UUID().uuidString
         uploadSeq = 0
+        rememberHosting(true, stream: publishStream)
         if let index = families.firstIndex(where: { $0.id == familyID }) {
             families[index].role = "carer"
             if !relation.isEmpty { families[index].host_relation = relation }
@@ -469,6 +471,28 @@ final class FamilyRelay: ObservableObject {
         try await refreshShareLink()
         try await pushProfile()
         try await refreshFamilies()
+    }
+    private func rememberHosting(_ on: Bool, stream: String?) {
+        UserDefaults.standard.set(on, forKey: "nivvi.family.hosting")
+        if on, let stream, !stream.isEmpty {
+            UserDefaults.standard.set(stream, forKey: "nivvi.family.stream")
+        } else {
+            UserDefaults.standard.removeObject(forKey: "nivvi.family.stream")
+        }
+    }
+    private func resumeHostingIfSaved() {
+        guard UserDefaults.standard.bool(forKey: "nivvi.family.hosting"), signedIn else { return }
+        let familyID = publishFamilyID ?? selected
+        if let me = userID, let row = families.first(where: { $0.id == familyID }),
+           let host = row.host_user, !host.isEmpty, host != me {
+            publishing = false
+            rememberHosting(false, stream: nil)
+            return
+        }
+        if let stream = UserDefaults.standard.string(forKey: "nivvi.family.stream"), !stream.isEmpty {
+            publishStream = stream
+        }
+        publishing = true
     }
     func refreshShareLink() async throws {
         guard let familyID = ownFamily?.id else { return }
@@ -514,6 +538,7 @@ final class FamilyRelay: ObservableObject {
     }
     func releaseHost() async throws {
         publishing = false
+        rememberHosting(false, stream: nil)
         if let familyID = publishFamilyID ?? selected {
             let _: FamilyReply = try await request("families/\(familyID)/host", method: "DELETE")
         }
@@ -629,6 +654,7 @@ final class FamilyRelay: ObservableObject {
         guard let row = families.first(where: { $0.id == familyID }),
               let host = row.host_user, !host.isEmpty, host != me else { return }
         publishing = false
+        rememberHosting(false, stream: nil)
         let who = FamilyRelation.display(row.host_relation) ?? "Someone"
         let child = (row.child_name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let withChild = child.isEmpty ? "" : " with \(child)"
@@ -817,12 +843,22 @@ final class FamilyRelay: ObservableObject {
             let stream = raw["stream_id"] as? String ?? ""
             let hostUser = raw["host_user"] as? String ?? ""
             if let me = userID, !hostUser.isEmpty, hostUser == me {
-                if !stream.isEmpty { publishStream = stream }
-                publishing = true
+                let saved = UserDefaults.standard.string(forKey: "nivvi.family.stream") ?? ""
+                let marked = UserDefaults.standard.bool(forKey: "nivvi.family.hosting")
+                if marked && (stream.isEmpty || saved.isEmpty || saved == stream) {
+                    if !stream.isEmpty { publishStream = stream }
+                    publishing = true
+                    return
+                }
+                if marked && !saved.isEmpty && !stream.isEmpty && saved != stream {
+                    publishing = false
+                    rememberHosting(false, stream: nil)
+                }
                 return
             }
-            let who = FamilyRelation.display(raw["host_relation"] as? String) ?? "Someone"
             if publishing { publishing = false }
+            rememberHosting(false, stream: nil)
+            let who = FamilyRelation.display(raw["host_relation"] as? String) ?? "Someone"
             if !hostUser.isEmpty {
                 let child = (families.first(where: { $0.id == selected })?.child_name ?? UserDefaults.standard.string(forKey: "nivvi.profile.name") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                 let withChild = child.isEmpty ? "" : " with \(child)"

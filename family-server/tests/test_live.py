@@ -81,6 +81,23 @@ def test_live_socket_snapshot_then_event_and_seq(client):
     assert remote["oxygen_fresh"] is True
 
 
+def test_a_restarted_phone_keeps_sending(client):
+    owner, _, _ = account(client, "restart@example.com")
+    family = client.post("/families", headers=owner, json={"label": "Restart"}).json()["id"]
+    now = time.time()
+    assert client.put(
+        f"/families/{family}/latest",
+        headers=owner,
+        json=snapshot(captured=now, heart_rate=100, heart_rate_at=now, seq=40, stream_id="stream-a"),
+    ).status_code == 200
+    restarted = snapshot(captured=now + 2, heart_rate=104, heart_rate_at=now + 2, seq=1, stream_id="stream-a")
+    posted = client.put(f"/families/{family}/latest", headers=owner, json=restarted)
+    assert posted.status_code == 200
+    assert posted.json()["seq"] == 41
+    remote = client.get(f"/families/{family}/latest", headers=owner).json()
+    assert remote["snapshot"]["heart_rate"] == 104
+
+
 def test_oxygen_does_not_refresh_stale_heart_rate(client):
     owner, _, _ = account(client, "split@example.com")
     family = client.post("/families", headers=owner, json={"label": "Split"}).json()["id"]

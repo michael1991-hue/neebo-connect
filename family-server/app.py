@@ -946,7 +946,9 @@ def merge_snapshot(old, body: Snapshot, received):
     if not payload.get("history") and old.get("history"):
         payload["history"] = old["history"]
     payload["server_received"] = received
-    payload["seq"] = body.seq or int(old.get("seq") or 0) + 1
+    previous = int(old.get("seq") or 0)
+    incoming = int(body.seq or 0)
+    payload["seq"] = incoming if incoming > previous else previous + 1
     payload["stream_id"] = body.stream_id or old.get("stream_id")
     if body.alarm == old.get("alarm"):
         payload["acknowledged"] = bool(body.acknowledged or old.get("acknowledged"))
@@ -989,7 +991,10 @@ def publish(family: str, body: Snapshot, user=Depends(require_user)):
         old = json.loads(previous[0]) if previous else {}
         old_seq = int(old.get("seq") or 0)
         if body.stream_id and old.get("stream_id") == body.stream_id and body.seq is not None and body.seq <= old_seq:
-            raise HTTPException(409, "An older snapshot cannot replace a newer one")
+            # A restarted phone starts its counter again. A newer reading still counts.
+            # An older captured time is a retry and must not replace what is already there.
+            if body.captured <= float(old.get("captured") or 0):
+                raise HTTPException(409, "An older snapshot cannot replace a newer one")
         if body.seq is None and old.get("captured", 0) > body.captured:
             raise HTTPException(409, "An older snapshot cannot replace a newer one")
         if body.heart_rate is None and body.alarm == "none" and old.get("alarm") in ("high", "low"):
