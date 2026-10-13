@@ -287,8 +287,11 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     }
     private func scheduleBackgroundWatchdog() {
         guard !foreground, session.enabled else { return }
+        if wearableCharging || chargingHold {
+            cancelBackgroundWatchdog()
+            return
+        }
         guard let delay = backgroundReminder.delay(at: Date(), lastMeasurement: lastHeartRateUpdate) else { return }
-        if wearableCharging { return }
         notify(title: "Check sensor data", body: "Nivvi has not received a recent heart-rate update. Open the app to check the wearable and connection.",
                identifier: "nivvi-background-data", delay: delay, soundName: "NivviSensor.wav")
     }
@@ -385,6 +388,8 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     var alarmActive: Bool { alarmKind != nil }
     @Published private(set) var staleHeartRateDetected = false
     @Published private(set) var wearableCharging = false
+    /// Stays set if the link drops while the band is on charge, so a dock takeover does not raise a sensor alert.
+    private var chargingHold = false
     @Published private(set) var bandPowerOn = true
     @Published private(set) var powerReady = false
     @Published private(set) var powerNote = "Off sends 01. On sends 00."
@@ -844,7 +849,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         alarmEngine.interrupt()
     }
     private func pauseHeartRate(_ reason: String) {
-        if wearableCharging {
+        if wearableCharging || chargingHold {
             status = "Charging"
             measurementStatus = "Charging"
             pushLockScreen(stale: false)
@@ -868,6 +873,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     }
     private func receiveHeartRate(at time: Date) {
         lastHeartRateUpdate = time
+        if !wearableCharging { chargingHold = false }
         if !foreground {
             lastBackgroundReading = time
             backgroundReadingCount += 1
@@ -1314,7 +1320,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             batteryWarning = .ok
         }
         chargePolicy.reset()
-        applyCharging(false, record: false)
+        applyCharging(false, record: false, clearHold: false)
     }
     private func beginRecoveryScan() {
         guard session.enabled, manager.state == .poweredOn else { return }
@@ -1858,7 +1864,15 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         sampling.reset(source: "standard-PLX-oxygen")
         if !profile.hasStandardHeartRate { pauseHeartRate(pulseOximeterStatus) }
     }
-    private func applyCharging(_ on: Bool, record: Bool = true) {
+    private func applyCharging(_ on: Bool, record: Bool = true, clearHold: Bool = true) {
+        if on {
+            chargingHold = true
+            cancelBackgroundWatchdog()
+            UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["nivvi-background-data", "nivvi-sensor-paused"])
+            UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["nivvi-sensor-paused"])
+        } else if clearHold {
+            chargingHold = false
+        }
         guard wearableCharging != on else { return }
         wearableCharging = on
         if on {
