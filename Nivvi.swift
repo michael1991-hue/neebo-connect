@@ -281,17 +281,24 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             }
         }
     }
+    func stopNoPulseAlert() {
+        cancelBackgroundWatchdog()
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["nivvi-sensor-paused"])
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["nivvi-background-data", "nivvi-sensor-paused"])
+    }
     private func cancelBackgroundWatchdog() {
         backgroundReminder.reset()
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["nivvi-background-data"])
     }
     private func scheduleBackgroundWatchdog() {
         guard !foreground, session.enabled else { return }
+        guard alarmSettings.noPulseEnabled else { cancelBackgroundWatchdog(); return }
         if wearableCharging || chargingHold {
             cancelBackgroundWatchdog()
             return
         }
-        guard let delay = backgroundReminder.delay(at: Date(), lastMeasurement: lastHeartRateUpdate) else { return }
+        let wait = TimeInterval(min(300, max(30, alarmSettings.noPulseSeconds)))
+        guard let delay = backgroundReminder.delay(at: Date(), lastMeasurement: lastHeartRateUpdate, limit: wait) else { return }
         notify(title: "Check sensor data", body: "Nivvi has not received a recent heart-rate update. Open the app to check the wearable and connection.",
                identifier: "nivvi-background-data", delay: delay, soundName: "NivviSensor.wav")
     }
@@ -950,8 +957,11 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             plxContinuityID = UUID(); sampling.reset(source: "standard-PLX-oxygen")
             pulseOximeterStatus = "No fresh oxygen reading received for over 30 seconds."
         }
-        if heartRateFreshness.isExpired(at: Date()) {
-            pauseHeartRate("No usable heart-rate reading received for over \(Int(HeartRateFreshness.timeout)) seconds. Check the wearable and connection; the cause is unknown.")
+        if alarmSettings.noPulseEnabled {
+            let wait = TimeInterval(min(300, max(30, alarmSettings.noPulseSeconds)))
+            if heartRateFreshness.isExpired(at: Date(), after: wait) {
+                pauseHeartRate("No usable heart-rate reading received for over \(Int(wait)) seconds. Check the wearable and connection; the cause is unknown.")
+            }
         }
         if removalAlertEnabled, connection.isConnected, !wearableCharging, hadLivePulse, !bandRemoved,
            let last = lastHeartRateUpdate, Date().timeIntervalSince(last) >= TimeInterval(removalDelaySeconds) {
@@ -4608,6 +4618,16 @@ struct ContentView: View {
                 }
                 if editingLimit { Button("Done") { editingLimit = false } }
                 Stepper("Hold for \(monitor.alarmSettings.durationSeconds) seconds", value: $monitor.alarmSettings.durationSeconds, in: 5...120, step: 5)
+                Toggle("No pulse alert", isOn: $monitor.alarmSettings.noPulseEnabled).tint(switchOn)
+                    .onChange(of: monitor.alarmSettings.noPulseEnabled) { enabled in
+                        if enabled { monitor.requestNotificationPermission() }
+                        else { monitor.stopNoPulseAlert() }
+                    }
+                if monitor.alarmSettings.noPulseEnabled {
+                    Stepper("No pulse for \(monitor.alarmSettings.noPulseSeconds) seconds", value: $monitor.alarmSettings.noPulseSeconds, in: 30...300, step: 30)
+                }
+                Text(monitor.alarmSettings.noPulseEnabled ? "Warns when no pulse arrives. Charging stays quiet." : "No-pulse warning is off.")
+                    .font(.caption).foregroundStyle(muted)
                 if let message = monitor.alarmSettings.validationMessage { Text(message).font(.caption).foregroundStyle(coral) }
                 Text("It must stay past the limit for that long. A gap starts the timer again.").font(.caption).foregroundStyle(muted)
             } }

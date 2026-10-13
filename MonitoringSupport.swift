@@ -37,9 +37,9 @@ struct HeartRateFreshness {
     static let timeout: TimeInterval = 120
     private(set) var lastValid: Date?
     private(set) var pausedSince: Date?
-    func isExpired(at now: Date) -> Bool {
+    func isExpired(at now: Date, after: TimeInterval = Self.timeout) -> Bool {
         guard let last = lastValid else { return false }
-        return now.timeIntervalSince(last) > Self.timeout || now < last
+        return now.timeIntervalSince(last) > after || now < last
     }
     mutating func pause() -> Bool {
         guard let last = lastValid, pausedSince == nil else { return false }
@@ -509,11 +509,14 @@ struct AlarmSettings: Codable, Equatable {
     var lowThreshold: Int?
     var durationSeconds = 15
     var experimentalCustomEnabled = false
-    enum CodingKeys: String, CodingKey { case highEnabled, lowEnabled, highThreshold, lowThreshold, durationSeconds, experimentalCustomEnabled }
-    init(highEnabled: Bool = false, lowEnabled: Bool = false, highThreshold: Int? = nil, lowThreshold: Int? = nil, durationSeconds: Int = 15, experimentalCustomEnabled: Bool = false) {
+    var noPulseEnabled = true
+    var noPulseSeconds = 90
+    enum CodingKeys: String, CodingKey { case highEnabled, lowEnabled, highThreshold, lowThreshold, durationSeconds, experimentalCustomEnabled, noPulseEnabled, noPulseSeconds }
+    init(highEnabled: Bool = false, lowEnabled: Bool = false, highThreshold: Int? = nil, lowThreshold: Int? = nil, durationSeconds: Int = 15, experimentalCustomEnabled: Bool = false, noPulseEnabled: Bool = true, noPulseSeconds: Int = 90) {
         self.highEnabled = highEnabled; self.lowEnabled = lowEnabled
         self.highThreshold = highThreshold; self.lowThreshold = lowThreshold
         self.durationSeconds = durationSeconds; self.experimentalCustomEnabled = experimentalCustomEnabled
+        self.noPulseEnabled = noPulseEnabled; self.noPulseSeconds = noPulseSeconds
     }
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -523,12 +526,15 @@ struct AlarmSettings: Codable, Equatable {
         lowThreshold = try values.decodeIfPresent(Int.self, forKey: .lowThreshold)
         durationSeconds = try values.decodeIfPresent(Int.self, forKey: .durationSeconds) ?? 15
         experimentalCustomEnabled = try values.decodeIfPresent(Bool.self, forKey: .experimentalCustomEnabled) ?? false
+        noPulseEnabled = try values.decodeIfPresent(Bool.self, forKey: .noPulseEnabled) ?? true
+        noPulseSeconds = try values.decodeIfPresent(Int.self, forKey: .noPulseSeconds) ?? 90
     }
     var validationMessage: String? {
         if highEnabled && !(1...299).contains(highThreshold ?? 0) { return "Enter your high limit before enabling high alerts." }
         if lowEnabled && !(1...299).contains(lowThreshold ?? 0) { return "Enter your low limit before enabling low alerts." }
         if highEnabled && lowEnabled, let low = lowThreshold, let high = highThreshold, low >= high { return "The low limit must be below the high limit." }
         if !(5...120).contains(durationSeconds) { return "Choose a duration from 5 to 120 seconds." }
+        if noPulseEnabled && !(30...300).contains(noPulseSeconds) { return "Choose a no-pulse wait from 30 to 300 seconds." }
         return nil
     }
 }
@@ -853,12 +859,12 @@ struct MeasurementTransportPolicy {
 struct BackgroundDataReminderPolicy {
     private(set) var scheduledAt: Date?
     private(set) var deadline: Date?
-    mutating func delay(at now: Date, lastMeasurement: Date?) -> TimeInterval? {
+    mutating func delay(at now: Date, lastMeasurement: Date?, limit: TimeInterval = 90) -> TimeInterval? {
         if let scheduledAt, let deadline,
            (0..<5).contains(now.timeIntervalSince(scheduledAt)),
            deadline.timeIntervalSince(now) > 30 { return nil }
         let age = max(0, now.timeIntervalSince(lastMeasurement ?? now))
-        let delay = max(1, 40 - age)
+        let delay = max(1, limit - age)
         scheduledAt = now; deadline = now.addingTimeInterval(delay)
         return delay
     }
