@@ -472,6 +472,17 @@ final class FamilyRelay: ObservableObject {
         try await pushProfile()
         try await refreshFamilies()
     }
+    private var hostClaimInFlight = false
+    /// The phone that has the band shares. No extra tap.
+    func shareConnectedPhone() {
+        guard signedIn, !publishing, !busy, !hostClaimInFlight, publishFamilyID != nil else { return }
+        hostClaimInFlight = true
+        perform {
+            defer { self.hostClaimInFlight = false }
+            guard !self.publishing else { return }
+            try await self.claimHost()
+        }
+    }
     private func rememberHosting(_ on: Bool, stream: String?) {
         UserDefaults.standard.set(on, forKey: "nivvi.family.hosting")
         if on, let stream, !stream.isEmpty {
@@ -1389,7 +1400,7 @@ struct FamilySharingView: View {
                     .buttonStyle(.borderedProminent)
                     .tint(accent)
                     .disabled(relay.busy)
-                    Text("Tap this on the phone next to the band so the rest of the family can watch.")
+                    Text("Connecting the band on this phone shares it. Use the button only if you need to take over.")
                         .font(.caption)
                         .foregroundStyle(muted)
                     TimelineView(.periodic(from: .now, by: 1)) { _ in

@@ -1317,7 +1317,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         applyCharging(false, record: false)
     }
     private func beginRecoveryScan() {
-        guard session.enabled, manager.state == .poweredOn else { return }
+        guard session.enabled, manager.state == .poweredOn, !pauseAutoConnect else { return }
         retryTimer?.invalidate(); retryTimer = nil
         retryScan = true; connection = .reconnecting
         // In the foreground, look for the saved band even if it hides its
@@ -1336,7 +1336,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         reconnectWatchdog = timer
     }
     private func kickStuckConnection() {
-        guard session.enabled, manager.state == .poweredOn else { return }
+        guard session.enabled, manager.state == .poweredOn, !pauseAutoConnect else { return }
         guard connection == .reconnecting || connection == .connecting else {
             reconnectWatchdog?.invalidate(); reconnectWatchdog = nil
             return
@@ -1359,7 +1359,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         beginRecoveryScan()
     }
     private func resumeSession() {
-        guard session.enabled, let id = session.deviceID, manager.state == .poweredOn else { return }
+        guard session.enabled, let id = session.deviceID, manager.state == .poweredOn, !pauseAutoConnect else { return }
         retryTimer?.invalidate(); retryTimer = nil
         if peripheral == nil { peripheral = manager.retrievePeripherals(withIdentifiers: [id]).first }
         guard let p = peripheral else {
@@ -1489,6 +1489,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     }
     func centralManager(_ central: CBCentralManager, didDiscover p: CBPeripheral, advertisementData: [String: Any], rssi RSSI: NSNumber) {
         if connection == .reconnecting && session.shouldReconnect(p.identifier) {
+            guard !pauseAutoConnect else { return }
             central.stopScan(); retryScan = false; peripheral = p; p.delegate = self
             central.connect(p, options: peripheralConnectOptions); return
         }
@@ -2166,7 +2167,25 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         guard holding else { return }
         handoverNotice = notice
         notify(title: "Nivvi monitoring moved", body: notice, identifier: "nivvi-handover", sirenSound: false)
-        stop()
+        yieldBandToFamily()
+    }
+    /// Another phone is live. Stay saved and keep looking, but do not take the band.
+    private(set) var pauseAutoConnect = false
+    func yieldBandToFamily() {
+        pauseAutoConnect = true
+        manager.stopScan()
+        retryScan = false
+        retryTimer?.invalidate(); retryTimer = nil
+        status = "Another phone has the band. This one will connect when that stops."
+        guard let p = peripheral, manager.state == .poweredOn, p.state == .connected || p.state == .connecting else { return }
+        manager.cancelPeripheralConnection(p)
+    }
+    func resumeBandSearch() {
+        guard pauseAutoConnect else { return }
+        pauseAutoConnect = false
+        guard session.enabled, manager.state == .poweredOn else { return }
+        if connection.isConnected { return }
+        resumeSession()
     }
     func stop() {
         let moved = handoverNotice
@@ -3065,6 +3084,27 @@ struct ContentView: View {
             if let alerts = wifi.latest?.alerts { monitor.ingestSharedAlerts(alerts) }
         }
     }
+    private func shareBandIfNeeded() {
+        guard monitor.connection.isConnected else { return }
+        let live = monitor.verifiedHeartRate != nil || monitor.pulseOximeterRate != nil || monitor.customHeartRateCandidate != nil
+        guard live else { return }
+        monitor.pauseAutoConnect = false
+        family.shareConnectedPhone()
+    }
+    private func alignBandSearch() {
+        let reading = monitor.verifiedHeartRate != nil || monitor.pulseOximeterRate != nil || monitor.customHeartRateCandidate != nil
+        if monitor.connection.isConnected && reading {
+            monitor.resumeBandSearch()
+            return
+        }
+        let savedHost = UserDefaults.standard.bool(forKey: "nivvi.family.hosting")
+        let someoneElse = family.signedIn && !family.publishing && !savedHost && family.linkState == .live
+        if someoneElse {
+            monitor.yieldBandToFamily()
+        } else {
+            monitor.resumeBandSearch()
+        }
+    }
     private func applyShareAlert() {
         if watchingFamily, let snap = family.remote?.snapshot {
             let alarm = snap.alarm
@@ -3239,12 +3279,12 @@ struct ContentView: View {
             UIApplication.shared.isIdleTimerDisabled = wifi.hosting || wifi.following || monitor.connection.isConnected || family.viewingRemote
         }
         .onChange(of: monitor.connection) { _ in
-            publishWiFiShare(); syncLiveActivity()
+            publishWiFiShare(); syncLiveActivity(); shareBandIfNeeded()
             UIApplication.shared.isIdleTimerDisabled = wifi.hosting || wifi.following || monitor.connection.isConnected || family.viewingRemote
         }
-        .onChange(of: monitor.verifiedHeartRate) { _ in publishWiFiShare(); syncLiveActivity() }
+        .onChange(of: monitor.verifiedHeartRate) { _ in publishWiFiShare(); syncLiveActivity(); shareBandIfNeeded() }
         .onChange(of: monitor.pulseOximeterOxygen) { _ in publishWiFiShare(); syncLiveActivity() }
-        .onChange(of: monitor.customHeartRateCandidate) { _ in publishWiFiShare(); syncLiveActivity() }
+        .onChange(of: monitor.customHeartRateCandidate) { _ in publishWiFiShare(); syncLiveActivity(); shareBandIfNeeded() }
         .onChange(of: monitor.customOxygenCandidate) { _ in publishWiFiShare(); syncLiveActivity() }
         .onChange(of: monitor.signalRSSI) { _ in syncLiveActivity() }
         .onChange(of: monitor.alarmKind) { _ in publishWiFiShare(); syncLiveActivity() }
@@ -3266,7 +3306,10 @@ struct ContentView: View {
             persistSharedHistory()
             monitor.refreshBackgroundHold()
         }
-        .onChange(of: family.publishing) { _ in monitor.refreshBackgroundHold() }
+        .onChange(of: family.publishing) { _ in
+            monitor.refreshBackgroundHold()
+            alignBandSearch()
+        }
         .onChange(of: family.bandHandover) { notice in
             let text = notice.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { return }
@@ -3280,6 +3323,7 @@ struct ContentView: View {
             persistSharedHistory()
             syncLiveActivity()
             healLockScreenIfStale()
+            alignBandSearch()
             UIApplication.shared.isIdleTimerDisabled = wifi.hosting || wifi.following || monitor.connection.isConnected || family.viewingRemote
         }
         .onChange(of: wifi.latest) { _ in
@@ -3442,7 +3486,7 @@ struct ContentView: View {
                 }
             }
         } else if localHeartLive {
-            Text("Tap I'm with \(displayName) to share.")
+            Text(family.signedIn ? "Connected. Sharing with family." : "You are monitoring.")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(coral)
                 .lineLimit(1)
@@ -3574,7 +3618,7 @@ struct ContentView: View {
                 let who = FamilyRelation.display(hostRelation) ?? "You"
                 return who == "You" ? "You are monitoring." : "\(who) is monitoring."
             }
-            if family.signedIn { return "Connected. Not shared yet." }
+            if family.signedIn { return "Connected. Sharing with family." }
             return "You are monitoring."
         }
         if watchingFamily {
