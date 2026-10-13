@@ -472,17 +472,6 @@ final class FamilyRelay: ObservableObject {
         try await pushProfile()
         try await refreshFamilies()
     }
-    private var hostClaimInFlight = false
-    /// The phone that has the band shares. No extra tap.
-    func shareConnectedPhone() {
-        guard signedIn, !publishing, !busy, !hostClaimInFlight, publishFamilyID != nil else { return }
-        hostClaimInFlight = true
-        perform {
-            defer { self.hostClaimInFlight = false }
-            guard !self.publishing else { return }
-            try await self.claimHost()
-        }
-    }
     private func rememberHosting(_ on: Bool, stream: String?) {
         UserDefaults.standard.set(on, forKey: "nivvi.family.hosting")
         if on, let stream, !stream.isEmpty {
@@ -1050,6 +1039,17 @@ struct FamilySharingView: View {
         guard !text.isEmpty else { return false }
         return text.contains("fail") || text.contains("invalid") || text.contains("unavailable") || text.contains("try again") || text.contains("too many")
     }
+    private var monitorSwitch: Binding<Bool> {
+        Binding(
+            get: { relay.publishing },
+            set: { on in
+                relay.perform {
+                    if on { try await relay.claimHost() }
+                    else { try await relay.releaseHost() }
+                }
+            }
+        )
+    }
 
     var body: some View {
         ScrollView {
@@ -1375,39 +1375,17 @@ struct FamilySharingView: View {
                         }
                     }
                 }
-                if relay.publishing {
-                    Text("You’re with \(familyChildName). Family can follow from their phones.")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(ink)
-                    TimelineView(.periodic(from: .now, by: 1)) { _ in
-                        Text(relay.statusLine)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(relay.linkState == .live ? accent : Color.orange)
-                    }
-                    Button("Stop monitoring") { relay.perform { try await relay.releaseHost() } }
-                        .buttonStyle(.bordered)
-                } else {
-                    Button {
-                        relay.perform { try await relay.enable(label: label) }
-                    } label: {
-                        Text(relay.remote?.snapshot != nil
-                             ? "I’m with \(familyChildName) — take over"
-                             : "I’m with \(familyChildName)")
-                            .font(.headline)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 14)
-                    }
-                    .buttonStyle(.borderedProminent)
+                Toggle("This phone is monitoring", isOn: monitorSwitch)
+                    .font(.headline)
                     .tint(accent)
                     .disabled(relay.busy)
-                    Text("Connecting the band on this phone shares it. Use the button only if you need to take over.")
-                        .font(.caption)
+                Text(relay.publishing ? "Family can follow this phone. Turn it off to connect another band without taking over." : "Off. Connecting a band stays on this phone and does not take over family share.")
+                    .font(.caption)
+                    .foregroundStyle(muted)
+                TimelineView(.periodic(from: .now, by: 1)) { _ in
+                    Text(relay.statusLine)
+                        .font(.subheadline)
                         .foregroundStyle(muted)
-                    TimelineView(.periodic(from: .now, by: 1)) { _ in
-                        Text(relay.statusLine)
-                            .font(.subheadline)
-                            .foregroundStyle(muted)
-                    }
                 }
                 accountMenu
             }

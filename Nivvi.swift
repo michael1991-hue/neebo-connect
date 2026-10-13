@@ -1265,6 +1265,8 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         if isActive {
             endBackgroundWork()
             cancelBackgroundWatchdog()
+            UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["nivvi-no-heart-rate"])
+            UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["nivvi-no-heart-rate"])
             expireMeasurements(); refreshNotificationStatus()
             if let start = backgroundEnteredAt {
                 let count = backgroundReadingCount
@@ -2056,10 +2058,6 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             stopSiren()
             clearAlarmNotifications()
         }
-        recordEvent(kind: "measurement", title: "No heart rate", detail: "The band reported no pulse. Notified once. It stays quiet until a real reading returns.")
-        notify(title: "No heart rate", body: "The band reported no pulse. This will not repeat until a reading returns.", identifier: "nivvi-no-heart-rate", sirenSound: false, soundName: removalSound.notificationFile, critical: true)
-        stopSiren()
-        clearAlarmNotifications()
     }
     private var rearmAt: Date?
     private var rearmWaiting = Set<ObjectIdentifier>()
@@ -3126,7 +3124,6 @@ struct ContentView: View {
         let live = monitor.verifiedHeartRate != nil || monitor.pulseOximeterRate != nil || monitor.customHeartRateCandidate != nil
         guard live else { return }
         monitor.resumeBandSearch()
-        family.shareConnectedPhone()
     }
     private func alignBandSearch() {
         let reading = monitor.verifiedHeartRate != nil || monitor.pulseOximeterRate != nil || monitor.customHeartRateCandidate != nil
@@ -3522,14 +3519,28 @@ struct ContentView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
+        } else if localHeartLive && family.signedIn {
+            Toggle("Share with family", isOn: familyShareSwitch)
+                .font(.subheadline.weight(.semibold))
+                .tint(accentMint)
         } else if localHeartLive {
-            Text(family.signedIn ? "Connected. Sharing with family." : "You are monitoring.")
+            Text("You are monitoring.")
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(coral)
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
+                .foregroundStyle(accentMint)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private var familyShareSwitch: Binding<Bool> {
+        Binding(
+            get: { family.publishing },
+            set: { on in
+                family.perform {
+                    if on { try await family.claimHost() }
+                    else { try await family.releaseHost() }
+                }
+            }
+        )
     }
 
     private var compactHeader: some View {
@@ -3655,7 +3666,7 @@ struct ContentView: View {
                 let who = FamilyRelation.display(hostRelation) ?? "You"
                 return who == "You" ? "You are monitoring." : "\(who) is monitoring."
             }
-            if family.signedIn { return "Connected. Sharing with family." }
+            if family.signedIn { return "Connected. Family share is off." }
             return "You are monitoring."
         }
         if watchingFamily {
