@@ -1317,7 +1317,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         applyCharging(false, record: false)
     }
     private func beginRecoveryScan() {
-        guard session.enabled, manager.state == .poweredOn, !pauseAutoConnect else { return }
+        guard session.enabled, manager.state == .poweredOn else { return }
         retryTimer?.invalidate(); retryTimer = nil
         retryScan = true; connection = .reconnecting
         // In the foreground, look for the saved band even if it hides its
@@ -1336,7 +1336,12 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         reconnectWatchdog = timer
     }
     private func kickStuckConnection() {
-        guard session.enabled, manager.state == .poweredOn, !pauseAutoConnect else { return }
+        guard session.enabled, manager.state == .poweredOn else { return }
+        if pauseAutoConnect {
+            if connection.isConnected || connection == .connecting { return }
+            beginRecoveryScan()
+            return
+        }
         guard connection == .reconnecting || connection == .connecting else {
             reconnectWatchdog?.invalidate(); reconnectWatchdog = nil
             return
@@ -1359,7 +1364,13 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         beginRecoveryScan()
     }
     private func resumeSession() {
-        guard session.enabled, let id = session.deviceID, manager.state == .poweredOn, !pauseAutoConnect else { return }
+        guard session.enabled, let id = session.deviceID, manager.state == .poweredOn else { return }
+        if pauseAutoConnect {
+            if connection.isConnected || connection == .connecting { return }
+            status = "Looking for the band. This phone connects if the other one drops."
+            beginRecoveryScan()
+            return
+        }
         retryTimer?.invalidate(); retryTimer = nil
         if peripheral == nil { peripheral = manager.retrievePeripherals(withIdentifiers: [id]).first }
         guard let p = peripheral else {
@@ -1488,8 +1499,9 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         }
     }
     func centralManager(_ central: CBCentralManager, didDiscover p: CBPeripheral, advertisementData: [String: Any], rssi RSSI: NSNumber) {
-        if connection == .reconnecting && session.shouldReconnect(p.identifier) {
-            guard !pauseAutoConnect else { return }
+        let bandIsFree = (connection == .reconnecting || pauseAutoConnect) && session.shouldReconnect(p.identifier) && !connection.isConnected
+        if bandIsFree {
+            pauseAutoConnect = false
             central.stopScan(); retryScan = false; peripheral = p; p.delegate = self
             central.connect(p, options: peripheralConnectOptions); return
         }
@@ -2167,18 +2179,19 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         guard holding else { return }
         handoverNotice = notice
         notify(title: "Nivvi monitoring moved", body: notice, identifier: "nivvi-handover", sirenSound: false)
+        if let p = peripheral, manager.state == .poweredOn, p.state == .connected || p.state == .connecting {
+            manager.cancelPeripheralConnection(p)
+        }
         yieldBandToFamily()
     }
-    /// Another phone is live. Stay saved and keep looking, but do not take the band.
+    /// Another phone is live. Keep looking, but do not call connect until the band advertises.
     private(set) var pauseAutoConnect = false
     func yieldBandToFamily() {
         pauseAutoConnect = true
-        manager.stopScan()
-        retryScan = false
-        retryTimer?.invalidate(); retryTimer = nil
-        status = "Another phone has the band. This one will connect when that stops."
-        guard let p = peripheral, manager.state == .poweredOn, p.state == .connected || p.state == .connecting else { return }
-        manager.cancelPeripheralConnection(p)
+        guard session.enabled, manager.state == .poweredOn else { return }
+        if connection.isConnected || connection == .connecting { return }
+        status = "Looking for the band. This phone connects if the other one drops."
+        beginRecoveryScan()
     }
     func resumeBandSearch() {
         guard pauseAutoConnect else { return }
@@ -3093,8 +3106,8 @@ struct ContentView: View {
     }
     private func alignBandSearch() {
         let reading = monitor.verifiedHeartRate != nil || monitor.pulseOximeterRate != nil || monitor.customHeartRateCandidate != nil
-        if monitor.connection.isConnected && reading {
-            monitor.resumeBandSearch()
+        if monitor.connection.isConnected || monitor.connection == .connecting || monitor.connection == .discovering || monitor.connection == .waiting {
+            if reading { monitor.resumeBandSearch() }
             return
         }
         let savedHost = UserDefaults.standard.bool(forKey: "nivvi.family.hosting")
