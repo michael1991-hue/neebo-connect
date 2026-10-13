@@ -3088,7 +3088,7 @@ struct ContentView: View {
         guard monitor.connection.isConnected else { return }
         let live = monitor.verifiedHeartRate != nil || monitor.pulseOximeterRate != nil || monitor.customHeartRateCandidate != nil
         guard live else { return }
-        monitor.pauseAutoConnect = false
+        monitor.resumeBandSearch()
         family.shareConnectedPhone()
     }
     private func alignBandSearch() {
