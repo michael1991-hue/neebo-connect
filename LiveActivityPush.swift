@@ -14,6 +14,9 @@ enum LiveActivityPush {
     private static var watchGeneration = 0
     private static var localOwner = false
     private static var familyID = ""
+    private static var pendingBody: [String: Any]?
+    private static var flushItem: DispatchWorkItem?
+    private static var flushTask: UIBackgroundTaskIdentifier = .invalid
 
     static var secret: String {
         if let saved = UserDefaults.standard.string(forKey: secretKey), saved.count >= 16 { return saved }
@@ -62,26 +65,18 @@ enum LiveActivityPush {
     }
 
     static func publish(title: String, heartRate: String, oxygen: String, connection: String, measuredAt: Date, session: String, sleep: String = "") {
-        let now = Date()
-        let changed = heartRate != lastSentHeart || oxygen != lastSentOxygen
-        let elapsed = now.timeIntervalSince(lastPublish)
-        // A push every second makes Apple drop them, so the watching lock
-        // screen then sits for minutes even though this phone is live.
-        if changed {
-            if elapsed < 4 { return }
-        } else if elapsed < 8 {
-            return
-        }
-        lastPublish = now
-        lastSentHeart = heartRate
-        lastSentOxygen = oxygen
+        let beats = readingNumber(heartRate)
+        let previous = readingNumber(lastSentHeart)
+        let moved = beats != nil && (previous == nil || abs(beats! - previous!) >= 3)
+        let oxygenMoved = !lastSentOxygen.isEmpty && oxygen != lastSentOxygen
+        let urgent = lastSentHeart.isEmpty || moved || oxygenMoved
+        let wait: TimeInterval = urgent ? 4 : 25
+        let elapsed = Date().timeIntervalSince(lastPublish)
         uploadSeq += 1
-        let seq = uploadSeq
-        let measured = measuredAt.timeIntervalSince1970
         let body: [String: Any] = [
             "secret": secret,
-            "seq": seq,
-            "measured_at": measured,
+            "seq": uploadSeq,
+            "measured_at": measuredAt.timeIntervalSince1970,
             "heart_rate": heartRate,
             "oxygen": oxygen,
             "connection": connection,
@@ -90,9 +85,48 @@ enum LiveActivityPush {
             "sleep": sleep,
             "family": familyID
         ]
-        // Start the request before this Bluetooth wake ends. A queued task
-        // was still waiting when the locked phone went back to sleep, so the
-        // lock screen kept the old number.
+        if elapsed < wait {
+            pendingBody = body
+            scheduleFlush(after: wait - elapsed)
+            return
+        }
+        pendingBody = nil
+        flushItem?.cancel()
+        send(body)
+    }
+
+    private static func readingNumber(_ text: String) -> Int? {
+        Int(text.split(separator: " ").first.map(String.init) ?? "")
+    }
+
+    /// The newest reading still goes out after the quiet gap, even if this Bluetooth wake ends.
+    private static func scheduleFlush(after: TimeInterval) {
+        flushItem?.cancel()
+        if flushTask == .invalid {
+            flushTask = UIApplication.shared.beginBackgroundTask(withName: "nivvi.lock-flush") {
+                if flushTask != .invalid {
+                    UIApplication.shared.endBackgroundTask(flushTask)
+                    flushTask = .invalid
+                }
+            }
+        }
+        let work = DispatchWorkItem {
+            guard let body = pendingBody else { return }
+            pendingBody = nil
+            send(body)
+            if flushTask != .invalid {
+                UIApplication.shared.endBackgroundTask(flushTask)
+                flushTask = .invalid
+            }
+        }
+        flushItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0.2, after), execute: work)
+    }
+
+    private static func send(_ body: [String: Any], retry: Bool = true) {
+        lastPublish = Date()
+        lastSentHeart = body["heart_rate"] as? String ?? ""
+        lastSentOxygen = body["oxygen"] as? String ?? ""
         let task = UIApplication.shared.beginBackgroundTask(withName: "nivvi.lock-push") {}
         guard let root = Bundle.main.object(forInfoDictionaryKey: "NivviFamilyServerURL") as? String,
               let url = URL(string: root)?.appendingPathComponent("live-activity/publish") else {
@@ -104,10 +138,13 @@ enum LiveActivityPush {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 8
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        URLSession.shared.dataTask(with: request) { data, response, _ in
+        URLSession.shared.dataTask(with: request) { _, response, _ in
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-            if status == 409 {
+            if status == 409, retry {
                 uploadSeq += 1000
+                var again = body
+                again["seq"] = uploadSeq
+                send(again, retry: false)
             }
             if task != .invalid { UIApplication.shared.endBackgroundTask(task) }
         }.resume()
