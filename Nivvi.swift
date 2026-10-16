@@ -2444,6 +2444,38 @@ struct NurserySetupView: View {
     }
 }
 
+struct ActivityTimeCard: View {
+    let spans: [SleepClock.Span]
+    let caption: Color
+    let ink: Color
+    let lavender: Color
+    private var awake: TimeInterval { spans.filter { $0.kind == .awake }.reduce(0) { $0 + $1.length } }
+    private var still: TimeInterval { spans.filter { $0.kind == .settling }.reduce(0) { $0 + $1.length } }
+    private var asleep: TimeInterval { spans.filter { $0.kind == .asleep }.reduce(0) { $0 + $1.length } }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            activityRow(Color(red: 0.86, green: 0.72, blue: 0.45), "Active", awake)
+            activityRow(Color(red: 0.45, green: 0.62, blue: 0.52), "Still", still)
+            activityRow(lavender, "Asleep", asleep)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.primary.opacity(0.05))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+    private func activityRow(_ color: Color, _ title: String, _ interval: TimeInterval) -> some View {
+        HStack {
+            Circle().fill(color).frame(width: 8, height: 8)
+            Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(ink)
+            Spacer()
+            Text(interval < 60 ? "0m" : SleepClock.clock(interval))
+                .font(.subheadline.weight(.bold))
+                .monospacedDigit()
+                .foregroundStyle(caption)
+        }
+    }
+}
+
 struct CaptureRequest: Identifiable {
     let id = UUID()
     let peripheral: CBPeripheral
@@ -2466,6 +2498,7 @@ struct HistoryChartsView: View {
     @State private var span: TimeInterval = 3600
     @State private var windowEnd: Date?
     @State private var pinchStart: TimeInterval?
+    @State private var showActivityCard = false
     private var domain: ClosedRange<Date> {
         let window = HistoryChartPolicy.window(day: day, span: span, endingAt: windowEnd ?? entries.last?.time ?? day)
         return HistoryChartPolicy.xScale(from: window.lowerBound, to: window.upperBound)
@@ -2679,8 +2712,19 @@ struct HistoryChartsView: View {
                 activityKey(Color(red: 0.86, green: 0.72, blue: 0.45), "Active")
                 activityKey(Color(red: 0.45, green: 0.62, blue: 0.52), "Still")
                 activityKey(lavender, "Asleep")
+                Spacer()
+                Image(systemName: showActivityCard ? "chevron.up" : "chevron.down")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(caption)
+            }
+            if showActivityCard {
+                ActivityTimeCard(spans: spans, caption: caption, ink: ink, lavender: lavender)
             }
         }
+        .contentShape(Rectangle())
+        .onTapGesture { withAnimation(.easeInOut(duration: 0.2)) { showActivityCard.toggle() } }
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel("Active, still and asleep times")
     }
     private func activityColor(_ kind: SleepClock.Span.Kind) -> Color {
         switch kind {
@@ -2899,6 +2943,7 @@ struct ContentView: View {
     @State private var manualMode: NivviMode?
     @State private var showSleepLog = false
     @State private var showSleepDetail = false
+    @State private var showActivityCard = false
     @FocusState private var editingLimit: Bool
     private let coral = Color(red: 1, green: 0.56, blue: 0.53)
     private let lavender = Color(red: 0.85, green: 0.82, blue: 1.0)
@@ -4073,8 +4118,19 @@ struct ContentView: View {
                 stripKey(Color(red: 0.86, green: 0.72, blue: 0.45), "Active")
                 stripKey(Color(red: 0.45, green: 0.62, blue: 0.52), "Still")
                 stripKey(lavender, "Asleep")
+                Spacer()
+                Image(systemName: showActivityCard ? "chevron.up" : "chevron.down")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(muted)
+            }
+            if showActivityCard {
+                ActivityTimeCard(spans: clipped, caption: muted, ink: ink, lavender: lavender)
             }
         }
+        .contentShape(Rectangle())
+        .onTapGesture { withAnimation(.easeInOut(duration: 0.2)) { showActivityCard.toggle() } }
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel("Active, still and asleep times")
     }
     private func laidPieces(_ spans: [SleepClock.Span], from start: Date, to end: Date) -> [(start: Date, end: Date, kind: SleepClock.Span.Kind?)] {
         var pieces: [(start: Date, end: Date, kind: SleepClock.Span.Kind?)] = []
