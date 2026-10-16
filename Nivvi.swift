@@ -2449,14 +2449,29 @@ struct ActivityTimeCard: View {
     let caption: Color
     let ink: Color
     let lavender: Color
-    private var awake: TimeInterval { spans.filter { $0.kind == .awake }.reduce(0) { $0 + $1.length } }
-    private var still: TimeInterval { spans.filter { $0.kind == .settling }.reduce(0) { $0 + $1.length } }
+    private var awake: TimeInterval { spans.filter { $0.kind != .asleep }.reduce(0) { $0 + $1.length } }
     private var asleep: TimeInterval { spans.filter { $0.kind == .asleep }.reduce(0) { $0 + $1.length } }
+    private var naps: [SleepClock.Span] { spans.filter { $0.kind == .asleep } }
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             activityRow(Color(red: 0.86, green: 0.72, blue: 0.45), "Active", awake)
-            activityRow(Color(red: 0.45, green: 0.62, blue: 0.52), "Still", still)
             activityRow(lavender, "Asleep", asleep)
+            if naps.isEmpty {
+                Text("No sleep in this stretch").font(.caption).foregroundStyle(caption)
+            } else {
+                ForEach(Array(naps.enumerated()), id: \.offset) { _, nap in
+                    HStack {
+                        Text("\(nap.start.formatted(date: .omitted, time: .shortened)) – \(nap.end.formatted(date: .omitted, time: .shortened))")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(ink)
+                        Spacer()
+                        Text(nap.length < 60 ? "0m" : SleepClock.clock(nap.length))
+                            .font(.caption.weight(.bold))
+                            .monospacedDigit()
+                            .foregroundStyle(lavender)
+                    }
+                }
+            }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -2710,7 +2725,6 @@ struct HistoryChartsView: View {
             .frame(height: 16)
             HStack(spacing: 14) {
                 activityKey(Color(red: 0.86, green: 0.72, blue: 0.45), "Active")
-                activityKey(Color(red: 0.45, green: 0.62, blue: 0.52), "Still")
                 activityKey(lavender, "Asleep")
                 Spacer()
                 Image(systemName: showActivityCard ? "chevron.up" : "chevron.down")
@@ -2724,13 +2738,12 @@ struct HistoryChartsView: View {
         .contentShape(Rectangle())
         .onTapGesture { withAnimation(.easeInOut(duration: 0.2)) { showActivityCard.toggle() } }
         .accessibilityAddTraits(.isButton)
-        .accessibilityLabel("Active, still and asleep times")
+        .accessibilityLabel("Active and asleep times")
     }
     private func activityColor(_ kind: SleepClock.Span.Kind) -> Color {
         switch kind {
         case .asleep: return lavender
-        case .settling: return Color(red: 0.45, green: 0.62, blue: 0.52)
-        case .awake: return Color(red: 0.86, green: 0.72, blue: 0.45)
+        case .settling, .awake: return Color(red: 0.86, green: 0.72, blue: 0.45)
         }
     }
     private func activityKey(_ color: Color, _ title: String) -> some View {
@@ -4116,7 +4129,6 @@ struct ContentView: View {
             .frame(height: 14)
             HStack(spacing: 14) {
                 stripKey(Color(red: 0.86, green: 0.72, blue: 0.45), "Active")
-                stripKey(Color(red: 0.45, green: 0.62, blue: 0.52), "Still")
                 stripKey(lavender, "Asleep")
                 Spacer()
                 Image(systemName: showActivityCard ? "chevron.up" : "chevron.down")
@@ -4130,7 +4142,7 @@ struct ContentView: View {
         .contentShape(Rectangle())
         .onTapGesture { withAnimation(.easeInOut(duration: 0.2)) { showActivityCard.toggle() } }
         .accessibilityAddTraits(.isButton)
-        .accessibilityLabel("Active, still and asleep times")
+        .accessibilityLabel("Active and asleep times")
     }
     private func laidPieces(_ spans: [SleepClock.Span], from start: Date, to end: Date) -> [(start: Date, end: Date, kind: SleepClock.Span.Kind?)] {
         var pieces: [(start: Date, end: Date, kind: SleepClock.Span.Kind?)] = []
@@ -4146,8 +4158,7 @@ struct ContentView: View {
     private func stripColor(_ kind: SleepClock.Span.Kind) -> Color {
         switch kind {
         case .asleep: return lavender
-        case .settling: return Color(red: 0.45, green: 0.62, blue: 0.52)
-        case .awake: return Color(red: 0.86, green: 0.72, blue: 0.45)
+        case .settling, .awake: return Color(red: 0.86, green: 0.72, blue: 0.45)
         }
     }
     private func stripKey(_ color: Color, _ title: String) -> some View {
