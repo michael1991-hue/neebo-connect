@@ -871,8 +871,9 @@ struct BackgroundDataReminderPolicy {
     mutating func reset() { self = Self() }
 }
 
-/// Stillness from the band. Sleep starts after 10 minutes still. A twitch does not end it,
-/// and movement while the pulse stays near the sleeping rate does not end it either.
+/// Stillness from the band is not enough on its own when a pulse is coming in.
+/// Sleep starts when the pulse drops below the recent rate and stays there.
+/// With no pulse to compare, it still starts after 10 minutes still.
 struct SleepNap: Codable, Equatable, Identifiable {
     var id: UUID
     var started: Date
@@ -892,9 +893,12 @@ struct SleepClock: Equatable {
     var docked = false
     var offWrist = false
     var sleepRates: [Int] = []
+    var recentRates: [(Date, Int)] = []
     var learnedPulse: Int?
     var restlessSince: Date?
     var raisedSince: Date?
+    var dropSince: Date?
+    var startAdjusted = false
 
     static let settle: TimeInterval = 600
     static let wake: TimeInterval = 60
@@ -917,6 +921,7 @@ struct SleepClock: Equatable {
         lastSample = time
         docked = false
         offWrist = false
+        noteRecent(heartRate, at: time)
         if still {
             movingSince = nil
             restlessSince = nil
@@ -927,10 +932,31 @@ struct SleepClock: Equatable {
                     asleep = false
                     stillSince = nil
                     raisedSince = nil
+                    dropSince = nil
+                    startAdjusted = false
                 }
                 return
             }
             raisedSince = nil
+            if let drop = sustainedDrop(at: time, heartRate: heartRate) {
+                dropSince = dropSince ?? drop
+                if let held = dropSince, time.timeIntervalSince(held) >= 180 {
+                    sleepRates = recentRates.filter { $0.0 >= held }.map(\.1)
+                    learnedPulse = median(sleepRates)
+                    stillSince = held
+                    if asleep {
+                        if let index = naps.indices.last, naps[index].ended == nil, held > naps[index].started {
+                            naps[index].started = held
+                        }
+                    } else {
+                        asleep = true
+                        begin(at: held)
+                    }
+                    startAdjusted = true
+                }
+                return
+            }
+            dropSince = nil
             noteSleepRate(heartRate)
             if stillSince == nil {
                 if let open = naps.last, open.ended == nil {
@@ -941,6 +967,7 @@ struct SleepClock: Equatable {
                 }
             }
             if !asleep, let start = stillSince, time.timeIntervalSince(start) >= Self.settle {
+                if pulseStillHigh(heartRate, at: time) { return }
                 asleep = true
                 begin(at: start)
             }
@@ -970,7 +997,48 @@ struct SleepClock: Equatable {
             asleep = false
             stillSince = nil
             movingSince = time
+            dropSince = nil
+            startAdjusted = false
         }
+    }
+
+    private mutating func noteRecent(_ heartRate: Int?, at time: Date) {
+        guard let heartRate, (30...240).contains(heartRate) else { return }
+        recentRates.append((time, heartRate))
+        recentRates.removeAll { time.timeIntervalSince($0.0) > 45 * 60 }
+    }
+
+    private func median(_ values: [Int]) -> Int? {
+        guard !values.isEmpty else { return nil }
+        let sorted = values.sorted()
+        return sorted[sorted.count / 2]
+    }
+
+    /// The rate she was at before this sample, ignoring the last few minutes.
+    private func earlierLevel(at time: Date) -> Int? {
+        let older = recentRates.filter {
+            let age = time.timeIntervalSince($0.0)
+            return age >= 3 * 60 && age <= 30 * 60
+        }.map(\.1)
+        guard older.count >= 4 else { return nil }
+        return median(older)
+    }
+
+    /// True when the pulse is still at the rate from before, so stillness alone is not sleep.
+    private func pulseStillHigh(_ heartRate: Int?, at time: Date) -> Bool {
+        guard let heartRate, let earlier = earlierLevel(at: time) else { return false }
+        return heartRate > earlier - 8
+    }
+
+    /// The start of the current low run, once the latest reading is at least 8 bpm under the earlier rate.
+    private func sustainedDrop(at time: Date, heartRate: Int?) -> Date? {
+        guard let heartRate, let earlier = earlierLevel(at: time), heartRate <= earlier - 8 else { return nil }
+        let cutoff = earlier - 8
+        var began: Date?
+        for sample in recentRates.sorted(by: { $0.0 < $1.0 }).reversed() {
+            if sample.1 <= cutoff { began = sample.0 } else { break }
+        }
+        return began
     }
 
     private mutating func noteSleepRate(_ heartRate: Int?) {
@@ -1010,6 +1078,8 @@ struct SleepClock: Equatable {
         movingSince = nil
         restlessSince = nil
         raisedSince = nil
+        dropSince = nil
+        startAdjusted = false
         sleepRates.removeAll()
         asleep = false
         docked = true
@@ -1024,6 +1094,8 @@ struct SleepClock: Equatable {
         movingSince = nil
         restlessSince = nil
         raisedSince = nil
+        dropSince = nil
+        startAdjusted = false
         asleep = false
         docked = false
         offWrist = true
@@ -1048,6 +1120,8 @@ struct SleepClock: Equatable {
         movingSince = time
         restlessSince = nil
         raisedSince = nil
+        dropSince = nil
+        startAdjusted = false
         asleep = false
     }
 
@@ -1061,7 +1135,7 @@ struct SleepClock: Equatable {
             return ("ASLEEP", Self.clock(time.timeIntervalSince(start)), "Still since \(start.formatted(date: .omitted, time: .shortened))")
         }
         if stillSince != nil {
-            return ("SETTLING", "—", "Still. Sleep time starts after 10 minutes")
+            return ("SETTLING", "—", "Still. Asleep starts when the pulse drops and stays down")
         }
         return ("AWAKE", "—", "Moving")
     }
