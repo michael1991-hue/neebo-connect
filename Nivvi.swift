@@ -590,6 +590,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             skin: skinCelsius,
             sleep: sleepLine.isEmpty ? nil : sleepLine,
             alerts: heartAlertsToShare(),
+            bars: sleep.sharedBars(at: now),
             recovery_chime: recoverySoundEnabled
         )
         if Thread.isMainThread {
@@ -2492,6 +2493,7 @@ struct HistoryChartsView: View {
             }
             Text(span <= 0 ? "Selected date" : "\(domain.lowerBound.formatted(date: .omitted, time: .shortened)) – \(domain.upperBound.formatted(date: .omitted, time: .shortened))")
                 .font(.caption.weight(.semibold)).foregroundStyle(caption).monospacedDigit()
+            activityBar
             metricChart(activeMetric, tint: activeTint)
                 .frame(minHeight: 360)
         }
@@ -2570,7 +2572,6 @@ struct HistoryChartsView: View {
             }
             chartBody(points: points, metric: metric, tint: tint, yDomain: yDomain, visible: visible)
                 .frame(minHeight: 300)
-            activityBar
             if let stats {
                 HStack(spacing: 8) {
                     summaryColumn("Min", stats.min, zoneColor(stats.min, plain: teal), decimals: metric == .skin) { focus(stats.min, in: visible, metric: metric) }
@@ -2652,31 +2653,32 @@ struct HistoryChartsView: View {
             let end = min(span.end, domain.upperBound)
             guard end > start else { return nil }
             return SleepClock.Span(start: start, end: end, kind: span.kind)
+        }.sorted { $0.start < $1.start }
+        var pieces: [(Date, Date, SleepClock.Span.Kind?)] = []
+        var cursor = domain.lowerBound
+        for span in spans {
+            if span.start > cursor { pieces.append((cursor, span.start, nil)) }
+            pieces.append((span.start, span.end, span.kind))
+            cursor = max(cursor, span.end)
         }
-        let total = domain.upperBound.timeIntervalSince(domain.lowerBound)
-        return Group {
-            if !spans.isEmpty, total > 0 {
-                VStack(alignment: .leading, spacing: 6) {
-                    GeometryReader { geo in
-                        ZStack(alignment: .leading) {
-                            Capsule().fill(Color.primary.opacity(0.06))
-                            ForEach(Array(spans.enumerated()), id: \.offset) { _, span in
-                                let x = geo.size.width * span.start.timeIntervalSince(domain.lowerBound) / total
-                                let width = max(3, geo.size.width * span.length / total)
-                                Capsule()
-                                    .fill(activityColor(span.kind))
-                                    .frame(width: width, height: 14)
-                                    .position(x: x + width / 2, y: 7)
-                            }
-                        }
-                    }
-                    .frame(height: 14)
-                    HStack(spacing: 14) {
-                        activityKey(Color(red: 0.86, green: 0.72, blue: 0.45), "Active")
-                        activityKey(Color(red: 0.45, green: 0.62, blue: 0.52), "Still")
-                        activityKey(lavender, "Asleep")
+        if cursor < domain.upperBound { pieces.append((cursor, domain.upperBound, nil)) }
+        let total = max(1, domain.upperBound.timeIntervalSince(domain.lowerBound))
+        return VStack(alignment: .leading, spacing: 6) {
+            GeometryReader { geo in
+                HStack(spacing: 0) {
+                    ForEach(Array(pieces.enumerated()), id: \.offset) { _, piece in
+                        Rectangle()
+                            .fill(piece.2.map(activityColor) ?? Color.primary.opacity(0.08))
+                            .frame(width: max(1, geo.size.width * piece.1.timeIntervalSince(piece.0) / total))
                     }
                 }
+                .clipShape(Capsule())
+            }
+            .frame(height: 16)
+            HStack(spacing: 14) {
+                activityKey(Color(red: 0.86, green: 0.72, blue: 0.45), "Active")
+                activityKey(Color(red: 0.45, green: 0.62, blue: 0.52), "Still")
+                activityKey(lavender, "Asleep")
             }
         }
     }
@@ -3014,6 +3016,20 @@ struct ContentView: View {
     }
     private var displayedHistory: [SavedMeasurement] {
         SavedMeasurement.uniquelyIdentified(monitor.history.sorted { $0.time < $1.time })
+    }
+    private var historyBars: [SleepClock.Span] {
+        let local = monitor.sleep.bars(on: monitor.selectedHistoryDay, at: Date())
+        if !local.isEmpty { return local }
+        let calendar = Calendar.current
+        let start = calendar.startOfDay(for: monitor.selectedHistoryDay)
+        let end = calendar.date(byAdding: .day, value: 1, to: start) ?? start
+        return (family.remote?.snapshot?.bars ?? []).compactMap { bar in
+            let begin = max(start, Date(timeIntervalSince1970: bar.s))
+            let stop = min(end, Date(timeIntervalSince1970: bar.e))
+            guard stop > begin else { return nil }
+            let kind: SleepClock.Span.Kind = bar.k == "asleep" ? .asleep : (bar.k == "still" ? .settling : .awake)
+            return SleepClock.Span(start: begin, end: stop, kind: kind)
+        }
     }
     private var displayName: String {
         if watchingFamily, let name = family.families.first(where: { $0.id == family.selected })?.child_name, !name.isEmpty {
@@ -4399,7 +4415,7 @@ struct ContentView: View {
                 }
             } else {
                 panel {
-                    HistoryChartsView(entries: displayedHistory, day: monitor.selectedHistoryDay, selected: $selectedHistoryReading, metric: $historyMetric, coral: coral, teal: accentMint, lavender: stamp, caption: muted, ink: ink, lowLimit: monitor.alarmSettings.lowEnabled ? monitor.alarmSettings.lowThreshold.map(Double.init) : nil, highLimit: monitor.alarmSettings.highEnabled ? monitor.alarmSettings.highThreshold.map(Double.init) : nil, fahrenheit: skinFahrenheit, activity: monitor.sleep.bars(on: monitor.selectedHistoryDay, at: Date()))
+                    HistoryChartsView(entries: displayedHistory, day: monitor.selectedHistoryDay, selected: $selectedHistoryReading, metric: $historyMetric, coral: coral, teal: accentMint, lavender: stamp, caption: muted, ink: ink, lowLimit: monitor.alarmSettings.lowEnabled ? monitor.alarmSettings.lowThreshold.map(Double.init) : nil, highLimit: monitor.alarmSettings.highEnabled ? monitor.alarmSettings.highThreshold.map(Double.init) : nil, fahrenheit: skinFahrenheit, activity: historyBars)
                         .id(Calendar.current.startOfDay(for: monitor.selectedHistoryDay))
                 }
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {

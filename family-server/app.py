@@ -361,6 +361,12 @@ class HistoryPoint(BaseModel):
     sk: float | None = None
 
 
+class ActivityBar(BaseModel):
+    s: float
+    e: float
+    k: str = Field(default="active", max_length=12)
+
+
 class Snapshot(BaseModel):
     # The capture time must come from the source device callback, never upload time.
     captured: float
@@ -385,6 +391,7 @@ class Snapshot(BaseModel):
     skin: float | None = None
     sleep: str = Field(default="", max_length=40)
     alerts: list[FamilyAlertPoint] = Field(default_factory=list, max_length=40)
+    bars: list[ActivityBar] = Field(default_factory=list, max_length=48)
     # Off keeps a real high/low return quiet. Omitted means on, so an older app still chimes.
     recovery_chime: bool = True
 
@@ -946,6 +953,8 @@ def merge_snapshot(old, body: Snapshot, received):
             point["o2"] = 99
     if not payload.get("history") and old.get("history"):
         payload["history"] = old["history"]
+    if not payload.get("bars") and old.get("bars"):
+        payload["bars"] = old["bars"]
     payload["server_received"] = received
     previous = int(old.get("seq") or 0)
     incoming = int(body.seq or 0)

@@ -1225,6 +1225,13 @@ struct SleepClock: Equatable {
         }
     }
 
+    func sharedBars(at time: Date) -> [FamilyBar] {
+        Array(bars(on: time, at: time).suffix(48)).map { span in
+            let kind = span.kind == .asleep ? "asleep" : (span.kind == .settling ? "still" : "active")
+            return FamilyBar(s: span.start.timeIntervalSince1970, e: span.end.timeIntervalSince1970, k: kind)
+        }
+    }
+
     private func clip(_ span: Span, from start: Date, to end: Date) -> Span? {
         let begin = max(start, span.start)
         let stop = min(end, span.end)
