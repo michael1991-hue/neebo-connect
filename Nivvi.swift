@@ -3018,10 +3018,14 @@ struct ContentView: View {
         SavedMeasurement.uniquelyIdentified(monitor.history.sorted { $0.time < $1.time })
     }
     private var historyBars: [SleepClock.Span] {
+        if watchingFamily { return remoteBars(on: monitor.selectedHistoryDay) }
         let local = monitor.sleep.bars(on: monitor.selectedHistoryDay, at: Date())
         if !local.isEmpty { return local }
+        return remoteBars(on: monitor.selectedHistoryDay)
+    }
+    private func remoteBars(on day: Date) -> [SleepClock.Span] {
         let calendar = Calendar.current
-        let start = calendar.startOfDay(for: monitor.selectedHistoryDay)
+        let start = calendar.startOfDay(for: day)
         let end = calendar.date(byAdding: .day, value: 1, to: start) ?? start
         return (family.remote?.snapshot?.bars ?? []).compactMap { bar in
             let begin = max(start, Date(timeIntervalSince1970: bar.s))
@@ -3952,6 +3956,62 @@ struct ContentView: View {
             }
         }
     }
+    private var sharedActivityStrip: some View {
+        let spans = watchingFamily ? remoteBars(on: Date()) : monitor.sleep.bars(on: Date(), at: Date())
+        let start = Calendar.current.startOfDay(for: Date())
+        let end = Date()
+        let total = max(1, end.timeIntervalSince(start))
+        let clipped = spans.map { span in
+            SleepClock.Span(start: max(span.start, start), end: min(span.end, end), kind: span.kind)
+        }.filter { $0.end > $0.start }
+        return VStack(alignment: .leading, spacing: 6) {
+            GeometryReader { geo in
+                HStack(spacing: 0) {
+                    if clipped.isEmpty {
+                        Rectangle().fill(Color.primary.opacity(0.08))
+                    } else {
+                        let pieces = laidPieces(clipped, from: start, to: end)
+                        ForEach(Array(pieces.enumerated()), id: \.offset) { _, piece in
+                            Rectangle()
+                                .fill(piece.kind.map(stripColor) ?? Color.primary.opacity(0.08))
+                                .frame(width: max(1, geo.size.width * piece.end.timeIntervalSince(piece.start) / total))
+                        }
+                    }
+                }
+                .clipShape(Capsule())
+            }
+            .frame(height: 14)
+            HStack(spacing: 14) {
+                stripKey(Color(red: 0.86, green: 0.72, blue: 0.45), "Active")
+                stripKey(Color(red: 0.45, green: 0.62, blue: 0.52), "Still")
+                stripKey(lavender, "Asleep")
+            }
+        }
+    }
+    private func laidPieces(_ spans: [SleepClock.Span], from start: Date, to end: Date) -> [(start: Date, end: Date, kind: SleepClock.Span.Kind?)] {
+        var pieces: [(start: Date, end: Date, kind: SleepClock.Span.Kind?)] = []
+        var cursor = start
+        for span in spans.sorted(by: { $0.start < $1.start }) {
+            if span.start > cursor { pieces.append((cursor, span.start, nil)) }
+            pieces.append((span.start, span.end, span.kind))
+            cursor = max(cursor, span.end)
+        }
+        if cursor < end { pieces.append((cursor, end, nil)) }
+        return pieces
+    }
+    private func stripColor(_ kind: SleepClock.Span.Kind) -> Color {
+        switch kind {
+        case .asleep: return lavender
+        case .settling: return Color(red: 0.45, green: 0.62, blue: 0.52)
+        case .awake: return Color(red: 0.86, green: 0.72, blue: 0.45)
+        }
+    }
+    private func stripKey(_ color: Color, _ title: String) -> some View {
+        HStack(spacing: 5) {
+            Circle().fill(color).frame(width: 8, height: 8)
+            Text(title).font(.caption).foregroundStyle(muted)
+        }
+    }
     private var sharedBandLine: String? {
         guard !monitor.connection.isConnected else { return nil }
         let line = family.remote?.snapshot?.sleep?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -4280,6 +4340,7 @@ struct ContentView: View {
                 fiveMinuteChart
                     .contentShape(Rectangle())
                     .onTapGesture { openHistory(.heartRate) }
+                sharedActivityStrip
                 if let note = latestNote {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Latest note").font(.caption.weight(.bold)).foregroundStyle(muted)

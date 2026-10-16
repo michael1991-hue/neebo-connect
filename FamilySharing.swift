@@ -959,6 +959,9 @@ final class FamilyRelay: ObservableObject {
         if snap.history.isEmpty, let existing = remote?.snapshot?.history {
             merged.history = existing
         }
+        if snap.bars.isEmpty, let existing = remote?.snapshot?.bars, !existing.isEmpty {
+            merged.bars = existing
+        }
         remote = RemoteReading(
             fresh: FamilyLivePolicy.metricFresh(at: Date(), stamped: snap.heart_rate_at ?? snap.captured, hasValue: snap.heart_rate != nil),
             age: snap.heart_rate_at.map { Date().timeIntervalSince1970 - $0 },
