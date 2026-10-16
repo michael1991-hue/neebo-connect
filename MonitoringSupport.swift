@@ -884,6 +884,11 @@ struct SleepNap: Codable, Equatable, Identifiable {
     }
 }
 
+struct SleepRateSample: Equatable {
+    var time: Date
+    var bpm: Int
+}
+
 struct SleepClock: Equatable {
     var stillSince: Date?
     var movingSince: Date?
@@ -893,7 +898,7 @@ struct SleepClock: Equatable {
     var docked = false
     var offWrist = false
     var sleepRates: [Int] = []
-    var recentRates: [(Date, Int)] = []
+    var recentRates: [SleepRateSample] = []
     var learnedPulse: Int?
     var restlessSince: Date?
     var raisedSince: Date?
@@ -941,7 +946,7 @@ struct SleepClock: Equatable {
             if let drop = sustainedDrop(at: time, heartRate: heartRate) {
                 dropSince = dropSince ?? drop
                 if let held = dropSince, time.timeIntervalSince(held) >= 180 {
-                    sleepRates = recentRates.filter { $0.0 >= held }.map(\.1)
+                    sleepRates = recentRates.filter { $0.time >= held }.map(\.bpm)
                     learnedPulse = median(sleepRates)
                     stillSince = held
                     if asleep {
@@ -1004,8 +1009,8 @@ struct SleepClock: Equatable {
 
     private mutating func noteRecent(_ heartRate: Int?, at time: Date) {
         guard let heartRate, (30...240).contains(heartRate) else { return }
-        recentRates.append((time, heartRate))
-        recentRates.removeAll { time.timeIntervalSince($0.0) > 45 * 60 }
+        recentRates.append(SleepRateSample(time: time, bpm: heartRate))
+        recentRates.removeAll { time.timeIntervalSince($0.time) > 45 * 60 }
     }
 
     private func median(_ values: [Int]) -> Int? {
@@ -1017,9 +1022,9 @@ struct SleepClock: Equatable {
     /// The rate she was at before this sample, ignoring the last few minutes.
     private func earlierLevel(at time: Date) -> Int? {
         let older = recentRates.filter {
-            let age = time.timeIntervalSince($0.0)
+            let age = time.timeIntervalSince($0.time)
             return age >= 3 * 60 && age <= 30 * 60
-        }.map(\.1)
+        }.map(\.bpm)
         guard older.count >= 4 else { return nil }
         return median(older)
     }
@@ -1035,8 +1040,8 @@ struct SleepClock: Equatable {
         guard let heartRate, let earlier = earlierLevel(at: time), heartRate <= earlier - 8 else { return nil }
         let cutoff = earlier - 8
         var began: Date?
-        for sample in recentRates.sorted(by: { $0.0 < $1.0 }).reversed() {
-            if sample.1 <= cutoff { began = sample.0 } else { break }
+        for sample in recentRates.sorted(by: { $0.time < $1.time }).reversed() {
+            if sample.bpm <= cutoff { began = sample.time } else { break }
         }
         return began
     }
