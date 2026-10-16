@@ -4195,6 +4195,39 @@ struct ContentView: View {
         }
         .padding(.vertical, 4)
     }
+    private var watcherSleepHeader: some View {
+        let now = Date()
+        let remote = sharedBandLine
+        let nap = shownBars(on: now).last { $0.kind == .asleep && now.timeIntervalSince($0.end) < 3 * 60 }
+        let asleep = remote?.hasPrefix("Asleep") == true || (remote == nil && nap != nil)
+        let title = asleep ? "Asleep" : (remote ?? "Active")
+        let detail: String = {
+            if let remote, remote.hasPrefix("Asleep") {
+                return remote.replacingOccurrences(of: "Asleep · ", with: "")
+            }
+            if let nap { return SleepClock.clock(now.timeIntervalSince(nap.start)) }
+            return asleep ? "" : "Moving"
+        }()
+        return HStack(alignment: .center, spacing: 12) {
+            Image(systemName: asleep ? "moon.fill" : (title == "Active" ? "figure.walk" : "pause.circle"))
+                .font(.title2)
+                .foregroundStyle(asleep ? lavender : accentMint)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(ink)
+                if !detail.isEmpty, detail != title {
+                    Text(detail)
+                        .font(.subheadline.weight(.semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(asleep ? lavender : muted)
+                }
+            }
+            Spacer(minLength: 8)
+            if asleep { sleepZzz(color: lavender) }
+        }
+        .padding(.vertical, 4)
+    }
     private var phoneSleepHeader: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
             let line = monitor.sleep.testLine(at: context.date)
@@ -4461,7 +4494,7 @@ struct ContentView: View {
                     }
                 } else {
                 if monitor.connection.isConnected { phoneSleepHeader }
-                else if let line = sharedBandLine { sharedBandHeader(line) }
+                else { watcherSleepHeader }
                 Text("Heart rate").font(.caption.weight(.bold)).tracking(1.1).foregroundStyle(muted)
                 HStack(alignment: .center, spacing: 12) {
                     PulsingHeart(
