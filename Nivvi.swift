@@ -3018,13 +3018,24 @@ struct ContentView: View {
         SavedMeasurement.uniquelyIdentified(monitor.history.sorted { $0.time < $1.time })
     }
     private var historyBars: [SleepClock.Span] {
-        let day = monitor.selectedHistoryDay
+        shownBars(on: monitor.selectedHistoryDay)
+    }
+    private func shownBars(on day: Date) -> [SleepClock.Span] {
+        let merged: [SleepClock.Span]
         if watchingFamily {
-            return mergedBars(remoteBars(on: day), inferredBars(on: day))
+            merged = mergedBars(remoteBars(on: day), inferredBars(on: day))
+        } else {
+            let local = monitor.sleep.bars(on: day, at: Date())
+            merged = local.isEmpty ? inferredBars(on: day) : local
         }
-        let local = monitor.sleep.bars(on: day, at: Date())
-        if !local.isEmpty { return local }
-        return inferredBars(on: day)
+        return calmBars(merged)
+    }
+    /// A short dip is not sleep. Only a low stretch that lasts is drawn as asleep.
+    private func calmBars(_ spans: [SleepClock.Span]) -> [SleepClock.Span] {
+        spans.map { span in
+            guard span.kind == .asleep, span.length < 10 * 60 else { return span }
+            return SleepClock.Span(start: span.start, end: span.end, kind: .awake)
+        }
     }
     /// The watching phone already has the pulse line. Colour the bar from that when the monitoring phone's bar has not arrived.
     private func inferredBars(on day: Date) -> [SleepClock.Span] {
@@ -3045,7 +3056,7 @@ struct ContentView: View {
             }.map(\.1)
             guard earlier.count >= 4 else { return false }
             let sorted = earlier.sorted()
-            return sample.1 <= sorted[sorted.count / 2] - 8
+            return sample.1 <= sorted[sorted.count / 2] - 15
         }
         var asleep = Array(repeating: false, count: samples.count)
         var index = 0
@@ -3055,7 +3066,7 @@ struct ContentView: View {
             while end + 1 < samples.count, low[end + 1], samples[end + 1].0.timeIntervalSince(samples[end].0) <= 3 * 60 {
                 end += 1
             }
-            if samples[end].0.timeIntervalSince(samples[index].0) >= 3 * 60 {
+            if samples[end].0.timeIntervalSince(samples[index].0) >= 10 * 60 {
                 for mark in index...end { asleep[mark] = true }
             }
             index = end + 1
@@ -4034,7 +4045,7 @@ struct ContentView: View {
         }
     }
     private var sharedActivityStrip: some View {
-        let spans = watchingFamily ? mergedBars(remoteBars(on: Date()), inferredBars(on: Date())) : monitor.sleep.bars(on: Date(), at: Date())
+        let spans = watchingFamily ? shownBars(on: Date()) : monitor.sleep.bars(on: Date(), at: Date())
         let start = Calendar.current.startOfDay(for: Date())
         let end = Date()
         let total = max(1, end.timeIntervalSince(start))
