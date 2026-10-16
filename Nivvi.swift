@@ -379,6 +379,9 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             if oldValue.naps != sleep.naps, let data = try? JSONEncoder().encode(sleep.naps) {
                 UserDefaults.standard.set(data, forKey: "nivvi.sleep.log")
             }
+            if oldValue.activity != sleep.activity, let data = try? JSONEncoder().encode(sleep.activity) {
+                UserDefaults.standard.set(data, forKey: "nivvi.sleep.activity")
+            }
             if oldValue.learnedPulse != sleep.learnedPulse, let learned = sleep.learnedPulse {
                 UserDefaults.standard.set(learned, forKey: "nivvi.sleep.pulse")
             }
@@ -1008,6 +1011,11 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
             clock.naps = saved
             if let learned = UserDefaults.standard.object(forKey: "nivvi.sleep.pulse") as? Int {
                 clock.learnedPulse = learned
+            }
+            if let data = UserDefaults.standard.data(forKey: "nivvi.sleep.activity"), let savedActivity = try? JSONDecoder().decode([ActivitySpan].self, from: data) {
+                clock.activity = savedActivity
+            } else {
+                clock.activity = saved.map { ActivitySpan(id: $0.id, started: $0.started, ended: $0.ended, kind: "asleep") }
             }
             sleep = clock
         } else if let learned = UserDefaults.standard.object(forKey: "nivvi.sleep.pulse") as? Int {
@@ -2453,6 +2461,7 @@ struct HistoryChartsView: View {
     var lowLimit: Double?
     var highLimit: Double?
     var fahrenheit = false
+    var activity: [SleepClock.Span] = []
     @State private var span: TimeInterval = 3600
     @State private var windowEnd: Date?
     @State private var pinchStart: TimeInterval?
@@ -2561,6 +2570,7 @@ struct HistoryChartsView: View {
             }
             chartBody(points: points, metric: metric, tint: tint, yDomain: yDomain, visible: visible)
                 .frame(minHeight: 300)
+            activityBar
             if let stats {
                 HStack(spacing: 8) {
                     summaryColumn("Min", stats.min, zoneColor(stats.min, plain: teal), decimals: metric == .skin) { focus(stats.min, in: visible, metric: metric) }
@@ -2635,6 +2645,53 @@ struct HistoryChartsView: View {
         .contentShape(RoundedRectangle(cornerRadius: 12))
         .onTapGesture(perform: choose)
         .accessibilityAddTraits(.isButton)
+    }
+    private var activityBar: some View {
+        let spans = activity.compactMap { span -> SleepClock.Span? in
+            let start = max(span.start, domain.lowerBound)
+            let end = min(span.end, domain.upperBound)
+            guard end > start else { return nil }
+            return SleepClock.Span(start: start, end: end, kind: span.kind)
+        }
+        let total = domain.upperBound.timeIntervalSince(domain.lowerBound)
+        return Group {
+            if !spans.isEmpty, total > 0 {
+                VStack(alignment: .leading, spacing: 6) {
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(Color.primary.opacity(0.06))
+                            ForEach(Array(spans.enumerated()), id: \.offset) { _, span in
+                                let x = geo.size.width * span.start.timeIntervalSince(domain.lowerBound) / total
+                                let width = max(3, geo.size.width * span.length / total)
+                                Capsule()
+                                    .fill(activityColor(span.kind))
+                                    .frame(width: width, height: 14)
+                                    .position(x: x + width / 2, y: 7)
+                            }
+                        }
+                    }
+                    .frame(height: 14)
+                    HStack(spacing: 14) {
+                        activityKey(Color(red: 0.86, green: 0.72, blue: 0.45), "Active")
+                        activityKey(Color(red: 0.45, green: 0.62, blue: 0.52), "Still")
+                        activityKey(lavender, "Asleep")
+                    }
+                }
+            }
+        }
+    }
+    private func activityColor(_ kind: SleepClock.Span.Kind) -> Color {
+        switch kind {
+        case .asleep: return lavender
+        case .settling: return Color(red: 0.45, green: 0.62, blue: 0.52)
+        case .awake: return Color(red: 0.86, green: 0.72, blue: 0.45)
+        }
+    }
+    private func activityKey(_ color: Color, _ title: String) -> some View {
+        HStack(spacing: 5) {
+            Circle().fill(color).frame(width: 8, height: 8)
+            Text(title).font(.caption).foregroundStyle(caption)
+        }
     }
     private func heartScale(_ domain: ClosedRange<Double>, metric: HistoryMetric) -> ClosedRange<Double> {
         guard metric == .heartRate else { return domain }
@@ -3989,7 +4046,7 @@ struct ContentView: View {
                                         .foregroundStyle(tone)
                                 }
                             } else if stage == 1 {
-                                Text("Still. Sleep starts after 10 minutes.")
+                                Text("Still. Asleep starts when the pulse drops.")
                                     .font(.caption)
                                     .foregroundStyle(muted)
                                     .multilineTextAlignment(.trailing)
@@ -4342,7 +4399,7 @@ struct ContentView: View {
                 }
             } else {
                 panel {
-                    HistoryChartsView(entries: displayedHistory, day: monitor.selectedHistoryDay, selected: $selectedHistoryReading, metric: $historyMetric, coral: coral, teal: accentMint, lavender: stamp, caption: muted, ink: ink, lowLimit: monitor.alarmSettings.lowEnabled ? monitor.alarmSettings.lowThreshold.map(Double.init) : nil, highLimit: monitor.alarmSettings.highEnabled ? monitor.alarmSettings.highThreshold.map(Double.init) : nil, fahrenheit: skinFahrenheit)
+                    HistoryChartsView(entries: displayedHistory, day: monitor.selectedHistoryDay, selected: $selectedHistoryReading, metric: $historyMetric, coral: coral, teal: accentMint, lavender: stamp, caption: muted, ink: ink, lowLimit: monitor.alarmSettings.lowEnabled ? monitor.alarmSettings.lowThreshold.map(Double.init) : nil, highLimit: monitor.alarmSettings.highEnabled ? monitor.alarmSettings.highThreshold.map(Double.init) : nil, fahrenheit: skinFahrenheit, activity: monitor.sleep.bars(on: monitor.selectedHistoryDay, at: Date()))
                         .id(Calendar.current.startOfDay(for: monitor.selectedHistoryDay))
                 }
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {

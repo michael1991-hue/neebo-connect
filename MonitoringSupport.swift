@@ -884,6 +884,13 @@ struct SleepNap: Codable, Equatable, Identifiable {
     }
 }
 
+struct ActivitySpan: Codable, Equatable, Identifiable {
+    var id: UUID
+    var started: Date
+    var ended: Date?
+    var kind: String
+}
+
 struct SleepRateSample: Equatable {
     var time: Date
     var bpm: Int
@@ -904,6 +911,7 @@ struct SleepClock: Equatable {
     var raisedSince: Date?
     var dropSince: Date?
     var startAdjusted = false
+    var activity: [ActivitySpan] = []
 
     static let settle: TimeInterval = 600
     static let wake: TimeInterval = 60
@@ -912,6 +920,7 @@ struct SleepClock: Equatable {
     static let pulseMargin = 12
 
     mutating func observe(still: Bool, at time: Date, heartRate: Int? = nil) {
+        defer { capture(at: time) }
         if let last = lastSample, time.timeIntervalSince(last) > Self.fresh, !still {
             if asleep, let start = stillSince { finish(start: start, end: last) }
             stillSince = nil
@@ -1077,6 +1086,7 @@ struct SleepClock: Equatable {
 
     /// Charging is not sleep and not movement. Close an open nap where the dock started.
     mutating func pause(at time: Date) {
+        defer { capture(at: time) }
         if asleep, let start = stillSince { finish(start: start, end: time) }
         else if let open = naps.last, open.ended == nil { finish(start: open.started, end: time) }
         stillSince = nil
@@ -1093,6 +1103,7 @@ struct SleepClock: Equatable {
 
     /// The band reported it is off the wrist. Close any open sleep without calling it charging.
     mutating func removed(at time: Date) {
+        defer { capture(at: time) }
         if asleep, let start = stillSince { finish(start: start, end: time) }
         else if let open = naps.last, open.ended == nil { finish(start: open.started, end: time) }
         stillSince = nil
@@ -1110,6 +1121,7 @@ struct SleepClock: Equatable {
     /// 01 from the band is movement. One packet can be a twitch, so sleep
     /// stays until movement has held for the same minute as the other wake rule.
     mutating func markActive(at time: Date) {
+        defer { capture(at: time) }
         docked = false
         offWrist = false
         lastSample = time
@@ -1149,10 +1161,7 @@ struct SleepClock: Equatable {
         let shown = face(at: time)
         switch shown.title {
         case "ASLEEP": return ("Asleep", shown.duration)
-        case "SETTLING":
-            let waited = stillSince.map { Int(time.timeIntervalSince($0)) } ?? 0
-            let left = max(0, Int(Self.settle) - waited)
-            return ("Still", String(format: "%dm %02ds until asleep", left / 60, left % 60))
+        case "SETTLING": return ("Still", "Pulse has not dropped")
         case "AWAKE": return ("Active", "Moving")
         case "CHARGING": return ("Charging", "Not sleep")
         case "REMOVED": return ("Band off", "Not sleep")
@@ -1196,6 +1205,43 @@ struct SleepClock: Equatable {
         var end: Date
         var kind: Kind
         var length: TimeInterval { max(0, end.timeIntervalSince(start)) }
+    }
+
+    /// Active, still and asleep stretches for one day, clipped to the chart.
+    func bars(on day: Date, at time: Date) -> [Span] {
+        let calendar = Calendar.current
+        let start = calendar.startOfDay(for: day)
+        let end = calendar.date(byAdding: .day, value: 1, to: start) ?? start
+        let close = calendar.isDate(day, inSameDayAs: time) ? min(time, end) : end
+        if activity.isEmpty {
+            return timeline(at: close).compactMap { clip($0, from: start, to: close) }
+        }
+        return activity.compactMap { row in
+            let stop = min(close, row.ended ?? close)
+            let begin = max(start, row.started)
+            guard stop > begin else { return nil }
+            let kind: Span.Kind = row.kind == "asleep" ? .asleep : (row.kind == "still" ? .settling : .awake)
+            return clip(Span(start: begin, end: stop, kind: kind), from: start, to: close)
+        }
+    }
+
+    private func clip(_ span: Span, from start: Date, to end: Date) -> Span? {
+        let begin = max(start, span.start)
+        let stop = min(end, span.end)
+        guard stop > begin else { return nil }
+        return Span(start: begin, end: stop, kind: span.kind)
+    }
+
+    private mutating func capture(at time: Date) {
+        let kind: String? = docked || offWrist || lastSample == nil ? nil : (asleep ? "asleep" : (stillSince != nil ? "still" : "active"))
+        if let kind, let last = activity.last, last.kind == kind, last.ended == nil { return }
+        if let index = activity.indices.last, activity[index].ended == nil {
+            activity[index].ended = time
+        }
+        guard let kind else { return }
+        activity.append(ActivitySpan(id: UUID(), started: time, ended: nil, kind: kind))
+        let cutoff = time.addingTimeInterval(-14 * 86400)
+        activity.removeAll { $0.started < cutoff && $0.ended != nil }
     }
 
     func nightStart(at time: Date) -> Date {
