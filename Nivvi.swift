@@ -3018,10 +3018,87 @@ struct ContentView: View {
         SavedMeasurement.uniquelyIdentified(monitor.history.sorted { $0.time < $1.time })
     }
     private var historyBars: [SleepClock.Span] {
-        if watchingFamily { return remoteBars(on: monitor.selectedHistoryDay) }
-        let local = monitor.sleep.bars(on: monitor.selectedHistoryDay, at: Date())
+        let day = monitor.selectedHistoryDay
+        if watchingFamily {
+            return mergedBars(remoteBars(on: day), inferredBars(on: day))
+        }
+        let local = monitor.sleep.bars(on: day, at: Date())
         if !local.isEmpty { return local }
-        return remoteBars(on: monitor.selectedHistoryDay)
+        return inferredBars(on: day)
+    }
+    /// The watching phone already has the pulse line. Colour the bar from that when the monitoring phone's bar has not arrived.
+    private func inferredBars(on day: Date) -> [SleepClock.Span] {
+        let calendar = Calendar.current
+        let start = calendar.startOfDay(for: day)
+        guard let dayEnd = calendar.date(byAdding: .day, value: 1, to: start) else { return [] }
+        let samples = displayedHistory.compactMap { sample -> (Date, Int)? in
+            guard sample.time >= start, sample.time < dayEnd, let beats = sample.heartRateValue else { return nil }
+            let hr = Int(beats.rounded())
+            guard (30...240).contains(hr) else { return nil }
+            return (sample.time, hr)
+        }.sorted { $0.0 < $1.0 }
+        guard samples.count >= 6 else { return [] }
+        let low = samples.map { sample -> Bool in
+            let earlier = samples.filter {
+                let age = sample.0.timeIntervalSince($0.0)
+                return age >= 3 * 60 && age <= 30 * 60
+            }.map(\.1)
+            guard earlier.count >= 4 else { return false }
+            let sorted = earlier.sorted()
+            return sample.1 <= sorted[sorted.count / 2] - 8
+        }
+        var asleep = Array(repeating: false, count: samples.count)
+        var index = 0
+        while index < samples.count {
+            guard low[index] else { index += 1; continue }
+            var end = index
+            while end + 1 < samples.count, low[end + 1], samples[end + 1].0.timeIntervalSince(samples[end].0) <= 3 * 60 {
+                end += 1
+            }
+            if samples[end].0.timeIntervalSince(samples[index].0) >= 3 * 60 {
+                for mark in index...end { asleep[mark] = true }
+            }
+            index = end + 1
+        }
+        var spans: [SleepClock.Span] = []
+        var cursor = 0
+        while cursor < samples.count {
+            let kind: SleepClock.Span.Kind = asleep[cursor] ? .asleep : .awake
+            var end = cursor
+            while end + 1 < samples.count, asleep[end + 1] == asleep[cursor], samples[end + 1].0.timeIntervalSince(samples[end].0) <= 3 * 60 {
+                end += 1
+            }
+            let stop = end + 1 < samples.count ? samples[end + 1].0 : min(dayEnd, samples[end].0.addingTimeInterval(60))
+            if stop > samples[cursor].0 {
+                spans.append(SleepClock.Span(start: samples[cursor].0, end: stop, kind: kind))
+            }
+            cursor = end + 1
+        }
+        return spans
+    }
+    private func mergedBars(_ remote: [SleepClock.Span], _ inferred: [SleepClock.Span]) -> [SleepClock.Span] {
+        guard !remote.isEmpty else { return inferred }
+        guard !inferred.isEmpty else { return remote }
+        var kept: [SleepClock.Span] = []
+        for span in inferred {
+            var pieces = [span]
+            for cover in remote {
+                pieces = pieces.flatMap { cutBar($0, removing: cover) }
+            }
+            kept.append(contentsOf: pieces)
+        }
+        return (kept + remote).sorted { $0.start < $1.start }
+    }
+    private func cutBar(_ span: SleepClock.Span, removing cover: SleepClock.Span) -> [SleepClock.Span] {
+        if cover.end <= span.start || cover.start >= span.end { return [span] }
+        var parts: [SleepClock.Span] = []
+        if cover.start > span.start {
+            parts.append(SleepClock.Span(start: span.start, end: cover.start, kind: span.kind))
+        }
+        if cover.end < span.end {
+            parts.append(SleepClock.Span(start: cover.end, end: span.end, kind: span.kind))
+        }
+        return parts
     }
     private func remoteBars(on day: Date) -> [SleepClock.Span] {
         let calendar = Calendar.current
@@ -3957,7 +4034,7 @@ struct ContentView: View {
         }
     }
     private var sharedActivityStrip: some View {
-        let spans = watchingFamily ? remoteBars(on: Date()) : monitor.sleep.bars(on: Date(), at: Date())
+        let spans = watchingFamily ? mergedBars(remoteBars(on: Date()), inferredBars(on: Date())) : monitor.sleep.bars(on: Date(), at: Date())
         let start = Calendar.current.startOfDay(for: Date())
         let end = Date()
         let total = max(1, end.timeIntervalSince(start))
