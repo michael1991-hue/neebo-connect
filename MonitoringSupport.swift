@@ -1032,7 +1032,7 @@ struct SleepClock: Equatable {
     private func earlierLevel(at time: Date) -> Int? {
         let older = recentRates.filter {
             let age = time.timeIntervalSince($0.time)
-            return age >= 3 * 60 && age <= 30 * 60
+            return age >= 8 * 60 && age <= 45 * 60
         }.map(\.bpm)
         guard older.count >= 4 else { return nil }
         return median(older)

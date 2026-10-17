@@ -3088,10 +3088,12 @@ struct ContentView: View {
         }
         return calmBars(merged)
     }
-    /// A short dip is not sleep. Only a low stretch that lasts is drawn as asleep.
+    /// A finished dip under 10 minutes is not drawn as sleep. A sleep that is still going shows from 3 minutes.
     private func calmBars(_ spans: [SleepClock.Span]) -> [SleepClock.Span] {
-        spans.map { span in
-            guard span.kind == .asleep, span.length < 10 * 60 else { return span }
+        let now = Date()
+        return spans.map { span in
+            let ongoing = span.kind == .asleep && now.timeIntervalSince(span.end) < 3 * 60
+            guard span.kind == .asleep, span.length < 10 * 60, !ongoing else { return span }
             return SleepClock.Span(start: span.start, end: span.end, kind: .awake)
         }
     }
@@ -3110,11 +3112,11 @@ struct ContentView: View {
         let low = samples.map { sample -> Bool in
             let earlier = samples.filter {
                 let age = sample.0.timeIntervalSince($0.0)
-                return age >= 3 * 60 && age <= 30 * 60
+                return age >= 8 * 60 && age <= 45 * 60
             }.map(\.1)
             guard earlier.count >= 4 else { return false }
             let sorted = earlier.sorted()
-            return sample.1 <= sorted[sorted.count / 2] - 15
+            return sample.1 <= sorted[sorted.count / 2] - 8
         }
         var asleep = Array(repeating: false, count: samples.count)
         var index = 0
@@ -3124,7 +3126,7 @@ struct ContentView: View {
             while end + 1 < samples.count, low[end + 1], samples[end + 1].0.timeIntervalSince(samples[end].0) <= 3 * 60 {
                 end += 1
             }
-            if samples[end].0.timeIntervalSince(samples[index].0) >= 10 * 60 {
+            if samples[end].0.timeIntervalSince(samples[index].0) >= 3 * 60 {
                 for mark in index...end { asleep[mark] = true }
             }
             index = end + 1
@@ -4199,13 +4201,14 @@ struct ContentView: View {
         let now = Date()
         let remote = sharedBandLine
         let nap = shownBars(on: now).last { $0.kind == .asleep && now.timeIntervalSince($0.end) < 3 * 60 }
-        let asleep = remote?.hasPrefix("Asleep") == true || (remote == nil && nap != nil)
+        let asleep = remote?.hasPrefix("Asleep") == true || nap != nil
         let title = asleep ? "Asleep" : (remote ?? "Active")
         let detail: String = {
             if let remote, remote.hasPrefix("Asleep") {
                 return remote.replacingOccurrences(of: "Asleep · ", with: "")
             }
             if let nap { return SleepClock.clock(now.timeIntervalSince(nap.start)) }
+            if remote == "Still" { return "Pulse has not dropped" }
             return asleep ? "" : "Moving"
         }()
         return HStack(alignment: .center, spacing: 12) {
