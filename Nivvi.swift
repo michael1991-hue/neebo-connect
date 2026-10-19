@@ -1108,7 +1108,7 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
         let delay = ConnectionLossPolicy.notifyDelay(lastReading: lastReading, now: Date(), silence: wait)
         notify(title: "Nivvi connection lost", body: "The band has been away from the phone. Reconnecting automatically.", identifier: "nivvi-connection", delay: delay, sirenSound: false)
     }
-    private func cancelConnectionLossNotice() {
+    func cancelConnectionLossNotice() {
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["nivvi-connection"])
         UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["nivvi-connection"])
     }
