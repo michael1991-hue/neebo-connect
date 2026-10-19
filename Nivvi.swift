@@ -1103,8 +1103,10 @@ final class Monitor: NSObject, ObservableObject, CBCentralManagerDelegate, CBPer
     }
     private func scheduleConnectionLossNotice(lastReading: Date?) {
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["nivvi-connection"])
-        let delay = ConnectionLossPolicy.notifyDelay(lastReading: lastReading, now: Date())
-        notify(title: "Nivvi connection lost", body: "No live measurements. Reconnecting to the wearable automatically.", identifier: "nivvi-connection", delay: delay, sirenSound: false)
+        guard alarmSettings.outOfRangeEnabled else { return }
+        let wait = TimeInterval(min(300, max(30, alarmSettings.outOfRangeSeconds)))
+        let delay = ConnectionLossPolicy.notifyDelay(lastReading: lastReading, now: Date(), silence: wait)
+        notify(title: "Nivvi connection lost", body: "The band has been away from the phone. Reconnecting automatically.", identifier: "nivvi-connection", delay: delay, sirenSound: false)
     }
     private func cancelConnectionLossNotice() {
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["nivvi-connection"])
@@ -4963,6 +4965,16 @@ struct ContentView: View {
                     Stepper("No pulse for \(monitor.alarmSettings.noPulseSeconds) seconds", value: $monitor.alarmSettings.noPulseSeconds, in: 30...300, step: 30)
                 }
                 Text(monitor.alarmSettings.noPulseEnabled ? "Warns when no pulse arrives. Charging stays quiet." : "No-pulse warning is off.")
+                    .font(.caption).foregroundStyle(muted)
+                Toggle("Out of range alert", isOn: $monitor.alarmSettings.outOfRangeEnabled).tint(switchOn)
+                    .onChange(of: monitor.alarmSettings.outOfRangeEnabled) { enabled in
+                        if enabled { monitor.requestNotificationPermission() }
+                        else { monitor.cancelConnectionLossNotice() }
+                    }
+                if monitor.alarmSettings.outOfRangeEnabled {
+                    Stepper("Away for \(monitor.alarmSettings.outOfRangeSeconds) seconds", value: $monitor.alarmSettings.outOfRangeSeconds, in: 30...300, step: 30)
+                }
+                Text(monitor.alarmSettings.outOfRangeEnabled ? "Warns when the band leaves the phone. Coming back starts this timer again." : "Out-of-range warning is off.")
                     .font(.caption).foregroundStyle(muted)
                 if let message = monitor.alarmSettings.validationMessage { Text(message).font(.caption).foregroundStyle(coral) }
                 Text("It must stay past the limit for that long. A gap starts the timer again.").font(.caption).foregroundStyle(muted)

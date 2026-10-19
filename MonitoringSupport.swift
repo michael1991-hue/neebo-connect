@@ -61,7 +61,7 @@ struct HeartRateFreshness {
 enum ConnectionLossPolicy {
     static let silence: TimeInterval = 45
     static let minimumDelay: TimeInterval = 0.5
-    static func notifyDelay(lastReading: Date?, now: Date) -> TimeInterval {
+    static func notifyDelay(lastReading: Date?, now: Date, silence: TimeInterval = Self.silence) -> TimeInterval {
         let start = lastReading ?? now
         let elapsed = max(0, now.timeIntervalSince(start))
         return max(minimumDelay, silence - elapsed)
@@ -511,12 +511,15 @@ struct AlarmSettings: Codable, Equatable {
     var experimentalCustomEnabled = false
     var noPulseEnabled = true
     var noPulseSeconds = 90
-    enum CodingKeys: String, CodingKey { case highEnabled, lowEnabled, highThreshold, lowThreshold, durationSeconds, experimentalCustomEnabled, noPulseEnabled, noPulseSeconds }
-    init(highEnabled: Bool = false, lowEnabled: Bool = false, highThreshold: Int? = nil, lowThreshold: Int? = nil, durationSeconds: Int = 15, experimentalCustomEnabled: Bool = false, noPulseEnabled: Bool = true, noPulseSeconds: Int = 90) {
+    var outOfRangeEnabled = true
+    var outOfRangeSeconds = 120
+    enum CodingKeys: String, CodingKey { case highEnabled, lowEnabled, highThreshold, lowThreshold, durationSeconds, experimentalCustomEnabled, noPulseEnabled, noPulseSeconds, outOfRangeEnabled, outOfRangeSeconds }
+    init(highEnabled: Bool = false, lowEnabled: Bool = false, highThreshold: Int? = nil, lowThreshold: Int? = nil, durationSeconds: Int = 15, experimentalCustomEnabled: Bool = false, noPulseEnabled: Bool = true, noPulseSeconds: Int = 90, outOfRangeEnabled: Bool = true, outOfRangeSeconds: Int = 120) {
         self.highEnabled = highEnabled; self.lowEnabled = lowEnabled
         self.highThreshold = highThreshold; self.lowThreshold = lowThreshold
         self.durationSeconds = durationSeconds; self.experimentalCustomEnabled = experimentalCustomEnabled
         self.noPulseEnabled = noPulseEnabled; self.noPulseSeconds = noPulseSeconds
+        self.outOfRangeEnabled = outOfRangeEnabled; self.outOfRangeSeconds = outOfRangeSeconds
     }
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -528,6 +531,8 @@ struct AlarmSettings: Codable, Equatable {
         experimentalCustomEnabled = try values.decodeIfPresent(Bool.self, forKey: .experimentalCustomEnabled) ?? false
         noPulseEnabled = try values.decodeIfPresent(Bool.self, forKey: .noPulseEnabled) ?? true
         noPulseSeconds = try values.decodeIfPresent(Int.self, forKey: .noPulseSeconds) ?? 90
+        outOfRangeEnabled = try values.decodeIfPresent(Bool.self, forKey: .outOfRangeEnabled) ?? true
+        outOfRangeSeconds = try values.decodeIfPresent(Int.self, forKey: .outOfRangeSeconds) ?? 120
     }
     var validationMessage: String? {
         if highEnabled && !(1...299).contains(highThreshold ?? 0) { return "Enter your high limit before enabling high alerts." }
@@ -535,6 +540,7 @@ struct AlarmSettings: Codable, Equatable {
         if highEnabled && lowEnabled, let low = lowThreshold, let high = highThreshold, low >= high { return "The low limit must be below the high limit." }
         if !(5...120).contains(durationSeconds) { return "Choose a duration from 5 to 120 seconds." }
         if noPulseEnabled && !(30...300).contains(noPulseSeconds) { return "Choose a no-pulse wait from 30 to 300 seconds." }
+        if outOfRangeEnabled && !(30...300).contains(outOfRangeSeconds) { return "Choose an out-of-range wait from 30 to 300 seconds." }
         return nil
     }
 }
