@@ -1186,8 +1186,27 @@ def publish_activity(body: ActivityPublish, request: Request):
         "title": body.title,
         "sleep": body.sleep,
     }
-    queue_activity(body.secret, state, paced=False, family=body.family)
+    if activity_forward_due(body.secret, state, now):
+        queue_activity(body.secret, state, paced=False, family=body.family)
     return {"ok": True, "seq": body.seq}
+
+
+def activity_forward_due(secret, state, now):
+    """The phone may ask every couple of seconds. Apple stops delivering to watching phones if each one is forwarded."""
+    hr = reading_number(state.get("heartRate"))
+    ox = reading_number(state.get("oxygen"))
+    previous = ACTIVITY_GATE.get(f"{secret}:forward") or {}
+    previous_hr = previous.get("hr")
+    moved = hr is not None and (previous_hr is None or abs(hr - previous_hr) >= 2)
+    oxygen_moved = ox is not None and ox != previous.get("ox")
+    sleep = state.get("sleep") or ""
+    sleep_changed = sleep != (previous.get("sleep") or "")
+    wall = now - float(previous.get("at") or 0) if previous else 999
+    wait = 8 if moved or oxygen_moved or sleep_changed else 25
+    if previous and wall < wait:
+        return False
+    ACTIVITY_GATE[f"{secret}:forward"] = {"at": now, "hr": hr, "ox": ox, "sleep": sleep}
+    return True
 
 
 def activity_state(payload, secret):
