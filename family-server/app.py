@@ -1271,10 +1271,10 @@ def queue_activity(secret, state, paced=False, family=""):
 
     jobs = []
     if not paced:
-        jobs.append(([token for token, _ in rows], "10", 180))
+        jobs.append(([token for token, _ in rows], "10", 480))
     else:
         if watcher_due(gate, state, now):
-            jobs.append(([token for token, _ in rows], "10", 180))
+            jobs.append(([token for token, _ in rows], "10", 480))
     if TEST:
         for tokens, priority, _stale in jobs:
             for token in tokens:
