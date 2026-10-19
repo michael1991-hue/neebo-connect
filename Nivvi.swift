@@ -3218,10 +3218,10 @@ struct ContentView: View {
     }
     private func refreshLockScreen() {
         Task {
-            await NivviLiveActivityBridge.restart()
-            syncLiveActivity(forceNew: true)
+            if watchingFamily { await family.pullLatest() }
+            syncLiveActivity(immediate: true)
             lockScreenNote = NivviLiveActivityBridge.cardRunning
-                ? "New lock screen started. That begins another 8 hours."
+                ? "Lock screen updated with the latest reading."
                 : "The lock screen did not start. Allow Live Activities for Nivvi, then try again."
         }
     }
@@ -3238,7 +3238,7 @@ struct ContentView: View {
         }
     }
 
-    private func syncLiveActivity(forceNew: Bool = false) {
+    private func syncLiveActivity(forceNew: Bool = false, immediate: Bool = false) {
         let ble = monitor.connection.isConnected || monitor.connection == .reconnecting
         NivviLiveActivityBridge.preferLocalBluetooth = ble
         let wifiLive = watchingWifi && !ble
@@ -3277,7 +3277,8 @@ struct ContentView: View {
         } else {
             alarm = ""
         }
-        let stale = measured == nil || (ble && monitor.staleHeartRateDetected) || (familyLive && family.linkState != .live) || (wifiLive && !wifi.remoteFresh)
+        let age = measured.map { Date().timeIntervalSince($0) } ?? 999
+        let stale = measured == nil || age > 90 || (ble && monitor.staleHeartRateDetected) || (familyLive && family.linkState != .live) || (wifiLive && !wifi.remoteFresh)
         NivviLiveActivityBridge.sync(
             title: displayName,
             heartRate: heartRateDisplay,
@@ -3290,6 +3291,7 @@ struct ContentView: View {
             stale: stale,
             alarm: alarm,
             forceNew: forceNew,
+            immediate: immediate,
             sleep: remoteSleepLine
         )
     }

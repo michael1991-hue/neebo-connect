@@ -228,7 +228,7 @@ struct NivviLiveActivityWidget: Widget {
         if context.state.stale { return true }
         let measured = context.state.measuredAt
         if measured > 0 {
-            return Date().timeIntervalSince1970 - measured > 480
+            return Date().timeIntervalSince1970 - measured > 90
         }
         if #available(iOS 16.2, *) { return context.isStale }
         return false

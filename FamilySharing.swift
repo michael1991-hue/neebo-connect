@@ -686,6 +686,22 @@ final class FamilyRelay: ObservableObject {
         appliedAlarm = "none"
         alarmCatchup = true
     }
+    func pullLatest() async {
+        guard signedIn, let selected else { return }
+        let token = generation
+        do {
+            let value: RemoteReading = try await request("families/\(selected)/latest")
+            guard token == generation && self.selected == selected else { return }
+            if let snap = value.snapshot {
+                applyRemote(snap, catchup: true, serverReceived: snap.server_received)
+            } else {
+                remote = value
+                remoteFetched = Date()
+            }
+        } catch {
+            message = error.localizedDescription
+        }
+    }
     func fetchRemote() async {
         guard signedIn, let selected else { clearRemote(); return }
         if socketConnected && remote != nil { return }
