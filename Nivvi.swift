@@ -3277,8 +3277,7 @@ struct ContentView: View {
         } else {
             alarm = ""
         }
-        let age = measured.map { Date().timeIntervalSince($0) } ?? 999
-        let stale = measured == nil || age > 90 || (ble && monitor.staleHeartRateDetected) || (familyLive && family.linkState != .live) || (wifiLive && !wifi.remoteFresh)
+        let stale = measured == nil || (ble && monitor.staleHeartRateDetected) || (familyLive && family.linkState != .live) || (wifiLive && !wifi.remoteFresh)
         NivviLiveActivityBridge.sync(
             title: displayName,
             heartRate: heartRateDisplay,

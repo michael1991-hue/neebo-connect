@@ -1168,7 +1168,7 @@ def publish_activity(body: ActivityPublish, request: Request):
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
         previous = c.execute("SELECT seq, measured FROM activity_latest WHERE secret=?", (body.secret,)).fetchone()
-        if previous and body.measured_at + 1 < float(previous["measured"]):
+        if previous and body.seq <= previous["seq"] and body.measured_at <= float(previous["measured"]) + 2:
             raise HTTPException(409, "An older reading cannot replace a newer one")
         c.execute("INSERT OR REPLACE INTO activity_latest VALUES(?,?,?)", (body.secret, body.seq, body.measured_at))
     state = {
