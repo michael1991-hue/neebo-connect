@@ -67,10 +67,10 @@ enum LiveActivityPush {
     static func publish(title: String, heartRate: String, oxygen: String, connection: String, measuredAt: Date, session: String, sleep: String = "") {
         let beats = readingNumber(heartRate)
         let previous = readingNumber(lastSentHeart)
-        let moved = beats != nil && (previous == nil || abs(beats! - previous!) >= 3)
+        let moved = beats != nil && (previous == nil || abs(beats! - previous!) >= 1)
         let oxygenMoved = !lastSentOxygen.isEmpty && oxygen != lastSentOxygen
         let urgent = lastSentHeart.isEmpty || moved || oxygenMoved
-        let wait: TimeInterval = urgent ? 4 : 25
+        let wait: TimeInterval = urgent ? 2 : 10
         let elapsed = Date().timeIntervalSince(lastPublish)
         uploadSeq += 1
         let body: [String: Any] = [

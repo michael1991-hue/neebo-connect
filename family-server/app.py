@@ -1309,7 +1309,7 @@ def watcher_due(secret, state, now):
     sleep = state.get("sleep") or ""
     sleep_changed = sleep != (previous.get("sleep") or "")
     wall = now - float(previous.get("at") or 0) if previous else 999
-    if previous and not number_changed and not alarm_changed and not sleep_changed and wall < 20:
+    if previous and not number_changed and not alarm_changed and not sleep_changed and wall < 10:
         return False
     ACTIVITY_GATE[f"{secret}:watcher"] = {"at": now, "alarm": alarm, "hr": hr, "ox": ox, "measured": stamp, "sleep": sleep}
     return True
